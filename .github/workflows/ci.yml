@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    name: Bridge checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install bridge dependencies
+        working-directory: bridge
+        run: uv sync --frozen
+
+      - name: Compile and import bridge
+        working-directory: bridge
+        run: |
+          uv run python -m py_compile main.py mission_store.py rss_store.py review_store.py
+          uv run python -c "import main, mission_store, rss_store, review_store; print(main.health()['version'])"
+
+  flutter:
+    name: Flutter checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Flutter dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: app
+        run: dart analyze lib test
+
+      - name: Test
+        working-directory: app
+        run: flutter test --no-pub
+
+      - name: Build Web
+        working-directory: app
+        run: flutter build web --no-pub --no-wasm-dry-run

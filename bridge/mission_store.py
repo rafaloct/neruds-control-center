@@ -1,0 +1,1094 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR.parent / "data"
+DB_PATH = DATA_DIR / "missions.sqlite3"
+SEED_PATH = BASE_DIR / "mission_seed.json"
+
+MISSION_CODE = "GESTAO_PORTAL_NERUDS"
+MISSION_TITLE = "Missão: Gestão, Verificação e Perpetuidade do Portal NERUDS"
+MISSION_DESCRIPTION = (
+    "Executar as verificações da planilha de treinamento, registrar fontes, "
+    "evidências, revisão cruzada, validação e conferência pública."
+)
+
+WORKFLOW = [
+    "Triagem",
+    "Em pesquisa",
+    "Evidência registrada",
+    "Revisão cruzada",
+    "Aguardando validação",
+    "Conferência pública",
+    "Concluído",
+    "Bloqueado",
+]
+
+TASK_COLUMNS = [
+    "prioridade",
+    "id",
+    "tipo",
+    "titulo",
+    "conferencia_publica_ok",
+    "url_publica",
+    "url_edicao",
+    "area_sugerida",
+    "lacunas",
+    "acao",
+    "onde_buscar",
+    "fontes",
+    "consulta_sugerida",
+    "evidencia",
+    "responsavel",
+    "status",
+    "fonte_confirmada",
+    "data_consulta",
+    "observacoes",
+    "responsavel_primario",
+    "revisor_cruzado",
+    "etapa_atual",
+    "prazo_interno",
+]
+
+FIELD_MAP = {
+    "priority": "priority",
+    "status": "status",
+    "current_stage": "current_stage",
+    "evidence": "evidence",
+    "confirmed_source": "confirmed_source",
+    "consultation_date": "consultation_date",
+    "observations": "observations",
+    "responsible": "responsible",
+    "primary_owner": "primary_owner",
+    "cross_reviewer": "cross_reviewer",
+    "public_check_ok": "public_check_ok",
+    "internal_deadline": "internal_deadline",
+}
+
+WORK_SPECS = {
+    "chamados_tecnicos": {
+        "sheet": "07_Chamados_Tecnicos",
+        "header": 0,
+        "title": ["titulo_ou_id", "tipo_de_problema"],
+        "responsible": ["registrado_por"],
+        "status": ["status_do_chamado"],
+        "evidence": ["evidencia"],
+    },
+    "extensao_institucional": {
+        "sheet": "08_Extensao_Institucional",
+        "header": 1,
+        "title": ["Etapa", "Objetivo"],
+        "responsible": [],
+        "status": ["Status"],
+        "evidence": ["Evidência"],
+    },
+    "roteiro_entrevistas": {
+        "sheet": "09_Roteiro_Entrevistas",
+        "header": 1,
+        "title": ["Pergunta principal", "Bloco"],
+        "responsible": ["Quem valida"],
+        "status": ["Status"],
+        "evidence": ["Fonte/documento citado"],
+    },
+    "mvv": {
+        "sheet": "10_MVV_Consolidacao",
+        "header": 1,
+        "title": ["Elemento"],
+        "responsible": [],
+        "status": ["Aprovação"],
+        "evidence": ["Fonte principal"],
+    },
+    "historia_linha_tempo": {
+        "sheet": "11_Historia_LinhaTempo",
+        "header": 1,
+        "title": ["Marco", "Ano/Data"],
+        "responsible": [],
+        "status": ["Publicar?"],
+        "evidence": ["Fonte documental"],
+    },
+    "organograma": {
+        "sheet": "12_Organograma",
+        "header": 1,
+        "title": ["Unidade/Função", "Nível"],
+        "responsible": ["Titular atual"],
+        "status": ["Status"],
+        "evidence": ["Fonte da confirmação"],
+    },
+    "noticias_instagram": {
+        "sheet": "13_Noticias_Instagram",
+        "header": 1,
+        "title": ["Tema", "Fato noticiável"],
+        "responsible": ["Responsável redação"],
+        "status": ["Status"],
+        "evidence": ["Fonte adicional", "URL do Instagram"],
+    },
+    "paginas_futuras": {
+        "sheet": "14_Paginas_Futuras",
+        "header": 1,
+        "title": ["Sugestão de página"],
+        "responsible": ["Responsável futuro"],
+        "status": [],
+        "evidence": ["Fontes disponíveis"],
+    },
+    "diario_extensao": {
+        "sheet": "15_Diario_Extensao",
+        "header": 1,
+        "title": ["Atividade"],
+        "responsible": ["Pessoa"],
+        "status": ["Validação"],
+        "evidence": ["Link/evidência"],
+    },
+    "encerramento_acessos": {
+        "sheet": "16_Encerramento_Acessos",
+        "header": 1,
+        "title": ["Item"],
+        "responsible": ["Responsável"],
+        "status": ["Status"],
+        "evidence": ["Evidência"],
+    },
+}
+
+
+def utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def connect() -> sqlite3.Connection:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _nonempty_rows(rows: list[list[Any]]) -> list[list[Any]]:
+    return [row for row in rows if any(v is not None and str(v).strip() for v in row)]
+
+
+def _sheet_dicts(seed: dict[str, Any], sheet: str, header_index: int = 0) -> list[dict[str, Any]]:
+    rows = seed.get("sheets", {}).get(sheet, [])
+    if len(rows) <= header_index:
+        return []
+    headers = rows[header_index]
+    out = []
+    for idx, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
+        if not any(v is not None and str(v).strip() for v in row):
+            continue
+        padded = list(row) + [None] * max(0, len(headers) - len(row))
+        out.append({"spreadsheet_row": idx, **dict(zip(headers, padded))})
+    return out
+
+
+def _first_text(record: dict[str, Any], keys: list[str], default: str = "") -> str:
+    for key in keys:
+        value = record.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
+
+
+def init_db() -> None:
+    with connect() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS mission (
+                id INTEGER PRIMARY KEY,
+                code TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                description TEXT,
+                source_file TEXT,
+                source_imported_at TEXT,
+                workflow_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mission_task (
+                id INTEGER PRIMARY KEY,
+                mission_id INTEGER NOT NULL REFERENCES mission(id) ON DELETE CASCADE,
+                spreadsheet_row INTEGER NOT NULL,
+                source_record_id TEXT,
+                priority TEXT,
+                content_type TEXT,
+                title TEXT NOT NULL,
+                public_check_ok INTEGER NOT NULL DEFAULT 0,
+                public_url TEXT,
+                edit_url TEXT,
+                suggested_area TEXT,
+                gaps TEXT,
+                action TEXT,
+                where_to_search TEXT,
+                sources TEXT,
+                suggested_query TEXT,
+                evidence TEXT,
+                responsible TEXT,
+                status TEXT,
+                confirmed_source TEXT,
+                consultation_date TEXT,
+                observations TEXT,
+                primary_owner TEXT,
+                cross_reviewer TEXT,
+                current_stage TEXT,
+                internal_deadline TEXT,
+                raw_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(mission_id, spreadsheet_row)
+            );
+
+            CREATE TABLE IF NOT EXISTS mission_event (
+                id INTEGER PRIMARY KEY,
+                task_id INTEGER NOT NULL REFERENCES mission_task(id) ON DELETE CASCADE,
+                actor TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                from_stage TEXT,
+                to_stage TEXT,
+                note TEXT,
+                evidence_url TEXT,
+                changes_json TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS checklist_template (
+                id INTEGER PRIMARY KEY,
+                kind TEXT NOT NULL,
+                item_order INTEGER NOT NULL,
+                item TEXT NOT NULL,
+                criterion TEXT,
+                UNIQUE(kind, item_order)
+            );
+
+            CREATE TABLE IF NOT EXISTS task_check_result (
+                task_id INTEGER NOT NULL REFERENCES mission_task(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                item_order INTEGER NOT NULL,
+                completed INTEGER NOT NULL DEFAULT 0,
+                completed_by TEXT,
+                completed_at TEXT,
+                note TEXT,
+                PRIMARY KEY(task_id, kind, item_order)
+            );
+
+            CREATE TABLE IF NOT EXISTS mission_reference (
+                section TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS mission_work_item (
+                id INTEGER PRIMARY KEY,
+                mission_id INTEGER NOT NULL REFERENCES mission(id) ON DELETE CASCADE,
+                section TEXT NOT NULL,
+                spreadsheet_row INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                responsible TEXT,
+                status TEXT,
+                evidence TEXT,
+                note TEXT,
+                completed INTEGER NOT NULL DEFAULT 0,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(mission_id, section, spreadsheet_row)
+            );
+
+            CREATE TABLE IF NOT EXISTS mission_work_event (
+                id INTEGER PRIMARY KEY,
+                work_item_id INTEGER NOT NULL REFERENCES mission_work_item(id) ON DELETE CASCADE,
+                actor TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                note TEXT,
+                changes_json TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_mission_stage
+                ON mission_task(mission_id, current_stage);
+            CREATE INDEX IF NOT EXISTS idx_task_priority
+                ON mission_task(priority);
+            CREATE INDEX IF NOT EXISTS idx_task_owner
+                ON mission_task(primary_owner);
+            CREATE INDEX IF NOT EXISTS idx_event_task
+                ON mission_event(task_id, created_at);
+            """
+        )
+
+
+def seed_from_json(force: bool = False) -> dict[str, Any]:
+    init_db()
+    if not SEED_PATH.exists():
+        return {"seeded": False, "reason": "seed_not_found"}
+
+    seed = json.loads(SEED_PATH.read_text(encoding="utf-8"))
+    sheets = seed.get("sheets", {})
+    master = sheets.get("03_Controle_Master", [])
+    if not master:
+        return {"seeded": False, "reason": "master_missing"}
+
+    headers = master[0]
+    if headers[: len(TASK_COLUMNS)] != TASK_COLUMNS:
+        raise RuntimeError("Cabeçalho do Controle Master não corresponde ao modelo esperado.")
+
+    now = utcnow()
+    with connect() as conn:
+        existing = conn.execute(
+            "SELECT id FROM mission WHERE code = ?", (MISSION_CODE,)
+        ).fetchone()
+
+        if existing and force:
+            conn.execute("DELETE FROM mission WHERE id = ?", (existing["id"],))
+            existing = None
+
+        if existing:
+            mission_id = existing["id"]
+            conn.execute(
+                """
+                UPDATE mission
+                SET source_file=?, source_imported_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    seed.get("source_file"),
+                    seed.get("imported_at"),
+                    now,
+                    mission_id,
+                ),
+            )
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO mission
+                (code,title,description,source_file,source_imported_at,workflow_json,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,?)
+                """,
+                (
+                    MISSION_CODE,
+                    MISSION_TITLE,
+                    MISSION_DESCRIPTION,
+                    seed.get("source_file"),
+                    seed.get("imported_at"),
+                    _json(WORKFLOW),
+                    now,
+                    now,
+                ),
+            )
+            mission_id = int(cur.lastrowid)
+
+        inserted = 0
+        for spreadsheet_row, row in enumerate(master[1:], start=2):
+            if not any(v is not None and str(v).strip() for v in row):
+                continue
+            padded = list(row) + [None] * max(0, len(headers) - len(row))
+            rec = dict(zip(headers, padded))
+            values = (
+                mission_id,
+                spreadsheet_row,
+                None if rec.get("id") is None else str(rec.get("id")),
+                rec.get("prioridade"),
+                rec.get("tipo"),
+                rec.get("titulo") or f"Linha {spreadsheet_row}",
+                1 if rec.get("conferencia_publica_ok") else 0,
+                rec.get("url_publica"),
+                rec.get("url_edicao"),
+                rec.get("area_sugerida"),
+                rec.get("lacunas"),
+                rec.get("acao"),
+                rec.get("onde_buscar"),
+                rec.get("fontes"),
+                rec.get("consulta_sugerida"),
+                rec.get("evidencia"),
+                rec.get("responsavel"),
+                rec.get("status") or "A pesquisar",
+                rec.get("fonte_confirmada"),
+                None if rec.get("data_consulta") is None else str(rec.get("data_consulta")),
+                rec.get("observacoes"),
+                rec.get("responsavel_primario"),
+                rec.get("revisor_cruzado"),
+                rec.get("etapa_atual") or "Triagem",
+                None if rec.get("prazo_interno") is None else str(rec.get("prazo_interno")),
+                _json(rec),
+                now,
+                now,
+            )
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO mission_task (
+                    mission_id,spreadsheet_row,source_record_id,priority,content_type,title,
+                    public_check_ok,public_url,edit_url,suggested_area,gaps,action,where_to_search,
+                    sources,suggested_query,evidence,responsible,status,confirmed_source,
+                    consultation_date,observations,primary_owner,cross_reviewer,current_stage,
+                    internal_deadline,raw_json,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                values,
+            )
+            if cur.rowcount:
+                inserted += 1
+
+        publication = _sheet_dicts(seed, "05_Checklist_Publicacao")
+        research = _sheet_dicts(seed, "06_Checklist_Pesquisa")
+        for kind, items in (("publicacao", publication), ("pesquisa", research)):
+            for item in items:
+                order = int(float(item.get("ordem") or 0))
+                if not order:
+                    continue
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO checklist_template(kind,item_order,item,criterion)
+                    VALUES (?,?,?,?)
+                    """,
+                    (
+                        kind,
+                        order,
+                        item.get("item"),
+                        item.get("criterio") or item.get("observacao"),
+                    ),
+                )
+
+        reference_specs = {
+            "resumo": ("00_Resumo", 0),
+            "distribuicao": ("01_Distribuicao", 0),
+            "plano_4_semanas": ("02_Plano_4_Semanas", 0),
+            "equipe": ("04_Cadastro_Equipe", 0),
+            "chamados_tecnicos": ("07_Chamados_Tecnicos", 0),
+            "extensao_institucional": ("08_Extensao_Institucional", 1),
+            "roteiro_entrevistas": ("09_Roteiro_Entrevistas", 1),
+            "mvv": ("10_MVV_Consolidacao", 1),
+            "historia_linha_tempo": ("11_Historia_LinhaTempo", 1),
+            "organograma": ("12_Organograma", 1),
+            "noticias_instagram": ("13_Noticias_Instagram", 1),
+            "paginas_futuras": ("14_Paginas_Futuras", 1),
+            "diario_extensao": ("15_Diario_Extensao", 1),
+            "encerramento_acessos": ("16_Encerramento_Acessos", 1),
+            "fontes_institucionais": ("17_Fontes_Institucionais", 1),
+        }
+        for section, (sheet, header_idx) in reference_specs.items():
+            payload = _sheet_dicts(seed, sheet, header_idx)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO mission_reference(section,payload_json)
+                VALUES (?,?)
+                """,
+                (section, _json(payload)),
+            )
+
+        for section, spec in WORK_SPECS.items():
+            records = _sheet_dicts(seed, spec["sheet"], spec["header"])
+            for record in records:
+                row_number = int(record["spreadsheet_row"])
+                title = _first_text(
+                    record,
+                    spec["title"],
+                    default=f"{section} • linha {row_number}",
+                )
+                responsible = _first_text(record, spec["responsible"])
+                status = _first_text(record, spec["status"], default="A fazer")
+                evidence = _first_text(record, spec["evidence"])
+                completed = 1 if status.lower() in {
+                    "concluído",
+                    "concluido",
+                    "finalizado",
+                    "validado",
+                    "aprovado",
+                } else 0
+                conn.execute(
+                    """
+                    INSERT INTO mission_work_item (
+                        mission_id,section,spreadsheet_row,title,responsible,status,
+                        evidence,note,completed,payload_json,created_at,updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(mission_id,section,spreadsheet_row) DO UPDATE SET
+                        title=excluded.title,
+                        responsible=CASE
+                            WHEN mission_work_item.responsible IS NULL OR mission_work_item.responsible=''
+                            THEN excluded.responsible ELSE mission_work_item.responsible END,
+                        payload_json=excluded.payload_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        mission_id,
+                        section,
+                        row_number,
+                        title,
+                        responsible,
+                        status,
+                        evidence,
+                        None,
+                        completed,
+                        _json(record),
+                        now,
+                        now,
+                    ),
+                )
+
+        conn.commit()
+
+    return {
+        "seeded": True,
+        "mission_id": mission_id,
+        "inserted_tasks": inserted,
+        "total_tasks": count_tasks(mission_id),
+    }
+
+
+def mission_list() -> list[dict[str, Any]]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT m.*,
+                   COUNT(t.id) AS total_tasks,
+                   SUM(CASE WHEN t.current_stage='Concluído' THEN 1 ELSE 0 END) AS concluded
+            FROM mission m
+            LEFT JOIN mission_task t ON t.mission_id=m.id
+            GROUP BY m.id
+            ORDER BY m.id
+            """
+        ).fetchall()
+        return [_mission_row(row) for row in rows]
+
+
+def _mission_row(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["workflow"] = json.loads(data.pop("workflow_json"))
+    total = int(data.get("total_tasks") or 0)
+    concluded = int(data.get("concluded") or 0)
+    data["progress_percent"] = round((concluded / total) * 100, 1) if total else 0
+    return data
+
+
+def count_tasks(mission_id: int) -> int:
+    with connect() as conn:
+        return int(
+            conn.execute(
+                "SELECT COUNT(*) FROM mission_task WHERE mission_id=?", (mission_id,)
+            ).fetchone()[0]
+        )
+
+
+def dashboard(mission_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        mission = conn.execute("SELECT * FROM mission WHERE id=?", (mission_id,)).fetchone()
+        if not mission:
+            raise KeyError("mission_not_found")
+        tasks = conn.execute(
+            "SELECT priority,content_type,current_stage,primary_owner FROM mission_task WHERE mission_id=?",
+            (mission_id,),
+        ).fetchall()
+        event_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM mission_event e
+            JOIN mission_task t ON t.id=e.task_id
+            WHERE t.mission_id=?
+            """,
+            (mission_id,),
+        ).fetchone()[0]
+
+    stages = Counter((row["current_stage"] or "Sem etapa") for row in tasks)
+    priorities = Counter((row["priority"] or "Sem prioridade") for row in tasks)
+    types = Counter((row["content_type"] or "Sem tipo") for row in tasks)
+    owners = Counter((row["primary_owner"] or "Não atribuído") for row in tasks)
+    total = len(tasks)
+    concluded = stages.get("Concluído", 0)
+
+    result = dict(mission)
+    result["workflow"] = json.loads(result.pop("workflow_json"))
+    result.update(
+        {
+            "total_tasks": total,
+            "concluded": concluded,
+            "progress_percent": round((concluded / total) * 100, 1) if total else 0,
+            "by_stage": dict(stages),
+            "by_priority": dict(priorities),
+            "by_type": dict(types),
+            "by_owner": dict(owners),
+            "event_count": event_count,
+        }
+    )
+    return result
+
+
+def list_tasks(
+    mission_id: int,
+    *,
+    stage: str | None = None,
+    priority: str | None = None,
+    owner: str | None = None,
+    content_type: str | None = None,
+    query: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    where = ["mission_id=?"]
+    args: list[Any] = [mission_id]
+    filters = {
+        "current_stage": stage,
+        "priority": priority,
+        "primary_owner": owner,
+        "content_type": content_type,
+    }
+    for field, value in filters.items():
+        if value:
+            where.append(f"{field}=?")
+            args.append(value)
+    if query:
+        where.append("(title LIKE ? OR action LIKE ? OR gaps LIKE ? OR suggested_query LIKE ?)")
+        q = f"%{query}%"
+        args.extend([q, q, q, q])
+
+    clause = " AND ".join(where)
+    with connect() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM mission_task WHERE {clause}", args
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"""
+            SELECT * FROM mission_task
+            WHERE {clause}
+            ORDER BY
+              CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 9 END,
+              spreadsheet_row
+            LIMIT ? OFFSET ?
+            """,
+            [*args, max(1, min(limit, 500)), max(0, offset)],
+        ).fetchall()
+    return {"total": int(total), "items": [_task_row(row) for row in rows]}
+
+
+def _task_row(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["public_check_ok"] = bool(data["public_check_ok"])
+    data.pop("raw_json", None)
+    return data
+
+
+def task_detail(task_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM mission_task WHERE id=?", (task_id,)).fetchone()
+        if not row:
+            raise KeyError("task_not_found")
+        task = _task_row(row)
+        templates = conn.execute(
+            "SELECT * FROM checklist_template ORDER BY kind,item_order"
+        ).fetchall()
+        results = conn.execute(
+            "SELECT * FROM task_check_result WHERE task_id=?", (task_id,)
+        ).fetchall()
+        events = conn.execute(
+            "SELECT * FROM mission_event WHERE task_id=? ORDER BY id DESC LIMIT 100",
+            (task_id,),
+        ).fetchall()
+
+    result_index = {
+        (r["kind"], r["item_order"]): dict(r)
+        for r in results
+    }
+    checklists: dict[str, list[dict[str, Any]]] = {}
+    for template in templates:
+        item = dict(template)
+        state = result_index.get((item["kind"], item["item_order"]))
+        if state:
+            item.update(
+                {
+                    "completed": bool(state["completed"]),
+                    "completed_by": state["completed_by"],
+                    "completed_at": state["completed_at"],
+                    "note": state["note"],
+                }
+            )
+        else:
+            item.update(
+                {
+                    "completed": False,
+                    "completed_by": None,
+                    "completed_at": None,
+                    "note": None,
+                }
+            )
+        checklists.setdefault(item["kind"], []).append(item)
+
+    task["checklists"] = checklists
+    task["events"] = [dict(event) for event in events]
+    return task
+
+
+def update_task(
+    task_id: int,
+    actor: str,
+    changes: dict[str, Any],
+    note: str | None = None,
+    evidence_url: str | None = None,
+) -> dict[str, Any]:
+    allowed = {k: v for k, v in changes.items() if k in FIELD_MAP}
+    if not allowed and not note and not evidence_url:
+        return task_detail(task_id)
+
+    with connect() as conn:
+        before = conn.execute("SELECT * FROM mission_task WHERE id=?", (task_id,)).fetchone()
+        if not before:
+            raise KeyError("task_not_found")
+
+        actual_changes: dict[str, Any] = {}
+        assignments = []
+        args: list[Any] = []
+        for api_field, value in allowed.items():
+            db_field = FIELD_MAP[api_field]
+            if db_field == "public_check_ok":
+                value = 1 if bool(value) else 0
+            old_value = before[db_field]
+            if old_value != value:
+                assignments.append(f"{db_field}=?")
+                args.append(value)
+                actual_changes[api_field] = {"from": old_value, "to": value}
+
+        if assignments:
+            assignments.append("updated_at=?")
+            args.append(utcnow())
+            args.append(task_id)
+            conn.execute(
+                f"UPDATE mission_task SET {', '.join(assignments)} WHERE id=?",
+                args,
+            )
+
+        from_stage = before["current_stage"]
+        to_stage = allowed.get("current_stage", from_stage)
+        event_type = "task_updated"
+        if from_stage != to_stage:
+            event_type = "stage_changed"
+        elif evidence_url or "evidence" in allowed:
+            event_type = "evidence_registered"
+
+        if actual_changes or note or evidence_url:
+            conn.execute(
+                """
+                INSERT INTO mission_event
+                (task_id,actor,event_type,from_stage,to_stage,note,evidence_url,changes_json,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    task_id,
+                    actor,
+                    event_type,
+                    from_stage,
+                    to_stage,
+                    note,
+                    evidence_url,
+                    _json(actual_changes),
+                    utcnow(),
+                ),
+            )
+        conn.commit()
+
+    return task_detail(task_id)
+
+
+def set_check_result(
+    task_id: int,
+    kind: str,
+    item_order: int,
+    completed: bool,
+    actor: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    with connect() as conn:
+        template = conn.execute(
+            "SELECT 1 FROM checklist_template WHERE kind=? AND item_order=?",
+            (kind, item_order),
+        ).fetchone()
+        if not template:
+            raise KeyError("checklist_item_not_found")
+        task = conn.execute("SELECT current_stage FROM mission_task WHERE id=?", (task_id,)).fetchone()
+        if not task:
+            raise KeyError("task_not_found")
+
+        conn.execute(
+            """
+            INSERT INTO task_check_result
+            (task_id,kind,item_order,completed,completed_by,completed_at,note)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(task_id,kind,item_order) DO UPDATE SET
+              completed=excluded.completed,
+              completed_by=excluded.completed_by,
+              completed_at=excluded.completed_at,
+              note=excluded.note
+            """,
+            (
+                task_id,
+                kind,
+                item_order,
+                1 if completed else 0,
+                actor,
+                utcnow() if completed else None,
+                note,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO mission_event
+            (task_id,actor,event_type,from_stage,to_stage,note,changes_json,created_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                task_id,
+                actor,
+                "checklist_updated",
+                task["current_stage"],
+                task["current_stage"],
+                note,
+                _json({"kind": kind, "item_order": item_order, "completed": completed}),
+                utcnow(),
+            ),
+        )
+        conn.commit()
+    return task_detail(task_id)
+
+
+def get_reference(section: str) -> Any:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM mission_reference WHERE section=?", (section,)
+        ).fetchone()
+    if not row:
+        raise KeyError("reference_not_found")
+    return json.loads(row["payload_json"])
+
+
+def list_references() -> list[str]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT section FROM mission_reference ORDER BY section"
+        ).fetchall()
+    return [row["section"] for row in rows]
+
+
+init_db()
+
+
+# Extensão da missão: pacotes de trabalho complementares das demais abas.
+
+def dashboard(mission_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        mission = conn.execute(
+            "SELECT * FROM mission WHERE id=?", (mission_id,)
+        ).fetchone()
+        if not mission:
+            raise KeyError("mission_not_found")
+
+        tasks = conn.execute(
+            """
+            SELECT priority,content_type,current_stage,primary_owner
+            FROM mission_task WHERE mission_id=?
+            """,
+            (mission_id,),
+        ).fetchall()
+        work_items = conn.execute(
+            """
+            SELECT section,completed,status
+            FROM mission_work_item WHERE mission_id=?
+            """,
+            (mission_id,),
+        ).fetchall()
+        event_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM mission_event e
+            JOIN mission_task t ON t.id=e.task_id
+            WHERE t.mission_id=?
+            """,
+            (mission_id,),
+        ).fetchone()[0]
+        work_event_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM mission_work_event e
+            JOIN mission_work_item w ON w.id=e.work_item_id
+            WHERE w.mission_id=?
+            """,
+            (mission_id,),
+        ).fetchone()[0]
+
+    stages = Counter((row["current_stage"] or "Sem etapa") for row in tasks)
+    priorities = Counter((row["priority"] or "Sem prioridade") for row in tasks)
+    types = Counter((row["content_type"] or "Sem tipo") for row in tasks)
+    owners = Counter((row["primary_owner"] or "Não atribuído") for row in tasks)
+    work_sections = Counter((row["section"] or "Outros") for row in work_items)
+
+    total = len(tasks)
+    concluded = stages.get("Concluído", 0)
+    work_total = len(work_items)
+    work_concluded = sum(1 for row in work_items if bool(row["completed"]))
+    overall_total = total + work_total
+    overall_concluded = concluded + work_concluded
+
+    result = dict(mission)
+    result["workflow"] = json.loads(result.pop("workflow_json"))
+    result.update(
+        {
+            "total_tasks": total,
+            "concluded": concluded,
+            "progress_percent": round((concluded / total) * 100, 1)
+            if total
+            else 0,
+            "work_total": work_total,
+            "work_concluded": work_concluded,
+            "work_progress_percent": round(
+                (work_concluded / work_total) * 100, 1
+            )
+            if work_total
+            else 0,
+            "overall_total": overall_total,
+            "overall_concluded": overall_concluded,
+            "overall_progress_percent": round(
+                (overall_concluded / overall_total) * 100, 1
+            )
+            if overall_total
+            else 0,
+            "by_stage": dict(stages),
+            "by_priority": dict(priorities),
+            "by_type": dict(types),
+            "by_owner": dict(owners),
+            "work_by_section": dict(work_sections),
+            "event_count": event_count,
+            "work_event_count": work_event_count,
+        }
+    )
+    return result
+
+
+def list_work_items(
+    mission_id: int,
+    *,
+    section: str | None = None,
+    completed: bool | None = None,
+) -> dict[str, Any]:
+    where = ["mission_id=?"]
+    args: list[Any] = [mission_id]
+    if section:
+        where.append("section=?")
+        args.append(section)
+    if completed is not None:
+        where.append("completed=?")
+        args.append(1 if completed else 0)
+    clause = " AND ".join(where)
+
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT * FROM mission_work_item
+            WHERE {clause}
+            ORDER BY section, spreadsheet_row
+            """,
+            args,
+        ).fetchall()
+
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["completed"] = bool(item["completed"])
+        item["payload"] = json.loads(item.pop("payload_json"))
+        items.append(item)
+    return {"total": len(items), "items": items}
+
+
+def work_item_detail(work_item_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM mission_work_item WHERE id=?",
+            (work_item_id,),
+        ).fetchone()
+        if not row:
+            raise KeyError("work_item_not_found")
+        events = conn.execute(
+            """
+            SELECT * FROM mission_work_event
+            WHERE work_item_id=?
+            ORDER BY id DESC
+            """,
+            (work_item_id,),
+        ).fetchall()
+
+    item = dict(row)
+    item["completed"] = bool(item["completed"])
+    item["payload"] = json.loads(item.pop("payload_json"))
+    item["events"] = [dict(event) for event in events]
+    return item
+
+
+def update_work_item(
+    work_item_id: int,
+    *,
+    actor: str,
+    completed: bool | None = None,
+    status: str | None = None,
+    evidence: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    with connect() as conn:
+        before = conn.execute(
+            "SELECT * FROM mission_work_item WHERE id=?",
+            (work_item_id,),
+        ).fetchone()
+        if not before:
+            raise KeyError("work_item_not_found")
+
+        assignments = []
+        args: list[Any] = []
+        changes: dict[str, Any] = {}
+
+        candidates = {
+            "completed": None if completed is None else (1 if completed else 0),
+            "status": status,
+            "evidence": evidence,
+            "note": note,
+        }
+        for field, value in candidates.items():
+            if value is None:
+                continue
+            if before[field] != value:
+                assignments.append(f"{field}=?")
+                args.append(value)
+                changes[field] = {
+                    "from": before[field],
+                    "to": value,
+                }
+
+        if assignments:
+            assignments.append("updated_at=?")
+            args.append(utcnow())
+            args.append(work_item_id)
+            conn.execute(
+                f"""
+                UPDATE mission_work_item
+                SET {', '.join(assignments)}
+                WHERE id=?
+                """,
+                args,
+            )
+
+        if changes:
+            conn.execute(
+                """
+                INSERT INTO mission_work_event
+                (work_item_id,actor,event_type,note,changes_json,created_at)
+                VALUES (?,?,?,?,?,?)
+                """,
+                (
+                    work_item_id,
+                    actor,
+                    "work_item_updated",
+                    note,
+                    _json(changes),
+                    utcnow(),
+                ),
+            )
+        conn.commit()
+
+    return work_item_detail(work_item_id)

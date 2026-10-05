@@ -1,0 +1,26 @@
+<?php
+
+declare(strict_types=1);
+
+use Drupal\node\NodeInterface;
+
+/**
+ * Implements hook_node_presave().
+ */
+function neruds_extensionista_guard_node_presave(NodeInterface $node): void {
+  if (!$node->isNew()) {
+    return;
+  }
+
+  $account = \Drupal::currentUser();
+  if ($account->isAnonymous() || !in_array('extensionista', $account->getRoles(), TRUE)) {
+    return;
+  }
+
+  if (!in_array($node->bundle(), ['noticia', 'relatorio'], TRUE)) {
+    return;
+  }
+
+  $node->setOwnerId((int) $account->id());
+  $node->setUnpublished();
+}

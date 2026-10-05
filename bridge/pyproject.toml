@@ -1,0 +1,10 @@
+[project]
+name = "bridge"
+version = "0.3.3"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi[standard]>=0.142.2",
+    "feedparser>=6.0.14",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.15.0",
+]

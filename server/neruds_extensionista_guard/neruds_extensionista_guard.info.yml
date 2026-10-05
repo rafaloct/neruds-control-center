@@ -1,0 +1,7 @@
+name: NERUDS Extensionista Guard
+type: module
+description: 'Enforces safe Extensionista drafts and exposes narrow review/publish controls for NERUDS Control Center.'
+package: NERUDS
+core_version_requirement: ^10 || ^11
+dependencies:
+  - drupal:node

@@ -1,0 +1,9 @@
+review neruds news:
+  title: 'Review NERUDS news drafts'
+  description: 'Approve or return NERUDS news drafts through the Control Center.'
+  restrict access: true
+
+publish neruds news:
+  title: 'Publish NERUDS news drafts'
+  description: 'Publish reviewed NERUDS news through the Control Center.'
+  restrict access: true
