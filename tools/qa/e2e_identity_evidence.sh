@@ -21,22 +21,29 @@ user_exists() {
 }
 
 drupal_user() {
-  vendor/bin/drush user:information "$1" --format=json 2>/dev/null \
-    | python3 -c 'import json,sys
-try:
-    users = json.load(sys.stdin)
-    u = list(users.values())[0] if isinstance(users, dict) and users else None
-except Exception:
-    u = None
-if not u:
-    print("MISSING")
-else:
-    roles = u.get("roles") or []
-    print(json.dumps({
-        "uid": int(u.get("uid") or 0),
-        "status": int(u.get("status") or 0),
-        "roles": list(roles) if isinstance(roles, (list, dict)) else [],
-    }))'
+  E2E_DRUPAL_USERNAME="$1" vendor/bin/drush php:eval '
+$name = getenv("E2E_DRUPAL_USERNAME");
+if ($name === FALSE || $name === "") {
+  echo "MISSING";
+  return;
+}
+$storage = \Drupal::entityTypeManager()->getStorage("user");
+$uids = $storage->getQuery()
+  ->accessCheck(FALSE)
+  ->condition("name", $name)
+  ->range(0, 1)
+  ->execute();
+$user = $uids ? $storage->load(reset($uids)) : NULL;
+if (!$user) {
+  echo "MISSING";
+  return;
+}
+echo json_encode([
+  "uid" => (int) $user->id(),
+  "status" => (int) $user->isActive(),
+  "roles" => array_values($user->getRoles()),
+], JSON_THROW_ON_ERROR);
+' 2>/dev/null
 }
 
 cleanup() {
