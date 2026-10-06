@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+import secrets
 import sqlite3
 import zipfile
 from collections import Counter
@@ -326,6 +329,19 @@ def init_db() -> None:
                 UNIQUE(mission_id, actor, name)
             );
 
+            CREATE TABLE IF NOT EXISTS task_evidence_file (
+                id INTEGER PRIMARY KEY,
+                task_id INTEGER NOT NULL REFERENCES mission_task(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                stored_name TEXT NOT NULL,
+                content_type TEXT,
+                size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                note TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_task_mission_stage
                 ON mission_task(mission_id, current_stage);
             CREATE INDEX IF NOT EXISTS idx_task_priority
@@ -336,6 +352,8 @@ def init_db() -> None:
                 ON mission_event(task_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_saved_filter_mission_actor
                 ON mission_saved_filter(mission_id, actor);
+            CREATE INDEX IF NOT EXISTS idx_evidence_file_task
+                ON task_evidence_file(task_id, created_at);
             """
         )
 
@@ -755,6 +773,10 @@ def task_detail(task_id: int) -> dict[str, Any]:
             "SELECT * FROM mission_event WHERE task_id=? ORDER BY id DESC LIMIT 100",
             (task_id,),
         ).fetchall()
+        evidence_files = conn.execute(
+            "SELECT * FROM task_evidence_file WHERE task_id=? ORDER BY id",
+            (task_id,),
+        ).fetchall()
 
     result_index = {
         (r["kind"], r["item_order"]): dict(r)
@@ -786,6 +808,7 @@ def task_detail(task_id: int) -> dict[str, Any]:
 
     task["checklists"] = checklists
     task["events"] = [dict(event) for event in events]
+    task["evidence_files"] = [_evidence_row(row) for row in evidence_files]
     return task
 
 
@@ -918,6 +941,115 @@ def set_check_result(
         )
         conn.commit()
     return task_detail(task_id)
+
+
+def _evidence_dir(task_id: int) -> Path:
+    return DATA_DIR / "evidence" / str(task_id)
+
+
+def _evidence_row(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item.pop("stored_name", None)
+    item["download_url"] = f"/mission-evidence/{item['id']}"
+    return item
+
+
+def add_evidence_file(
+    task_id: int,
+    actor: str,
+    filename: str,
+    content: bytes,
+    content_type: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(filename).name) or "evidence.bin"
+    digest = hashlib.sha256(content).hexdigest()
+    stored_name = f"{secrets.token_hex(8)}-{safe_name}"
+
+    with connect() as conn:
+        task = conn.execute(
+            "SELECT current_stage FROM mission_task WHERE id=?", (task_id,)
+        ).fetchone()
+        if not task:
+            raise KeyError("task_not_found")
+
+        target_dir = _evidence_dir(task_id)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / stored_name).write_bytes(content)
+
+        cur = conn.execute(
+            """
+            INSERT INTO task_evidence_file
+            (task_id,filename,stored_name,content_type,size_bytes,sha256,note,uploaded_by,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                task_id,
+                safe_name,
+                stored_name,
+                content_type,
+                len(content),
+                digest,
+                note,
+                actor,
+                utcnow(),
+            ),
+        )
+        evidence_id = int(cur.lastrowid)
+        conn.execute(
+            """
+            INSERT INTO mission_event
+            (task_id,actor,event_type,from_stage,to_stage,note,evidence_url,changes_json,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                task_id,
+                actor,
+                "evidence_registered",
+                task["current_stage"],
+                task["current_stage"],
+                note,
+                f"/mission-evidence/{evidence_id}",
+                _json({"file": safe_name, "sha256": digest, "size_bytes": len(content)}),
+                utcnow(),
+            ),
+        )
+        conn.commit()
+
+    return get_evidence_file(evidence_id)
+
+
+def list_evidence_files(task_id: int) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM task_evidence_file WHERE task_id=? ORDER BY id",
+            (task_id,),
+        ).fetchall()
+    return [_evidence_row(row) for row in rows]
+
+
+def get_evidence_file(evidence_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM task_evidence_file WHERE id=?", (evidence_id,)
+        ).fetchone()
+    if not row:
+        raise KeyError("evidence_not_found")
+    return _evidence_row(row)
+
+
+def evidence_file_path(evidence_id: int) -> Path:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT task_id, stored_name FROM task_evidence_file WHERE id=?",
+            (evidence_id,),
+        ).fetchone()
+    if not row:
+        raise KeyError("evidence_not_found")
+    path = _evidence_dir(int(row["task_id"])) / row["stored_name"]
+    if not path.is_file():
+        raise FileNotFoundError("evidence_blob_missing")
+    return path
 
 
 def get_reference(section: str) -> Any:

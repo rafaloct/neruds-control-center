@@ -32,6 +32,18 @@ alterar `primary_owner`, `cross_reviewer` ou `internal_deadline`. Extensionistas
 continuam autorizados a atualizar evidências, fontes, observações, checklists e
 etapas operacionais.
 
+### Evidência por arquivo
+
+Além do texto/URL, tarefas aceitam arquivos anexados:
+
+- `POST /mission-tasks/{task_id}/evidence-files` recebe `multipart/form-data`
+  com `file` (obrigatório, até 10 MB) e `note` (opcional). O conteúdo vai para
+  `data/evidence/{task_id}/`, com sha256 e metadados em `task_evidence_file`,
+  e gera evento `evidence_registered` na trilha da tarefa.
+- `GET /mission-tasks/{task_id}/evidence-files` lista os anexos (também
+  expostos em `GET /mission-tasks/{task_id}` como `evidence_files`).
+- `GET /mission-evidence/{id}` devolve o arquivo com `FileResponse`.
+
 ## Automação da missão
 
 `GET /missions/{mission_id}/automation` consolida os sinais automáticos da

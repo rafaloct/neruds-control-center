@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -925,6 +926,49 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
     }
   }
 
+  Future<void> _uploadEvidence() async {
+    final file = await FilePicker.pickFile(dialogTitle: 'Anexar evidência');
+    if (file == null) return;
+    final bytes = await file.readAsBytes();
+    if (bytes.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Não foi possível ler o arquivo.')),
+        );
+      }
+      return;
+    }
+
+    setState(() => saving = true);
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        _uri('/mission-tasks/${widget.taskId}/evidence-files'),
+      );
+      request.headers.addAll(AppSession.instance.authHeaders);
+      request.files.add(
+        http.MultipartFile.fromBytes('file', bytes, filename: file.name),
+      );
+      final streamed = await request.send();
+      final response = await http.Response.fromStream(streamed);
+      if (response.statusCode != 201) throw Exception(_error(response));
+      await _load();
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Evidência "${file.name}" anexada.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Erro ao anexar: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
   Future<void> _check(String kind, int order, bool completed) async {
     final response = await http.patch(
       _uri('/mission-tasks/${widget.taskId}/checklists/$kind/$order'),
@@ -1063,6 +1107,8 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
           ),
         ),
         const SizedBox(height: 12),
+        _evidenceFilesSection(),
+        const SizedBox(height: 12),
         TextField(
           controller: observations,
           minLines: 3,
@@ -1123,6 +1169,75 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
           ),
       ],
     );
+  }
+
+  Widget _evidenceFilesSection() {
+    final files = ((task?['evidence_files'] as List<dynamic>?) ?? const [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Arquivos de evidência',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            TextButton.icon(
+              onPressed: saving ? null : _uploadEvidence,
+              icon: const Icon(Icons.attach_file),
+              label: const Text('Anexar'),
+            ),
+          ],
+        ),
+        if (files.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text('Nenhum arquivo anexado.'),
+          )
+        else
+          ...files.map(
+            (f) => ListTile(
+              dense: true,
+              leading: const Icon(Icons.insert_drive_file),
+              title: Text(f['filename']?.toString() ?? ''),
+              subtitle: Text(
+                '${f['uploaded_by']} • ${f['created_at']}\n'
+                'sha256 ${f['sha256']?.toString().substring(0, 12)}… • '
+                '${f['size_bytes']} B',
+              ),
+              isThreeLine: true,
+              onTap: () => _downloadEvidence(f),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _downloadEvidence(Map<String, dynamic> file) async {
+    final response = await http.get(
+      _uri('/mission-evidence/${file['id']}'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (!mounted) return;
+    if (response.statusCode != 200) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_error(response))));
+      return;
+    }
+    final location = await FilePicker.saveFile(
+      dialogTitle: 'Salvar evidência',
+      fileName: file['filename']?.toString() ?? 'evidence.bin',
+      bytes: response.bodyBytes,
+    );
+    if (location == null || !mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Salvo em $location')));
   }
 
   List<Widget> _checks(String kind, dynamic raw) {

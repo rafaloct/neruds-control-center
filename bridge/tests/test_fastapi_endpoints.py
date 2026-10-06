@@ -554,3 +554,48 @@ async def test_opportunity_deadline_filter_and_duplicate_draft_rejection(
     )
     assert res_draft.status_code == 409
     assert "duplicada" in res_draft.json()["detail"]
+
+
+async def test_mission_evidence_files(async_client, extensionista_session, seeded_mission):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+    task_id = task["id"]
+
+    res_upload = await async_client.post(
+        f"/mission-tasks/{task_id}/evidence-files",
+        files={"file": ("relatorio visita.pdf", b"%PDF-1.4 fake", "application/pdf")},
+        data={"note": "Relatório da visita"},
+        headers=headers,
+    )
+    assert res_upload.status_code == 201
+    evidence = res_upload.json()["evidence"]
+    assert evidence["filename"] == "relatorio_visita.pdf"
+    assert evidence["content_type"] == "application/pdf"
+    assert evidence["uploaded_by"] == "extensionista.test"
+
+    res_list = await async_client.get(
+        f"/mission-tasks/{task_id}/evidence-files", headers=headers
+    )
+    assert res_list.status_code == 200
+    assert [f["id"] for f in res_list.json()["files"]] == [evidence["id"]]
+
+    res_dl = await async_client.get(
+        f"/mission-evidence/{evidence['id']}", headers=headers
+    )
+    assert res_dl.status_code == 200
+    assert res_dl.content == b"%PDF-1.4 fake"
+
+    res_detail = await async_client.get(f"/mission-tasks/{task_id}", headers=headers)
+    assert res_detail.status_code == 200
+    assert res_detail.json()["evidence_files"][0]["id"] == evidence["id"]
+
+    res_missing_task = await async_client.post(
+        "/mission-tasks/99999/evidence-files",
+        files={"file": ("x.txt", b"x", "text/plain")},
+        headers=headers,
+    )
+    assert res_missing_task.status_code == 404
+
+    res_missing_ev = await async_client.get("/mission-evidence/99999", headers=headers)
+    assert res_missing_ev.status_code == 404

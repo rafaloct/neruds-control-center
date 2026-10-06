@@ -23,9 +23,9 @@ import mission_store
 import review_store
 import rss_store
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 load_dotenv()
@@ -1019,6 +1019,66 @@ def mission_checklist_update(
             else "Tarefa não encontrada."
         )
         raise HTTPException(status_code=404, detail=detail)
+
+
+EVIDENCE_MAX_BYTES = 10 * 1024 * 1024
+
+
+@app.post("/mission-tasks/{task_id}/evidence-files", status_code=201)
+async def mission_evidence_upload(
+    task_id: int,
+    file: UploadFile = File(...),
+    note: str | None = Form(default=None),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=422, detail="Arquivo vazio.")
+    if len(content) > EVIDENCE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Arquivo excede 10 MB.")
+    try:
+        item = mission_store.add_evidence_file(
+            task_id,
+            actor=session["username"],
+            filename=file.filename or "evidence.bin",
+            content=content,
+            content_type=file.content_type,
+            note=note,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+    return {"evidence": item}
+
+
+@app.get("/mission-tasks/{task_id}/evidence-files")
+def mission_evidence_list(
+    task_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        mission_store.task_detail(task_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+    return {"files": mission_store.list_evidence_files(task_id)}
+
+
+@app.get("/mission-evidence/{evidence_id}")
+def mission_evidence_download(
+    evidence_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> FileResponse:
+    try:
+        meta = mission_store.get_evidence_file(evidence_id)
+        path = mission_store.evidence_file_path(evidence_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Evidência não encontrada.")
+    except FileNotFoundError:
+        raise HTTPException(status_code=410, detail="Arquivo de evidência indisponível.")
+    return FileResponse(
+        path,
+        media_type=meta.get("content_type") or "application/octet-stream",
+        filename=meta["filename"],
+    )
 
 
 @app.get("/missions/{mission_id}/references")

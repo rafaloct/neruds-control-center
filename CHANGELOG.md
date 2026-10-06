@@ -34,6 +34,14 @@ Todas as mudanças relevantes serão registradas neste arquivo.
     Drupal por título no bundle correspondente ao tipo de conteúdo;
   - card "Sugestões automáticas" na tela Missão do app Flutter;
   - nenhuma automação conclui ou altera etapa de tarefa automaticamente.
+- evidência por arquivo (Onda 2 do roadmap):
+  - `POST /mission-tasks/{id}/evidence-files` aceita upload multipart
+    (máx. 10 MB), armazena em `data/evidence/` com sha256 e registra
+    evento de auditoria;
+  - `GET /mission-tasks/{id}/evidence-files` lista anexos e
+    `GET /mission-evidence/{id}` baixa o arquivo;
+  - dialog da tarefa no app Flutter lista anexos e permite anexar/baixar
+    via `file_picker`.
 
 ## [1.0.0-internal.1] - 2026-10-05
 
