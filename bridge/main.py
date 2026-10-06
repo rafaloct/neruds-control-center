@@ -939,6 +939,20 @@ def mission_task_update(
         exclude_none=True,
         exclude={"note", "evidence_url"},
     )
+    controlled_assignment_fields = {
+        "primary_owner",
+        "cross_reviewer",
+        "internal_deadline",
+    }
+    requested_controlled_fields = controlled_assignment_fields.intersection(changes)
+    if requested_controlled_fields and not session.get("can_review", False):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Somente perfis de revisão/coordenação podem alterar "
+                "responsável, revisor cruzado ou prazo interno."
+            ),
+        )
     if payload.current_stage and payload.current_stage not in mission_store.WORKFLOW:
         raise HTTPException(status_code=422, detail="Etapa da missão inválida.")
     try:

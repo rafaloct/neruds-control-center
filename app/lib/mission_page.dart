@@ -668,9 +668,11 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
           'confirmed_source': source.text.trim(),
           'observations': observations.text.trim(),
           'public_check_ok': publicCheck,
-          'primary_owner': primaryOwner.text.trim(),
-          'cross_reviewer': crossReviewer.text.trim(),
-          'internal_deadline': internalDeadline.text.trim(),
+          if (AppSession.instance.canReview) ...{
+            'primary_owner': primaryOwner.text.trim(),
+            'cross_reviewer': crossReviewer.text.trim(),
+            'internal_deadline': internalDeadline.text.trim(),
+          },
           'consultation_date': DateTime.now().toIso8601String().substring(
             0,
             10,
@@ -789,25 +791,31 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
         const SizedBox(height: 12),
         TextField(
           controller: primaryOwner,
+          enabled: AppSession.instance.canReview,
           decoration: const InputDecoration(
             labelText: 'Responsável principal',
+            helperText: 'Somente revisão/coordenação pode alterar este campo.',
             border: OutlineInputBorder(),
           ),
         ),
         const SizedBox(height: 12),
         TextField(
           controller: crossReviewer,
+          enabled: AppSession.instance.canReview,
           decoration: const InputDecoration(
             labelText: 'Revisor cruzado',
+            helperText: 'Somente revisão/coordenação pode alterar este campo.',
             border: OutlineInputBorder(),
           ),
         ),
         const SizedBox(height: 12),
         TextField(
           controller: internalDeadline,
+          enabled: AppSession.instance.canReview,
           keyboardType: TextInputType.datetime,
           decoration: const InputDecoration(
             labelText: 'Prazo interno (AAAA-MM-DD)',
+            helperText: 'Somente revisão/coordenação pode alterar este campo.',
             border: OutlineInputBorder(),
           ),
         ),

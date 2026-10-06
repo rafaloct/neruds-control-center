@@ -21,6 +21,11 @@ semanal em `GET /missions/{mission_id}/weekly-report`.
 `GET /missions/{mission_id}/export.xlsx` exporta o Controle Master em XLSX,
 incluindo responsáveis, revisão cruzada, prazo, evidências e rastreabilidade.
 
+A reatribuição é controlada no backend: apenas sessões com `can_review` podem
+alterar `primary_owner`, `cross_reviewer` ou `internal_deadline`. Extensionistas
+continuam autorizados a atualizar evidências, fontes, observações, checklists e
+etapas operacionais.
+
 ## Fluxo editorial
 
 Toda notícia criada pelo bridge é registrada como rascunho e entra na fila de

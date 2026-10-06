@@ -364,6 +364,58 @@ async def test_mission_endpoints(async_client, extensionista_session, seeded_mis
     assert res_check.status_code == 200
 
 
+async def test_mission_assignment_fields_require_reviewer_permission(
+    async_client, extensionista_session, revisor_session, seeded_mission
+):
+    extensionista_token, _ = extensionista_session
+    revisor_token, _ = revisor_session
+    extensionista_headers = {"Authorization": f"Bearer {extensionista_token}"}
+    revisor_headers = {"Authorization": f"Bearer {revisor_token}"}
+
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+    task_id = task["id"]
+    original = mission_store.task_detail(task_id)
+
+    denied = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={
+            "primary_owner": "outra.pessoa",
+            "cross_reviewer": "revisor.test",
+            "internal_deadline": "2026-12-31",
+        },
+        headers=extensionista_headers,
+    )
+    assert denied.status_code == 403
+    assert "revisão/coordenação" in denied.json()["detail"]
+
+    after_denied = mission_store.task_detail(task_id)
+    assert after_denied["primary_owner"] == original["primary_owner"]
+    assert after_denied["cross_reviewer"] == original["cross_reviewer"]
+    assert after_denied["internal_deadline"] == original["internal_deadline"]
+
+    operational = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={"current_stage": "Em pesquisa", "note": "Avanço operacional"},
+        headers=extensionista_headers,
+    )
+    assert operational.status_code == 200
+    assert operational.json()["current_stage"] == "Em pesquisa"
+
+    allowed = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={
+            "primary_owner": "extensionista.2",
+            "cross_reviewer": "revisor.test",
+            "internal_deadline": "2026-12-31",
+        },
+        headers=revisor_headers,
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["primary_owner"] == "extensionista.2"
+    assert allowed.json()["cross_reviewer"] == "revisor.test"
+    assert allowed.json()["internal_deadline"] == "2026-12-31"
+
+
 async def test_mission_sla_filters_reports_exports_and_saved_filters(
     async_client, extensionista_session, seeded_mission
 ):
