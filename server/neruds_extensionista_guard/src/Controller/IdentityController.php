@@ -23,7 +23,7 @@ final class IdentityController extends ControllerBase {
 
   public function __construct(
     private readonly AccountProxyInterface $account,
-    private readonly EntityTypeManagerInterface $entityTypeManager,
+    private readonly EntityTypeManagerInterface $entityTypes,
   ) {}
 
   public static function create(ContainerInterface $container): static {
@@ -34,7 +34,7 @@ final class IdentityController extends ControllerBase {
   }
 
   public function listAccounts(): JsonResponse {
-    $storage = $this->entityTypeManager->getStorage('user');
+    $storage = $this->entityTypes->getStorage('user');
     $uids = $storage->getQuery()
       ->accessCheck(FALSE)
       ->condition('roles', 'extensionista')
@@ -61,7 +61,7 @@ final class IdentityController extends ControllerBase {
       return new JsonResponse(['detail' => 'Informe name e mail válidos.'], 422);
     }
 
-    $storage = $this->entityTypeManager->getStorage('user');
+    $storage = $this->entityTypes->getStorage('user');
     $nameTaken = (bool) $storage->getQuery()
       ->accessCheck(FALSE)
       ->condition('name', $name)
@@ -141,7 +141,7 @@ final class IdentityController extends ControllerBase {
   }
 
   private function loadExtensionista(int $uid): ?UserInterface {
-    $user = $this->entityTypeManager->getStorage('user')->load($uid);
+    $user = $this->entityTypes->getStorage('user')->load($uid);
     if (!$user instanceof UserInterface) {
       return NULL;
     }
@@ -152,7 +152,7 @@ final class IdentityController extends ControllerBase {
   }
 
   private function serializeAccount(UserInterface $user): array {
-    $nodeStorage = $this->entityTypeManager->getStorage('node');
+    $nodeStorage = $this->entityTypes->getStorage('node');
     $authored = (int) $nodeStorage->getQuery()
       ->accessCheck(FALSE)
       ->condition('uid', $user->id())
