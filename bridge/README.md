@@ -1,31 +1,22 @@
-# bridge
+# NERUDS Control Bridge
 
-A project created with FastAPI CLI.
+API FastAPI usada pelo Control Center para integrar o app Flutter ao Drupal,
+às missões e à curadoria de oportunidades.
 
-## Quick Start
-
-### Start the development server
+## Desenvolvimento
 
 ```bash
 uv run fastapi dev
+uv run pytest -q
 ```
 
-Visit http://localhost:8000
+## Missão operacional
 
-### Deploy to FastAPI Cloud
+O Controle Master preserva as 205 verificações principais e as 73 atividades
+complementares da planilha de origem. A API da missão permite filtrar tarefas
+atrasadas (`due_status=overdue`) ou previstas para os próximos sete dias
+(`due_status=upcoming`), salvar filtros por usuário e consultar o relatório
+semanal em `GET /missions/{mission_id}/weekly-report`.
 
-Sign up and log in at https://fastapicloud.com, then deploy with:
-
-```bash
-uv run fastapi deploy
-```
-
-## Project Structure
-
-- `main.py` - Your FastAPI application
-- `pyproject.toml` - Project dependencies
-
-## Learn More
-
-- [FastAPI Documentation](https://fastapi.tiangolo.com)
-- [FastAPI Cloud](https://fastapicloud.com)
+`GET /missions/{mission_id}/export.xlsx` exporta o Controle Master em XLSX,
+incluindo responsáveis, revisão cruzada, prazo, evidências e rastreabilidade.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import rss_store
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 load_dotenv()
@@ -115,6 +117,11 @@ class MissionTaskPatch(BaseModel):
     internal_deadline: str | None = None
     note: str | None = None
     evidence_url: str | None = None
+
+
+class SavedMissionFilterCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    filters: dict[str, str] = Field(default_factory=dict)
 
 
 class ChecklistPatch(BaseModel):
@@ -787,6 +794,7 @@ def mission_tasks(
     priority: str | None = None,
     owner: str | None = None,
     content_type: str | None = None,
+    due_status: str | None = Query(default=None, pattern="^(overdue|upcoming)$"),
     q: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -799,8 +807,82 @@ def mission_tasks(
         owner=owner,
         content_type=content_type,
         query=q,
+        due_status=due_status,
         limit=limit,
         offset=offset,
+    )
+
+
+@app.get("/missions/{mission_id}/saved-filters")
+def mission_saved_filters(
+    mission_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    return mission_store.list_saved_filters(mission_id, session["username"])
+
+
+@app.post("/missions/{mission_id}/saved-filters")
+def mission_saved_filter_create(
+    mission_id: int,
+    payload: SavedMissionFilterCreate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        return mission_store.save_filter(
+            mission_id,
+            session["username"],
+            payload.name,
+            payload.filters,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Missão não encontrada.")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.delete("/missions/{mission_id}/saved-filters/{filter_id}")
+def mission_saved_filter_delete(
+    mission_id: int,
+    filter_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, bool]:
+    try:
+        mission_store.delete_saved_filter(mission_id, filter_id, session["username"])
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Filtro salvo não encontrado.")
+    return {"ok": True}
+
+
+@app.get("/missions/{mission_id}/weekly-report")
+def mission_weekly_report(
+    mission_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        return mission_store.weekly_report(mission_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Missão não encontrada.")
+
+
+@app.get("/missions/{mission_id}/export.xlsx")
+def mission_export_xlsx(
+    mission_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> StreamingResponse:
+    try:
+        content = mission_store.export_tasks_xlsx(mission_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Missão não encontrada.")
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="missao-neruds-{mission_id}-controle-master.xlsx"'
+            )
+        },
     )
 
 

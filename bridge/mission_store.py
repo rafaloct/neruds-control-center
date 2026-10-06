@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import zipfile
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as xml_escape
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR.parent / "data"
@@ -312,6 +315,17 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS mission_saved_filter (
+                id INTEGER PRIMARY KEY,
+                mission_id INTEGER NOT NULL REFERENCES mission(id) ON DELETE CASCADE,
+                actor TEXT NOT NULL,
+                name TEXT NOT NULL,
+                filters_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(mission_id, actor, name)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_task_mission_stage
                 ON mission_task(mission_id, current_stage);
             CREATE INDEX IF NOT EXISTS idx_task_priority
@@ -320,6 +334,8 @@ def init_db() -> None:
                 ON mission_task(primary_owner);
             CREATE INDEX IF NOT EXISTS idx_event_task
                 ON mission_event(task_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_saved_filter_mission_actor
+                ON mission_saved_filter(mission_id, actor);
             """
         )
 
@@ -576,13 +592,41 @@ def count_tasks(mission_id: int) -> int:
         )
 
 
+def _deadline_date(value: Any) -> date | None:
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip()
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        pass
+    try:
+        return date(1899, 12, 30) + timedelta(days=int(float(text)))
+    except ValueError:
+        return None
+
+
+def _deadline_status(deadline: date | None, stage: str | None) -> str | None:
+    if not deadline or stage == "Concluído":
+        return None
+    today = datetime.now(timezone.utc).date()
+    if deadline < today:
+        return "overdue"
+    if deadline <= today + timedelta(days=7):
+        return "upcoming"
+    return None
+
+
 def dashboard(mission_id: int) -> dict[str, Any]:
     with connect() as conn:
         mission = conn.execute("SELECT * FROM mission WHERE id=?", (mission_id,)).fetchone()
         if not mission:
             raise KeyError("mission_not_found")
         tasks = conn.execute(
-            "SELECT priority,content_type,current_stage,primary_owner FROM mission_task WHERE mission_id=?",
+            """
+            SELECT priority,content_type,current_stage,primary_owner,internal_deadline
+            FROM mission_task WHERE mission_id=?
+            """,
             (mission_id,),
         ).fetchall()
         event_count = conn.execute(
@@ -600,6 +644,16 @@ def dashboard(mission_id: int) -> dict[str, Any]:
     owners = Counter((row["primary_owner"] or "Não atribuído") for row in tasks)
     total = len(tasks)
     concluded = stages.get("Concluído", 0)
+    overdue = sum(
+        _deadline_status(_deadline_date(row["internal_deadline"]), row["current_stage"])
+        == "overdue"
+        for row in tasks
+    )
+    upcoming = sum(
+        _deadline_status(_deadline_date(row["internal_deadline"]), row["current_stage"])
+        == "upcoming"
+        for row in tasks
+    )
 
     result = dict(mission)
     result["workflow"] = json.loads(result.pop("workflow_json"))
@@ -613,6 +667,8 @@ def dashboard(mission_id: int) -> dict[str, Any]:
             "by_type": dict(types),
             "by_owner": dict(owners),
             "event_count": event_count,
+            "overdue": overdue,
+            "upcoming": upcoming,
         }
     )
     return result
@@ -626,6 +682,7 @@ def list_tasks(
     owner: str | None = None,
     content_type: str | None = None,
     query: str | None = None,
+    due_status: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -648,9 +705,6 @@ def list_tasks(
 
     clause = " AND ".join(where)
     with connect() as conn:
-        total = conn.execute(
-            f"SELECT COUNT(*) FROM mission_task WHERE {clause}", args
-        ).fetchone()[0]
         rows = conn.execute(
             f"""
             SELECT * FROM mission_task
@@ -658,16 +712,29 @@ def list_tasks(
             ORDER BY
               CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 9 END,
               spreadsheet_row
-            LIMIT ? OFFSET ?
             """,
-            [*args, max(1, min(limit, 500)), max(0, offset)],
+            args,
         ).fetchall()
-    return {"total": int(total), "items": [_task_row(row) for row in rows]}
+    items = [_task_row(row) for row in rows]
+    if due_status:
+        items = [item for item in items if item["deadline_status"] == due_status]
+    total = len(items)
+    bounded_limit = max(1, min(limit, 500))
+    return {
+        "total": total,
+        "items": items[max(0, offset) : max(0, offset) + bounded_limit],
+    }
 
 
 def _task_row(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["public_check_ok"] = bool(data["public_check_ok"])
+    due_date = _deadline_date(data.get("internal_deadline"))
+    data["deadline_date"] = due_date.isoformat() if due_date else None
+    data["deadline_status"] = _deadline_status(
+        due_date,
+        data.get("current_stage"),
+    )
     data.pop("raw_json", None)
     return data
 
@@ -871,6 +938,212 @@ def list_references() -> list[str]:
     return [row["section"] for row in rows]
 
 
+def list_saved_filters(mission_id: int, actor: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id,name,filters_json,created_at,updated_at
+            FROM mission_saved_filter
+            WHERE mission_id=? AND actor=?
+            ORDER BY name
+            """,
+            (mission_id, actor),
+        ).fetchall()
+    return [{**dict(row), "filters": json.loads(row["filters_json"])} for row in rows]
+
+
+def save_filter(
+    mission_id: int,
+    actor: str,
+    name: str,
+    filters: dict[str, str],
+) -> dict[str, Any]:
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("filter name is required")
+    now = utcnow()
+    with connect() as conn:
+        exists = conn.execute("SELECT 1 FROM mission WHERE id=?", (mission_id,)).fetchone()
+        if not exists:
+            raise KeyError("mission_not_found")
+        conn.execute(
+            """
+            INSERT INTO mission_saved_filter(mission_id,actor,name,filters_json,created_at,updated_at)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(mission_id,actor,name) DO UPDATE SET
+              filters_json=excluded.filters_json,
+              updated_at=excluded.updated_at
+            """,
+            (mission_id, actor, clean_name, _json(filters), now, now),
+        )
+        row = conn.execute(
+            """
+            SELECT id,name,filters_json,created_at,updated_at
+            FROM mission_saved_filter
+            WHERE mission_id=? AND actor=? AND name=?
+            """,
+            (mission_id, actor, clean_name),
+        ).fetchone()
+        conn.commit()
+    return {**dict(row), "filters": json.loads(row["filters_json"])}
+
+
+def delete_saved_filter(mission_id: int, filter_id: int, actor: str) -> None:
+    with connect() as conn:
+        deleted = conn.execute(
+            """
+            DELETE FROM mission_saved_filter
+            WHERE id=? AND mission_id=? AND actor=?
+            """,
+            (filter_id, mission_id, actor),
+        ).rowcount
+        conn.commit()
+    if not deleted:
+        raise KeyError("saved_filter_not_found")
+
+
+def weekly_report(mission_id: int) -> dict[str, Any]:
+    summary = dashboard(mission_id)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    with connect() as conn:
+        task_events = conn.execute(
+            """
+            SELECT e.event_type,e.actor,e.created_at,t.title
+            FROM mission_event e
+            JOIN mission_task t ON t.id=e.task_id
+            WHERE t.mission_id=? AND e.created_at>=?
+            ORDER BY e.created_at DESC
+            """,
+            (mission_id, cutoff),
+        ).fetchall()
+        work_events = conn.execute(
+            """
+            SELECT e.event_type,e.actor,e.created_at,w.title
+            FROM mission_work_event e
+            JOIN mission_work_item w ON w.id=e.work_item_id
+            WHERE w.mission_id=? AND e.created_at>=?
+            ORDER BY e.created_at DESC
+            """,
+            (mission_id, cutoff),
+        ).fetchall()
+    events = [dict(event) for event in [*task_events, *work_events]]
+    events.sort(key=lambda event: event["created_at"], reverse=True)
+    return {
+        "generated_at": utcnow(),
+        "period_start": cutoff,
+        "summary": {
+            key: summary[key]
+            for key in (
+                "total_tasks",
+                "concluded",
+                "progress_percent",
+                "overall_total",
+                "overall_concluded",
+                "overall_progress_percent",
+                "overdue",
+                "upcoming",
+                "by_owner",
+                "by_stage",
+            )
+        },
+        "recent_events": events,
+    }
+
+
+def export_tasks_xlsx(mission_id: int) -> bytes:
+    dashboard(mission_id)
+    items = list_tasks(mission_id, limit=500)["items"]
+    headers = [
+        "ID",
+        "Linha",
+        "Prioridade",
+        "Tipo",
+        "Título",
+        "Responsável",
+        "Revisor cruzado",
+        "Etapa",
+        "Prazo interno",
+        "Status do prazo",
+        "Evidência",
+        "Fonte confirmada",
+        "Observações",
+    ]
+    rows = [
+        [
+            item.get("source_record_id"),
+            item.get("spreadsheet_row"),
+            item.get("priority"),
+            item.get("content_type"),
+            item.get("title"),
+            item.get("primary_owner"),
+            item.get("cross_reviewer"),
+            item.get("current_stage"),
+            item.get("deadline_date") or item.get("internal_deadline"),
+            item.get("deadline_status"),
+            item.get("evidence"),
+            item.get("confirmed_source"),
+            item.get("observations"),
+        ]
+        for item in items
+    ]
+
+    def cell(column: int, row: int, value: Any) -> str:
+        ref = f"{chr(65 + column)}{row}"
+        return f'<c r="{ref}" t="inlineStr"><is><t>{xml_escape(str(value or ""))}</t></is></c>'
+
+    sheet_rows = [
+        f'<row r="1">{"".join(cell(column, 1, value) for column, value in enumerate(headers))}</row>'
+    ]
+    for row_number, values in enumerate(rows, start=2):
+        sheet_rows.append(
+            f'<row r="{row_number}">'
+            f'{"".join(cell(column, row_number, value) for column, value in enumerate(values))}'
+            "</row>"
+        )
+    worksheet = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f"<sheetData>{''.join(sheet_rows)}</sheetData></worksheet>"
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<sheets><sheet name="Controle Master" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        "</Types>"
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        'Target="xl/workbook.xml"/></Relationships>'
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        'Target="worksheets/sheet1.xml"/></Relationships>'
+    )
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", root_rels)
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        archive.writestr("xl/worksheets/sheet1.xml", worksheet)
+    return output.getvalue()
+
+
 init_db()
 
 
@@ -886,7 +1159,7 @@ def dashboard(mission_id: int) -> dict[str, Any]:
 
         tasks = conn.execute(
             """
-            SELECT priority,content_type,current_stage,primary_owner
+            SELECT priority,content_type,current_stage,primary_owner,internal_deadline
             FROM mission_task WHERE mission_id=?
             """,
             (mission_id,),
@@ -923,6 +1196,16 @@ def dashboard(mission_id: int) -> dict[str, Any]:
 
     total = len(tasks)
     concluded = stages.get("Concluído", 0)
+    overdue = sum(
+        _deadline_status(_deadline_date(row["internal_deadline"]), row["current_stage"])
+        == "overdue"
+        for row in tasks
+    )
+    upcoming = sum(
+        _deadline_status(_deadline_date(row["internal_deadline"]), row["current_stage"])
+        == "upcoming"
+        for row in tasks
+    )
     work_total = len(work_items)
     work_concluded = sum(1 for row in work_items if bool(row["completed"]))
     overall_total = total + work_total
@@ -955,6 +1238,8 @@ def dashboard(mission_id: int) -> dict[str, Any]:
             "by_priority": dict(priorities),
             "by_type": dict(types),
             "by_owner": dict(owners),
+            "overdue": overdue,
+            "upcoming": upcoming,
             "work_by_section": dict(work_sections),
             "event_count": event_count,
             "work_event_count": work_event_count,

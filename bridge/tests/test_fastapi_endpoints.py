@@ -290,6 +290,52 @@ async def test_mission_endpoints(async_client, extensionista_session, seeded_mis
     assert res_check.status_code == 200
 
 
+async def test_mission_sla_filters_reports_exports_and_saved_filters(
+    async_client, extensionista_session, seeded_mission
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+    mission_store.update_task(
+        task["id"],
+        actor="extensionista.test",
+        changes={"internal_deadline": "2020-01-01"},
+    )
+
+    res_tasks = await async_client.get(
+        "/missions/1/tasks?due_status=overdue",
+        headers=headers,
+    )
+    assert res_tasks.status_code == 200
+    assert any(item["id"] == task["id"] for item in res_tasks.json()["items"])
+
+    res_save = await async_client.post(
+        "/missions/1/saved-filters",
+        json={"name": "P0 atrasadas", "filters": {"priority": "P0", "due_status": "overdue"}},
+        headers=headers,
+    )
+    assert res_save.status_code == 200
+    filter_id = res_save.json()["id"]
+    assert (await async_client.get("/missions/1/saved-filters", headers=headers)).status_code == 200
+    assert (
+        await async_client.delete(
+            f"/missions/1/saved-filters/{filter_id}",
+            headers=headers,
+        )
+    ).json() == {"ok": True}
+
+    res_report = await async_client.get("/missions/1/weekly-report", headers=headers)
+    assert res_report.status_code == 200
+    assert res_report.json()["summary"]["overdue"] >= 1
+
+    res_export = await async_client.get("/missions/1/export.xlsx", headers=headers)
+    assert res_export.status_code == 200
+    assert res_export.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert res_export.content[:2] == b"PK"
+
+
 async def test_opportunity_manual_capture_endpoint(async_client, extensionista_session):
     token, _ = extensionista_session
     headers = {"Authorization": f"Bearer {token}"}
