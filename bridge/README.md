@@ -10,6 +10,22 @@ uv run fastapi dev
 uv run pytest -q
 ```
 
+## Missão operacional
+
+O Controle Master preserva as 205 verificações principais e as 73 atividades
+complementares da planilha de origem. A API da missão permite filtrar tarefas
+atrasadas (`due_status=overdue`) ou previstas para os próximos sete dias
+(`due_status=upcoming`), salvar filtros por usuário e consultar o relatório
+semanal em `GET /missions/{mission_id}/weekly-report`.
+
+`GET /missions/{mission_id}/export.xlsx` exporta o Controle Master em XLSX,
+incluindo responsáveis, revisão cruzada, prazo, evidências e rastreabilidade.
+
+A reatribuição é controlada no backend: apenas sessões com `can_review` podem
+alterar `primary_owner`, `cross_reviewer` ou `internal_deadline`. Extensionistas
+continuam autorizados a atualizar evidências, fontes, observações, checklists e
+etapas operacionais.
+
 ## Fluxo editorial
 
 Toda notícia criada pelo bridge é registrada como rascunho e entra na fila de

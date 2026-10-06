@@ -1,5 +1,7 @@
 import pytest
 import mission_store
+import zipfile
+from io import BytesIO
 
 
 def test_seed_from_json(temp_db):
@@ -37,6 +39,9 @@ def test_mission_dashboard(seeded_mission):
     assert "by_owner" in dash
     assert "work_total" in dash
     assert "overall_total" in dash
+    assert dash["total_tasks"] == 205
+    assert dash["work_total"] == 73
+    assert dash["overall_total"] == 278
 
 
 def test_mission_dashboard_not_found(temp_db):
@@ -204,3 +209,37 @@ def test_work_item_not_found(temp_db):
 
     with pytest.raises(KeyError, match="work_item_not_found"):
         mission_store.update_work_item(99999, actor="test", completed=True)
+
+
+def test_sla_saved_filters_weekly_report_and_xlsx(seeded_mission):
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+    mission_store.update_task(
+        task["id"],
+        actor="test.user",
+        changes={"internal_deadline": "2020-01-01"},
+        note="Prazo definido",
+    )
+
+    overdue = mission_store.list_tasks(1, due_status="overdue", limit=500)
+    assert any(item["id"] == task["id"] for item in overdue["items"])
+    assert mission_store.dashboard(1)["overdue"] >= 1
+
+    saved = mission_store.save_filter(
+        1,
+        "test.user",
+        "Pendências críticas",
+        {"priority": "P0", "due_status": "overdue"},
+    )
+    assert saved["filters"]["due_status"] == "overdue"
+    assert mission_store.list_saved_filters(1, "test.user")[0]["name"] == "Pendências críticas"
+    mission_store.delete_saved_filter(1, saved["id"], "test.user")
+    assert mission_store.list_saved_filters(1, "test.user") == []
+
+    report = mission_store.weekly_report(1)
+    assert report["summary"]["overdue"] >= 1
+    assert report["recent_events"]
+
+    workbook = mission_store.export_tasks_xlsx(1)
+    with zipfile.ZipFile(BytesIO(workbook)) as archive:
+        assert "xl/worksheets/sheet1.xml" in archive.namelist()
+        assert "Controle Master" in archive.read("xl/workbook.xml").decode()
