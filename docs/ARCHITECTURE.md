@@ -17,7 +17,7 @@ Perfis previstos:
 - Coordenação: publicar, programar publicação, gerenciar taxonomias e usuários editoriais.
 - TI: saúde, backup, restauração, logs, cache, cron, módulos e atualizações.
 
-### 2. Bridge no LARGeo
+### 2. Bridge no host de operação
 
 FastAPI restrito à Tailscale. Centraliza capacidades que não devem existir no cliente.
 
@@ -25,7 +25,7 @@ Responsabilidades:
 
 - proxy opcional para JSON:API e CORS;
 - diagnóstico do portal;
-- diagnóstico da Tailscale e srv1011336;
+- diagnóstico da Tailscale e do VPS;
 - trilha de auditoria;
 - tarefas Drush permitidas por allowlist;
 - backups e teste de restauração;
@@ -34,7 +34,7 @@ Responsabilidades:
 
 Nenhuma senha root deve ser embutida no Flutter.
 
-### 3. Drupal no srv1011336
+### 3. Drupal no VPS
 
 Continua sendo a fonte de verdade.
 

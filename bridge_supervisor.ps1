@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Continue'
-$root = 'D:\AI-Shared\neruds-control-center\bridge'
+$root = Join-Path $PSScriptRoot 'bridge'
 $health = 'http://127.0.0.1:8787/health'
 Set-Location $root
 

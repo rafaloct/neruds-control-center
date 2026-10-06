@@ -13,10 +13,7 @@ class EditorialPage extends StatefulWidget {
 }
 
 class _EditorialPageState extends State<EditorialPage> {
-  static const _bridgeUrl = String.fromEnvironment(
-    'NERUDS_BRIDGE_URL',
-    defaultValue: 'https://largeo.tail2faed0.ts.net:8443',
-  );
+  static const _bridgeUrl = String.fromEnvironment('NERUDS_BRIDGE_URL');
 
   final _loginFormKey = GlobalKey<FormState>();
   final _username = TextEditingController();
@@ -54,6 +51,12 @@ class _EditorialPageState extends State<EditorialPage> {
   }
 
   String _endpoint(String path) {
+    if (_bridgeUrl.isEmpty) {
+      throw StateError(
+        'NERUDS_BRIDGE_URL não configurada. Execute o app com '
+        '--dart-define=NERUDS_BRIDGE_URL=https://<bridge>:<porta>',
+      );
+    }
     final base = _bridgeUrl.endsWith('/')
         ? _bridgeUrl.substring(0, _bridgeUrl.length - 1)
         : _bridgeUrl;

@@ -1,14 +1,14 @@
 $ErrorActionPreference = 'Stop'
 
 $bridgeUrl = 'http://127.0.0.1:8787'
-$projectRoot = 'D:\AI-Shared\neruds-control-center'
+$projectRoot = $PSScriptRoot
 $bridgeRoot = Join-Path $projectRoot 'bridge'
 $appExe = Join-Path $projectRoot 'app\build\windows\x64\runner\Release\neruds_control_center.exe'
 
 function Test-NerudsBridge {
     try {
         $health = Invoke-RestMethod -Uri "$bridgeUrl/health" -TimeoutSec 2
-        return ($health.ok -eq $true -and $health.version -eq '0.3.3')
+        return ($health.ok -eq $true)
     }
     catch {
         return $false

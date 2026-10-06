@@ -21,7 +21,7 @@ Use esta skill para diagnóstico e encaminhamento técnico.
 
 1. verificar disponibilidade do portal;
 2. verificar JSON:API;
-3. verificar conectividade do LARGeo com o servidor;
+3. verificar conectividade do host do bridge com o servidor;
 4. consultar versões e estado geral por mecanismos autorizados;
 5. registrar alertas e pendências;
 6. encaminhar ações administrativas somente ao perfil técnico.

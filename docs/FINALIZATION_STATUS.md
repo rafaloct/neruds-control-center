@@ -30,11 +30,11 @@ O Uvicorn escuta somente em:
 
 A tailnet publica:
 
-`https://largeo.tail2faed0.ts.net:8443`
+`https://<host-bridge>.<tailnet>.ts.net:8443`
 
 por Tailscale Serve para `http://127.0.0.1:8787`.
 
-Isso substitui o acesso HTTP direto anterior em `100.111.132.8:8787`.
+Isso substitui o acesso HTTP direto anterior em `<ip-tailscale-do-host>:8787`.
 
 ## Identidade e sessão
 
@@ -114,7 +114,7 @@ Validação:
 - IMAPS 993: Verify return code 0
 - HTTPS 8443: Verify return code 0
 
-Notificações do bridge usam conexão Tailscale para `100.111.132.36:25`, identidade TLS `mail.neruds.org`, STARTTLS validado e entrega local para `admin@neruds.org`, sem senha SMTP armazenada.
+Notificações do bridge usam conexão Tailscale para `<ip-tailscale-do-vps>:25`, identidade TLS `mail.neruds.org`, STARTTLS validado e entrega local para `admin@neruds.org`, sem senha SMTP armazenada.
 
 ## Missão do estagiário
 
@@ -152,7 +152,7 @@ SHA256:
 
 ## Único gate fora do release interno
 
-O projeto possui `secrets/android/key.properties`, mas não há keystore `.jks/.keystore` disponível no LARGeo ou projeto.
+O projeto possui `secrets/android/key.properties`, mas não há keystore `.jks/.keystore` disponível no host de operação ou projeto.
 
 Consequência: Android está concluído para teste/uso interno como APK debug, mas ainda não para distribuição assinada em loja.
 

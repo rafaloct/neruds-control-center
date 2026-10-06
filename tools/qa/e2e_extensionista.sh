@@ -4,7 +4,7 @@ USER_NAME='extensionista.bridge.test'
 USER_MAIL='extensionista.bridge.test@neruds.org'
 PASS="Tmp!$(openssl rand -hex 12)Aa1"
 TITLE='[TESTE AUTOMATICO] Bridge Extensionista'
-BRIDGE='https://largeo.tail2faed0.ts.net:8443'
+BRIDGE="${NERUDS_BRIDGE_URL:?defina NERUDS_BRIDGE_URL (ex.: https://<bridge-tailnet>:8443)}"
 CREATED_NODE_ID=''
 
 cleanup() {

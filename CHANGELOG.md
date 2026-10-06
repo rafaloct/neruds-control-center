@@ -2,6 +2,16 @@
 
 Todas as mudanças relevantes serão registradas neste arquivo.
 
+## [Unreleased]
+
+### Security
+
+- removidos identificadores de infra interna (hostname Tailscale, IPs tailnet, hostname do VPS, paths locais de operação) do código, scripts e documentação, preparando o repositório para visibilidade pública;
+- app Flutter passa a exigir `--dart-define=NERUDS_BRIDGE_URL` para as funções privadas — sem bridge configurada, permanece apenas a leitura pública do portal;
+- defaults do bridge para host VPS, origens CORS e SMTP agora são vazios — os endpoints `/infra/status` e `/mail/status` degradam para "não configurado" em vez de apontar para infra real;
+- `.env.example` virou template com placeholders; valores reais ficam no `.env` local e em GitHub Secrets;
+- scripts de operação (`start_bridge.ps1`, `bridge_supervisor.ps1`, `web_supervisor.ps1`, `NERUDS-Control-Center.ps1`, `export_mission_seed.ps1`, `e2e_extensionista.sh`) agora derivam caminhos do próprio checkout ou de variáveis de ambiente.
+
 ## [1.0.0-internal.1] - 2026-10-05
 
 ### Added
