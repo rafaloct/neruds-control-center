@@ -1,14 +1,24 @@
 set -euo pipefail
 cd /var/www/html
 
-ADMIN_NAME='e2e.admin.test'
-ADMIN_MAIL='e2e.admin.test@neruds.org'
-TARGET_NAME='e2e.target.test'
-TARGET_MAIL='e2e.target.test@neruds.org'
+# Sufixo unico por execucao: nunca colide com contas preexistentes.
+SUFFIX="$(date +%s)"
+ADMIN_NAME="e2e.admin.${SUFFIX}"
+ADMIN_MAIL="${ADMIN_NAME}@neruds.org"
+TARGET_NAME="e2e.target.${SUFFIX}"
+TARGET_MAIL="${TARGET_NAME}@neruds.org"
 PASS="Tmp!$(openssl rand -hex 12)Aa1"
-BRIDGE='https://largeo.tail2faed0.ts.net:8443'
+BRIDGE="${E2E_BRIDGE:-https://largeo.tail2faed0.ts.net:8443}"
+
+# Contas efetivamente criadas por ESTA execucao (cleanup nunca toca em outras).
+CREATED_USERS=()
 
 say() { echo "== $*"; }
+
+user_exists() {
+  vendor/bin/drush user:information "$1" --format=json 2>/dev/null \
+    | grep -q '"uid"'
+}
 
 drupal_user() {
   vendor/bin/drush user:information "$1" --format=json 2>/dev/null \
@@ -30,15 +40,27 @@ else:
 }
 
 cleanup() {
-  for U in "$ADMIN_NAME" "$TARGET_NAME"; do
+  for U in "${CREATED_USERS[@]:-}"; do
+    [ -n "$U" ] || continue
     vendor/bin/drush user:cancel "$U" --delete-content -y >/dev/null 2>&1 || true
   done
 }
 trap cleanup EXIT
 
-# --- setup: disposable content_editor (has 'administer neruds extensionistas')
+say "execucao $SUFFIX — usuarios de teste: $ADMIN_NAME / $TARGET_NAME"
+
+# Aborta se o nome ja existir (defesa extra alem do sufixo).
+for U in "$ADMIN_NAME" "$TARGET_NAME"; do
+  if user_exists "$U"; then
+    say "ABORT: $U ja existe no Drupal — recusando prosseguir"
+    exit 1
+  fi
+done
+
+# --- setup: disposable content_editor (tem 'administer neruds extensionistas')
 say "setup: criando $ADMIN_NAME (content_editor)"
 vendor/bin/drush user:create "$ADMIN_NAME" --mail="$ADMIN_MAIL" --password="$PASS" --format=null >/dev/null
+CREATED_USERS+=("$ADMIN_NAME")
 vendor/bin/drush user:role:add content_editor "$ADMIN_NAME" >/dev/null
 
 # --- 1. login + can_admin_users
@@ -66,6 +88,7 @@ CREATE=$(curl -sS -w '\n%{http_code}' -H 'Content-Type: application/json' -H "$A
   -d "$(python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"mail":sys.argv[2]}))' "$TARGET_NAME" "$TARGET_MAIL")" \
   "$BRIDGE/identity/accounts")
 [ "$(printf '%s' "$CREATE" | tail -n1)" = '201' ]
+CREATED_USERS+=("$TARGET_NAME")
 CBODY=$(printf '%s' "$CREATE" | sed '$d')
 TARGET_UID=$(printf '%s' "$CBODY" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["account"]["drupal_uid"])')
 printf '%s' "$CBODY" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["drupal"].get("temporary_password"), "sem senha temporaria na resposta"'
@@ -85,22 +108,28 @@ printf '%s' "$DJSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); asse
 say "PASS status=0 no Drupal"
 
 # --- 5. evidence upload + download (byte round-trip)
-say "5/8 evidência por arquivo (upload -> download)"
-TASK_ID=$(curl -sS -H "$AUTH" "$BRIDGE/missions/1/tasks?limit=1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["items"][0]["id"])')
-printf 'E2E evidence payload %s' "$(date -Is)" > /tmp/e2e_evidence.txt
-UP=$(curl -sS -w '\n%{http_code}' -X POST -H "$AUTH" \
-  -F "file=@/tmp/e2e_evidence.txt;filename=e2e-prova.txt;type=text/plain" \
-  -F "note=anexo e2e" "$BRIDGE/mission-tasks/$TASK_ID/evidence-files")
-[ "$(printf '%s' "$UP" | tail -n1)" = '201' ]
-EV_ID=$(printf '%s' "$UP" | sed '$d' | python3 -c 'import json,sys; print(json.load(sys.stdin)["evidence"]["id"])')
-curl -sS -H "$AUTH" "$BRIDGE/mission-evidence/$EV_ID" -o /tmp/e2e_evidence_dl.txt
-cmp -s /tmp/e2e_evidence.txt /tmp/e2e_evidence_dl.txt
-say "PASS evidência id=$EV_ID na task $TASK_ID (bytes conferem)"
+# ATENCAO: este passo anexa um arquivo real numa tarefa de producao.
+# So executa com E2E_ALLOW_PROD_EVIDENCE=1; caso contrario e pulado.
+if [ "${E2E_ALLOW_PROD_EVIDENCE:-0}" = '1' ]; then
+  say "5/8 evidência por arquivo (upload -> download) [ESCREVE EM PRODUCAO]"
+  TASK_ID=$(curl -sS -H "$AUTH" "$BRIDGE/missions/1/tasks?limit=1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["items"][0]["id"])')
+  printf 'E2E evidence payload %s' "$(date -Is)" > /tmp/e2e_evidence.txt
+  UP=$(curl -sS -w '\n%{http_code}' -X POST -H "$AUTH" \
+    -F "file=@/tmp/e2e_evidence.txt;filename=e2e-prova-${SUFFIX}.txt;type=text/plain" \
+    -F "note=anexo e2e ${SUFFIX}" "$BRIDGE/mission-tasks/$TASK_ID/evidence-files")
+  [ "$(printf '%s' "$UP" | tail -n1)" = '201' ]
+  EV_ID=$(printf '%s' "$UP" | sed '$d' | python3 -c 'import json,sys; print(json.load(sys.stdin)["evidence"]["id"])')
+  curl -sS -H "$AUTH" "$BRIDGE/mission-evidence/$EV_ID" -o /tmp/e2e_evidence_dl.txt
+  cmp -s /tmp/e2e_evidence.txt /tmp/e2e_evidence_dl.txt
+  say "PASS evidência id=$EV_ID na task $TASK_ID (bytes conferem)"
+else
+  say "5/8 SKIP evidência — defina E2E_ALLOW_PROD_EVIDENCE=1 para anexar em producao"
+fi
 
 # --- 6. offboarding
 say "6/8 POST /identity/accounts/$TARGET_UID/offboarding"
 CODE=$(curl -sS -o /tmp/e2e_offboard.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H "$AUTH" \
-  -d '{"note": "offboarding e2e"}' "$BRIDGE/identity/accounts/$TARGET_UID/offboarding")
+  -d "{\"note\": \"offboarding e2e ${SUFFIX}\"}" "$BRIDGE/identity/accounts/$TARGET_UID/offboarding")
 [ "$CODE" = '200' ]
 DJSON=$(drupal_user "$TARGET_NAME")
 printf '%s' "$DJSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["status"]==0, d'
@@ -116,7 +145,7 @@ say "PASS checklist"
 say "8/8 GET /identity/events"
 CODE=$(curl -sS -o /tmp/e2e_events.json -w '%{http_code}' -H "$AUTH" "$BRIDGE/identity/events?limit=50")
 [ "$CODE" = '200' ]
-python3 -c 'import json; items=json.load(open("/tmp/e2e_events.json")).get("items",[]); assert any(e.get("username")=="e2e.target.test" for e in items), "sem eventos do alvo"'
+python3 -c 'import json,sys; items=json.load(open("/tmp/e2e_events.json")).get("items",[]); target=sys.argv[1]; assert any(e.get("username")==target for e in items), "sem eventos do alvo"' "$TARGET_NAME"
 say "PASS trilha de eventos registrada"
 
-say "E2E OK — usuarios de teste removidos; evidencia de teste permanece na task $TASK_ID (sem endpoint de remocao)"
+say "E2E OK — usuarios e2e.*.${SUFFIX} removidos"
