@@ -31,8 +31,8 @@ jobs:
       - name: Compile and import bridge
         working-directory: bridge
         run: |
-          uv run python -m py_compile main.py mission_store.py rss_store.py review_store.py
-          uv run python -c "import main, mission_store, rss_store, review_store; print(main.health()['version'])"
+          uv run python -m py_compile main.py mission_store.py mission_automation.py rss_store.py review_store.py
+          uv run python -c "import main, mission_store, mission_automation, rss_store, review_store; print(main.health()['version'])"
 
   flutter:
     name: Flutter checks
