@@ -98,6 +98,8 @@ class NewsDraftRequest(BaseModel):
     summary: str = Field(default="", max_length=4000)
     body: str = Field(min_length=1)
     publication_date: str | None = None
+    opportunity_item_id: int | None = None
+    mission_task_id: int | None = None
 
 
 class MissionTaskPatch(BaseModel):
@@ -254,6 +256,8 @@ async def _create_news_draft_internal(
     body: str,
     publication_date: str | None,
     session: dict[str, Any],
+    opportunity_item_id: int | None = None,
+    mission_task_id: int | None = None,
 ) -> dict[str, Any]:
     async with drupal_client(session) as client:
         form = await client.get("/node/add/noticia")
@@ -324,6 +328,8 @@ async def _create_news_draft_internal(
                 str(draft_id),
                 title,
                 session["username"],
+                opportunity_item_id=opportunity_item_id,
+                mission_task_id=mission_task_id,
             )
 
         return {
@@ -540,7 +546,12 @@ async def portal_snapshot() -> dict[str, Any]:
 
 
 @app.get("/content/news/drafts")
-async def news_drafts(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+async def news_drafts(
+    status: str | None = Query(default=None),
+    mine_only: bool = Query(default=False),
+    query: str | None = Query(default=None),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
     params = {
         "filter[status]": "0",
         "sort": "-changed",
@@ -564,6 +575,16 @@ async def news_drafts(session: dict[str, Any] = Depends(require_session)) -> dic
                     attrs.get("title", "Sem título"),
                     "Drupal",
                 )
+            if status and (not review or review.get("review_status") != status):
+                continue
+            if mine_only and (not review or review.get("author") != session["username"]):
+                continue
+            if query and query.strip():
+                needle = query.strip().lower()
+                title = (attrs.get("title") or "").lower()
+                author = (review or {}).get("author", "").lower()
+                if needle not in title and needle not in author:
+                    continue
             drafts.append(
                 {
                     "id": item.get("id"),
@@ -593,6 +614,8 @@ async def create_news_draft(
         body=payload.body,
         publication_date=payload.publication_date,
         session=session,
+        opportunity_item_id=payload.opportunity_item_id,
+        mission_task_id=payload.mission_task_id,
     )
     notification = await notify_review(payload.title, session["username"])
     return {
@@ -611,15 +634,24 @@ async def review_news_draft(
     payload: DraftReviewDecision,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    if not session.get("can_review", False):
-        raise HTTPException(
-            status_code=403,
-            detail="Sua conta não tem permissão para revisar notícias.",
-        )
-
     current = review_store.get_review(str(nid))
     if not current:
         raise HTTPException(status_code=404, detail="Rascunho não registrado para revisão.")
+
+    if payload.status in {"approved", "changes_requested"}:
+        if not session.get("can_review", False):
+            raise HTTPException(
+                status_code=403,
+                detail="Sua conta não tem permissão para revisar notícias.",
+            )
+    elif payload.status == "pending":
+        if not session.get("can_review", False) and current["author"] != session["username"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Sua conta não tem permissão para reenviar o rascunho de terceiros.",
+            )
+    else:
+        raise HTTPException(status_code=422, detail="Status de revisão inválido.")
 
     if payload.status == "changes_requested" and not (payload.note or "").strip():
         raise HTTPException(
@@ -1062,6 +1094,7 @@ async def opportunity_create_draft(
         body=body,
         publication_date=None,
         session=session,
+        opportunity_item_id=item_id,
     )
     drupal_id = str(created.get("id") or "")
     rss_store.mark_draft(item_id, session["username"], drupal_id)
