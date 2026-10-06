@@ -319,7 +319,19 @@ class _ControlHomeState extends State<ControlHome> {
               : NavigationBar(
                   selectedIndex: index,
                   onDestinationSelected: _select,
-                  destinations: destinations,
+                  destinations: destinations
+                      .map(
+                        (item) => NavigationDestination(
+                          icon: item.icon,
+                          label: switch (item.label) {
+                            'Oportunidades' => 'Pautas',
+                            'Administração' => 'Contas',
+                            _ => item.label,
+                          },
+                          tooltip: item.label,
+                        ),
+                      )
+                      .toList(),
                 ),
         );
       },

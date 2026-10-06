@@ -77,7 +77,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(AppSession.instance.authenticated, isTrue);
     expect(find.byKey(const Key('news-title')), findsOneWidget);
-    expect(find.text('Administração'), findsNothing);
+    expect(find.text('Contas'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -124,13 +124,13 @@ void main() {
     _session(admin: true);
     await tester.pumpWidget(const NerudsControlApp());
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Administração'));
+    await tester.tap(find.text('Contas'));
     await tester.pumpAndSettle();
     expect(find.text('Usuários e papéis'), findsOneWidget);
     AppSession.instance.expire();
     await tester.pumpAndSettle();
     expect(find.text('Usuários e papéis'), findsNothing);
-    expect(find.text('Administração'), findsNothing);
+    expect(find.text('Contas'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
