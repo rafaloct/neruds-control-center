@@ -30,6 +30,7 @@ final class ControlController extends ControllerBase {
       'roles' => array_values($this->account->getRoles()),
       'can_review' => $this->account->hasPermission('review neruds news'),
       'can_publish' => $this->account->hasPermission('publish neruds news'),
+      'can_admin_users' => $this->account->hasPermission('administer neruds extensionistas'),
     ]);
   }
 

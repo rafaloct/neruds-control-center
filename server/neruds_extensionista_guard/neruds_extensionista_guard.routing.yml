@@ -20,3 +20,46 @@ neruds_extensionista_guard.publish_news:
     parameters:
       node:
         type: entity:node
+
+neruds_extensionista_guard.extensionistas_list:
+  path: '/neruds-control/extensionistas'
+  methods: [GET]
+  defaults:
+    _controller: '\Drupal\neruds_extensionista_guard\Controller\IdentityController::listAccounts'
+  requirements:
+    _permission: 'administer neruds extensionistas'
+  options:
+    no_cache: TRUE
+
+neruds_extensionista_guard.extensionistas_create:
+  path: '/neruds-control/extensionistas'
+  methods: [POST]
+  defaults:
+    _controller: '\Drupal\neruds_extensionista_guard\Controller\IdentityController::createAccount'
+  requirements:
+    _permission: 'administer neruds extensionistas'
+    _csrf_token: 'TRUE'
+  options:
+    no_cache: TRUE
+
+neruds_extensionista_guard.extensionistas_status:
+  path: '/neruds-control/extensionistas/{uid}/status'
+  methods: [POST]
+  defaults:
+    _controller: '\Drupal\neruds_extensionista_guard\Controller\IdentityController::setStatus'
+  requirements:
+    _permission: 'administer neruds extensionistas'
+    _csrf_token: 'TRUE'
+  options:
+    no_cache: TRUE
+
+neruds_extensionista_guard.extensionistas_password_reset:
+  path: '/neruds-control/extensionistas/{uid}/password-reset'
+  methods: [POST]
+  defaults:
+    _controller: '\Drupal\neruds_extensionista_guard\Controller\IdentityController::passwordReset'
+  requirements:
+    _permission: 'administer neruds extensionistas'
+    _csrf_token: 'TRUE'
+  options:
+    no_cache: TRUE

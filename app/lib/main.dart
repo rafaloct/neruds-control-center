@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'app_session.dart';
 import 'drupal_api.dart';
 import 'editorial_page.dart';
+import 'identity_page.dart';
 import 'mission_page.dart';
 import 'opportunities_page.dart';
 
@@ -419,14 +421,31 @@ class AdminPage extends StatelessWidget {
         ),
         const SizedBox(height: 20),
         ...items.map(
-          (item) => Card(
-            child: ListTile(
-              leading: Icon(item.$3),
-              title: Text(item.$1),
-              subtitle: Text(item.$2),
-              trailing: const Chip(label: Text('controle técnico')),
-            ),
-          ),
+          (item) {
+            final isIdentity = item.$1 == 'Usuários e papéis';
+            final openable = isIdentity && AppSession.instance.canAdminUsers;
+            return Card(
+              child: ListTile(
+                leading: Icon(item.$3),
+                title: Text(item.$1),
+                subtitle: Text(item.$2),
+                trailing: openable
+                    ? const Icon(Icons.chevron_right)
+                    : const Chip(label: Text('controle técnico')),
+                onTap: openable
+                    ? () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => Scaffold(
+                              appBar: AppBar(title: const Text('Identidade')),
+                              body: const IdentityPage(),
+                            ),
+                          ),
+                        )
+                    : null,
+              ),
+            );
+          },
         ),
       ],
     );

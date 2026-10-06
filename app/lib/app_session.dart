@@ -10,6 +10,7 @@ class AppSession extends ChangeNotifier {
   List<String> roles = const [];
   bool canReview = false;
   bool canPublish = false;
+  bool canAdminUsers = false;
 
   bool get authenticated => token != null && token!.isNotEmpty;
 
@@ -24,12 +25,14 @@ class AppSession extends ChangeNotifier {
     List<String> rolesValue = const [],
     bool canReviewValue = false,
     bool canPublishValue = false,
+    bool canAdminUsersValue = false,
   }) {
     token = tokenValue;
     username = usernameValue;
     roles = List.unmodifiable(rolesValue);
     canReview = canReviewValue;
     canPublish = canPublishValue;
+    canAdminUsers = canAdminUsersValue;
     notifyListeners();
   }
 
@@ -39,6 +42,7 @@ class AppSession extends ChangeNotifier {
     roles = const [];
     canReview = false;
     canPublish = false;
+    canAdminUsers = false;
     notifyListeners();
   }
 }

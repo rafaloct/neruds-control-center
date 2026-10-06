@@ -6,6 +6,24 @@ Todas as mudanças relevantes serão registradas neste arquivo.
 
 ### Added
 
+- identidade e ciclo de vida de extensionistas (Onda 5 do roadmap):
+  - módulo Drupal `neruds_extensionista_guard` ganha rotas
+    `/neruds-control/extensionistas*` (roster, criação, bloqueio e link de
+    reset) protegidas pela nova permissão `administer neruds extensionistas`;
+  - bridge expõe `GET /identity/roster`, `POST /identity/accounts`,
+    `POST /identity/accounts/{uid}/status`,
+    `POST /identity/accounts/{uid}/password-reset`,
+    `POST /identity/accounts/{uid}/offboarding`,
+    `GET|POST /identity/accounts/{uid}/checklist` e `GET /identity/events`;
+  - `identity_store` (SQLite `data/identity.sqlite3`) registra contas
+    operacionais, eventos administrativos e checklist de offboarding;
+  - offboarding bloqueia a conta no Drupal, transfere tarefas abertas da
+    missão para outra extensionista e emite alertas (rascunhos pendentes,
+    mailbox Poste.io, sessões Drupal);
+  - reset de senha usa link de uso único do Drupal — a senha temporária de
+    provisão só aparece na resposta de criação e nunca é persistida;
+  - app ganha página "Usuários e papéis" na aba Administração, visível
+    apenas para sessões com `can_admin_users`.
 - automação da missão (Onda 2 do roadmap):
   - `GET /missions/{id}/automation` com sugestão de próximas tarefas P0/P1,
     itens sem evidência, possíveis duplicidades e estado da verificação de

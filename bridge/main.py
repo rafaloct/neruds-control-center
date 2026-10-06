@@ -17,6 +17,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 import httpx
+import identity_store
 import mission_automation
 import mission_store
 import review_store
@@ -169,6 +170,26 @@ class ManualOpportunityCreate(BaseModel):
 class DraftReviewDecision(BaseModel):
     status: str
     note: str | None = Field(default=None, max_length=4000)
+
+
+class IdentityAccountCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=60)
+    mail: str = Field(min_length=5, max_length=254)
+    password: str | None = Field(default=None, min_length=8, max_length=128)
+
+
+class IdentityStatusPatch(BaseModel):
+    active: bool
+
+
+class IdentityCheckPatch(BaseModel):
+    step: str = Field(min_length=2, max_length=60)
+    done: bool
+
+
+class IdentityOffboard(BaseModel):
+    transfer_to: str | None = Field(default=None, max_length=60)
+    note: str | None = Field(default=None, max_length=2000)
 
 
 def tcp_reachable(host: str, port: int, timeout: float = 1.2) -> bool:
@@ -442,6 +463,7 @@ async def login(payload: LoginRequest) -> dict[str, Any]:
             "roles": identity.get("roles", []),
             "can_review": bool(identity.get("can_review", False)),
             "can_publish": bool(identity.get("can_publish", False)),
+            "can_admin_users": bool(identity.get("can_admin_users", False)),
             "cookies": dict(client.cookies),
             "csrf": csrf.text.strip(),
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -455,6 +477,7 @@ async def login(payload: LoginRequest) -> dict[str, Any]:
             "roles": identity.get("roles", []),
             "can_review": bool(identity.get("can_review", False)),
             "can_publish": bool(identity.get("can_publish", False)),
+            "can_admin_users": bool(identity.get("can_admin_users", False)),
             "drupal_user_location": location or str(response.url),
         }
 
@@ -483,6 +506,7 @@ async def me(session: dict[str, Any] = Depends(require_session)) -> dict[str, An
             "roles": session.get("roles", []),
             "can_review": bool(session.get("can_review", False)),
             "can_publish": bool(session.get("can_publish", False)),
+            "can_admin_users": bool(session.get("can_admin_users", False)),
             "drupal_location": probe.headers.get("location", ""),
             "created_at": session["created_at"],
             "last_seen": session["last_seen"],
@@ -1095,6 +1119,304 @@ async def mission_task_drupal_duplicates(
                 }
             )
     return {"task_id": task_id, "bundle": bundle, "matches": matches}
+
+
+# ---------------------------------------------------------------------------
+# Identidade e ciclo de vida de extensionistas (Onda 5)
+# ---------------------------------------------------------------------------
+
+CLOSED_STAGES = {"Concluído", "Bloqueado"}
+
+
+def _require_user_admin(session: dict[str, Any]) -> None:
+    if not session.get("can_admin_users", False):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Gerenciar contas de extensionista requer a permissão "
+                "'administer neruds extensionistas' no Drupal."
+            ),
+        )
+
+
+async def _extensionista_call(
+    session: dict[str, Any],
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    headers = {"Accept": "application/json"}
+    if method != "GET":
+        headers["X-CSRF-Token"] = session["csrf"]
+        headers["Content-Type"] = "application/json"
+    async with drupal_client(session) as client:
+        response = await client.request(method, path, headers=headers, json=payload)
+    if response.status_code >= 400:
+        try:
+            detail: Any = response.json()
+        except ValueError:
+            detail = response.text[:1200]
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={
+                "message": "Drupal recusou a operação de identidade.",
+                "drupal": detail,
+            },
+        )
+    return response.json()
+
+
+def _mission_id() -> int | None:
+    missions = mission_store.mission_list()
+    return missions[0]["id"] if missions else None
+
+
+def _open_tasks_for(username: str) -> list[dict[str, Any]]:
+    mission_id = _mission_id()
+    if mission_id is None:
+        return []
+    items = mission_store.list_tasks(mission_id, owner=username, limit=500)["items"]
+    return [t for t in items if t.get("current_stage") not in CLOSED_STAGES]
+
+
+def _sync_identity_account(
+    drupal_account: dict[str, Any], *, actor: str
+) -> dict[str, Any]:
+    record = identity_store.upsert_account(
+        drupal_account["name"],
+        drupal_uid=drupal_account.get("uid"),
+        mail=drupal_account.get("mail"),
+        active=drupal_account.get("active"),
+    )
+    return record
+
+
+@app.get("/identity/roster")
+async def identity_roster(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _require_user_admin(session)
+    result = await _extensionista_call(session, "GET", "/neruds-control/extensionistas")
+    accounts = result.get("accounts", [])
+    known = {a["username"]: a for a in identity_store.list_accounts()}
+    for account in accounts:
+        name = account.get("name") or ""
+        record = known.get(name)
+        account["open_tasks"] = len(_open_tasks_for(name))
+        account["bridge_record"] = record
+        account["offboarding"] = (
+            identity_store.offboarding_progress(record["id"]) if record else None
+        )
+    return {"accounts": accounts, "actor": session["username"]}
+
+
+@app.post("/identity/accounts", status_code=201)
+async def identity_account_create(
+    payload: IdentityAccountCreate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _require_user_admin(session)
+    body: dict[str, Any] = {"name": payload.name.strip(), "mail": payload.mail.strip()}
+    if payload.password:
+        body["pass"] = payload.password
+    result = await _extensionista_call(
+        session, "POST", "/neruds-control/extensionistas", body
+    )
+    record = _sync_identity_account(result, actor=session["username"])
+    identity_store.record_event(
+        session["username"],
+        "provisioned",
+        account_id=record["id"],
+        username=record["username"],
+        detail={"mail": record.get("mail"), "drupal_uid": record.get("drupal_uid")},
+    )
+    return {"account": record, "drupal": result}
+
+
+@app.post("/identity/accounts/{uid}/status")
+async def identity_account_status(
+    uid: int,
+    payload: IdentityStatusPatch,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _require_user_admin(session)
+    result = await _extensionista_call(
+        session,
+        "POST",
+        f"/neruds-control/extensionistas/{uid}/status",
+        {"active": payload.active},
+    )
+    record = _sync_identity_account(result, actor=session["username"])
+    identity_store.record_event(
+        session["username"],
+        "activated" if payload.active else "blocked",
+        account_id=record["id"],
+        username=record["username"],
+        detail={"drupal_uid": uid},
+    )
+    return {"account": record, "drupal": result}
+
+
+@app.post("/identity/accounts/{uid}/password-reset")
+async def identity_password_reset(
+    uid: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _require_user_admin(session)
+    result = await _extensionista_call(
+        session, "POST", f"/neruds-control/extensionistas/{uid}/password-reset"
+    )
+    record = identity_store.get_account_by_uid(uid)
+    identity_store.record_event(
+        session["username"],
+        "password_reset_issued",
+        account_id=record["id"] if record else None,
+        username=result.get("name"),
+        detail={"drupal_uid": uid},
+    )
+    # O link de reset é entregue apenas nesta resposta; nunca é persistido.
+    return result
+
+
+@app.get("/identity/accounts/{uid}/checklist")
+def identity_checklist(
+    uid: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _require_user_admin(session)
+    record = identity_store.get_account_by_uid(uid)
+    if not record:
+        raise HTTPException(
+            status_code=404, detail="Conta não sincronizada no bridge."
+        )
+    return identity_store.offboarding_progress(record["id"])
+
+
+@app.post("/identity/accounts/{uid}/checklist")
+def identity_checklist_update(
+    uid: int,
+    payload: IdentityCheckPatch,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _require_user_admin(session)
+    record = identity_store.get_account_by_uid(uid)
+    if not record:
+        raise HTTPException(
+            status_code=404, detail="Conta não sincronizada no bridge."
+        )
+    try:
+        item = identity_store.set_check(
+            record["id"], payload.step, payload.done, session["username"]
+        )
+    except KeyError:
+        raise HTTPException(status_code=422, detail="Etapa de offboarding inválida.")
+    identity_store.record_event(
+        session["username"],
+        "checklist_step",
+        account_id=record["id"],
+        username=record["username"],
+        detail={"step": payload.step, "done": payload.done},
+    )
+    return identity_store.offboarding_progress(record["id"]) | {"item": item}
+
+
+@app.post("/identity/accounts/{uid}/offboarding")
+async def identity_offboard(
+    uid: int,
+    payload: IdentityOffboard,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _require_user_admin(session)
+    roster = await _extensionista_call(session, "GET", "/neruds-control/extensionistas")
+    target = next(
+        (a for a in roster.get("accounts", []) if a.get("uid") == uid), None
+    )
+    if target is None:
+        raise HTTPException(
+            status_code=404, detail="Conta extensionista não encontrada no Drupal."
+        )
+    username = target["name"]
+    actor = session["username"]
+
+    record = _sync_identity_account(target, actor=actor)
+
+    transferred = 0
+    if payload.transfer_to:
+        for task in _open_tasks_for(username):
+            mission_store.update_task(
+                task["id"],
+                actor=actor,
+                changes={"primary_owner": payload.transfer_to},
+                note=f"Offboarding de {username}: tarefa transferida para {payload.transfer_to}.",
+            )
+            transferred += 1
+    open_tasks = _open_tasks_for(username)
+
+    identity_store.set_check(
+        record["id"], "tasks_reassigned", transferred > 0 or not open_tasks, actor
+    )
+
+    drupal_result = await _extensionista_call(
+        session,
+        "POST",
+        f"/neruds-control/extensionistas/{uid}/status",
+        {"active": False},
+    )
+    record = _sync_identity_account(drupal_result, actor=actor)
+    record = identity_store.mark_offboarded(username, actor=actor)
+    identity_store.set_check(record["id"], "account_blocked", True, actor)
+
+    identity_store.record_event(
+        actor,
+        "offboarded",
+        account_id=record["id"],
+        username=username,
+        detail={
+            "drupal_uid": uid,
+            "transfer_to": payload.transfer_to,
+            "tasks_transferred": transferred,
+            "pending_drafts": target.get("pending_drafts"),
+            "note": payload.note,
+        },
+    )
+
+    advisories = []
+    if open_tasks and not payload.transfer_to:
+        advisories.append(
+            f"{len(open_tasks)} tarefas abertas continuam atribuídas a {username}; "
+            "informe transfer_to para redistribuí-las."
+        )
+    if (target.get("pending_drafts") or 0) > 0:
+        advisories.append(
+            f"{username} tem {target['pending_drafts']} rascunhos não publicados "
+            "aguardando revisão editorial."
+        )
+    advisories.extend(
+        [
+            "Desative a caixa de e-mail institucional no Poste.io.",
+            "Sessões Drupal existentes expiram por inatividade; encerre-as em "
+            "Pessoas > sessões se necessário.",
+        ]
+    )
+
+    return {
+        "account": record,
+        "tasks_transferred": transferred,
+        "checklist": identity_store.offboarding_progress(record["id"]),
+        "advisories": advisories,
+    }
+
+
+@app.get("/identity/events")
+def identity_events(
+    username: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _require_user_admin(session)
+    return {
+        "items": identity_store.list_events(username=username, limit=limit)
+    }
 
 
 # ---------------------------------------------------------------------------

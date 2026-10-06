@@ -116,6 +116,7 @@ class _EditorialPageState extends State<EditorialPage> {
         rolesValue: roles,
         canReviewValue: data['can_review'] == true,
         canPublishValue: data['can_publish'] == true,
+        canAdminUsersValue: data['can_admin_users'] == true,
       );
       setState(() {
         _token = token;

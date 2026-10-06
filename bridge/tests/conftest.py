@@ -11,6 +11,7 @@ BRIDGE_DIR = Path(__file__).resolve().parent.parent
 if str(BRIDGE_DIR) not in sys.path:
     sys.path.insert(0, str(BRIDGE_DIR))
 
+import identity_store
 import main
 import mission_store
 import review_store
@@ -23,11 +24,14 @@ def temp_db(tmp_path, monkeypatch):
     db_file = tmp_path / "test_missions.sqlite3"
     monkeypatch.setattr(mission_store, "DB_PATH", db_file)
     monkeypatch.setattr(mission_store, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(identity_store, "DB_PATH", tmp_path / "test_identity.sqlite3")
+    monkeypatch.setattr(identity_store, "DATA_DIR", tmp_path)
 
     # Initialize all database schemas
     mission_store.init_db()
     rss_store.init_rss_db()
     review_store.init_review_db()
+    identity_store.init_db()
 
     # Clear main.py in-memory sessions
     main.SESSIONS.clear()
@@ -91,6 +95,26 @@ def publicador_session():
         "can_publish": True,
         "cookies": {"SSESS123": "fake-cookie-publicador"},
         "csrf": "fake-csrf-token-pub",
+        "created_at": mission_store.utcnow(),
+        "last_seen": mission_store.utcnow(),
+    }
+    main.SESSIONS[token] = session
+    return token, session
+
+
+@pytest.fixture
+def admin_session():
+    """Coordinator session with extensionista account administration rights."""
+    token = "test-token-admin"
+    session = {
+        "username": "coordenador.test",
+        "uid": "1",
+        "roles": ["authenticated", "coordenador"],
+        "can_review": True,
+        "can_publish": True,
+        "can_admin_users": True,
+        "cookies": {"SSESS123": "fake-cookie-admin"},
+        "csrf": "fake-csrf-token-admin",
         "created_at": mission_store.utcnow(),
         "last_seen": mission_store.utcnow(),
     }
