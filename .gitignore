@@ -33,6 +33,7 @@ app/*.iml
 data/
 release/
 *.log
+logs/
 *.sqlite
 *.sqlite3
 *.db

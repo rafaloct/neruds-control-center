@@ -1,9 +1,25 @@
-import 'package:flutter/material.dart';
+import 'dart:convert';
 
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+
+import 'app_session.dart';
 import 'drupal_api.dart';
 import 'editorial_page.dart';
 import 'mission_page.dart';
 import 'opportunities_page.dart';
+
+const _adminBridgeUrl = String.fromEnvironment(
+  'NERUDS_BRIDGE_URL',
+  defaultValue: 'https://largeo.tail2faed0.ts.net:8443',
+);
+
+Uri _adminUri(String path) {
+  final base = _adminBridgeUrl.endsWith('/')
+      ? _adminBridgeUrl.substring(0, _adminBridgeUrl.length - 1)
+      : _adminBridgeUrl;
+  return Uri.parse('$base$path');
+}
 
 void main() {
   runApp(const NerudsControlApp());
@@ -116,8 +132,7 @@ class _ControlHomeState extends State<ControlHome> {
               NavigationRail(
                 extended: true,
                 selectedIndex: index,
-                onDestinationSelected: (value) =>
-                    setState(() => index = value),
+                onDestinationSelected: (value) => setState(() => index = value),
                 leading: const Padding(
                   padding: EdgeInsets.fromLTRB(16, 24, 16, 28),
                   child: Column(
@@ -210,8 +225,8 @@ class DashboardPage extends StatelessWidget {
                   value: result.connectionState == ConnectionState.waiting
                       ? 'Verificando...'
                       : data?.online == true
-                          ? 'Online'
-                          : 'Indisponível',
+                      ? 'Online'
+                      : 'Indisponível',
                 ),
                 MetricCard(
                   icon: Icons.hub_outlined,
@@ -250,9 +265,7 @@ class DashboardPage extends StatelessWidget {
               )
             else if (data?.latestNews.isEmpty ?? true)
               const Card(
-                child: ListTile(
-                  title: Text('Nenhuma notícia carregada.'),
-                ),
+                child: ListTile(title: Text('Nenhuma notícia carregada.')),
               )
             else
               ...data!.latestNews.map(
@@ -363,49 +376,124 @@ class _RoutinePageState extends State<RoutinePage> {
   }
 }
 
-class AdminPage extends StatelessWidget {
+class AdminPage extends StatefulWidget {
   const AdminPage({super.key});
+
+  @override
+  State<AdminPage> createState() => _AdminPageState();
+}
+
+class _AdminPageState extends State<AdminPage> {
+  bool loading = false;
+  Map<String, dynamic>? operations;
+  String? error;
 
   static const items = [
     (
       'Saúde do Drupal',
-      'Status, versão, filas, cron e cache.',
-      Icons.monitor_heart_outlined
+      'Monitoramento de disponibilidade do portal.',
+      Icons.monitor_heart_outlined,
     ),
     (
       'E-mail institucional',
-      'Poste.io/SMTP para avisos editoriais e recuperação de acesso.',
-      Icons.mark_email_read_outlined
+      'Validação TLS do Poste.io para avisos editoriais.',
+      Icons.mark_email_read_outlined,
     ),
     (
       'Backups',
-      'Criar, validar e registrar restaurações.',
-      Icons.backup_outlined
-    ),
-    (
-      'Atualizações',
-      'Composer/Drush com pré-checagem e confirmação.',
-      Icons.system_update_alt_outlined
+      'Backup automático e restauração controlada do mission store.',
+      Icons.backup_outlined,
     ),
     (
       'Logs',
-      'Erros recentes do Drupal, PHP e servidor web.',
-      Icons.receipt_long_outlined
-    ),
-    (
-      'Usuários e papéis',
-      'Entrada e saída de bolsistas sem compartilhar senha.',
-      Icons.manage_accounts_outlined
-    ),
-    (
-      'Inventário',
-      'Módulos, tipos de conteúdo, taxonomias e integrações.',
-      Icons.inventory_outlined
+      'Eventos operacionais estruturados e rotacionados.',
+      Icons.receipt_long_outlined,
     ),
   ];
 
   @override
+  void initState() {
+    super.initState();
+    AppSession.instance.addListener(_sessionChanged);
+    if (AppSession.instance.authenticated && AppSession.instance.canPublish) {
+      _load();
+    }
+  }
+
+  @override
+  void dispose() {
+    AppSession.instance.removeListener(_sessionChanged);
+    super.dispose();
+  }
+
+  void _sessionChanged() {
+    if (!mounted) return;
+    if (AppSession.instance.authenticated && AppSession.instance.canPublish) {
+      _load();
+    } else {
+      setState(() {
+        operations = null;
+        error = null;
+      });
+    }
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      final response = await http.get(
+        _adminUri('/operations/incidents'),
+        headers: AppSession.instance.authHeaders,
+      );
+      if (response.statusCode == 401) {
+        AppSession.instance.clear();
+        return;
+      }
+      if (response.statusCode != 200) {
+        setState(
+          () => error = 'Falha operacional HTTP ${response.statusCode}.',
+        );
+        return;
+      }
+      final payload = Map<String, dynamic>.from(
+        jsonDecode(utf8.decode(response.bodyBytes)),
+      );
+      if (mounted) setState(() => operations = payload);
+    } catch (_) {
+      if (mounted) {
+        setState(() => error = 'Não foi possível consultar a operação.');
+      }
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: AppSession.instance,
+      builder: (context, _) {
+        if (!AppSession.instance.authenticated) {
+          return _restricted(
+            context,
+            'Entre no portal para acessar a Administração.',
+          );
+        }
+        if (!AppSession.instance.canPublish) {
+          return _restricted(
+            context,
+            'Área reservada para coordenação/TI. Seu perfil não possui acesso operacional.',
+          );
+        }
+        return _content(context);
+      },
+    );
+  }
+
+  Widget _restricted(BuildContext context, String message) {
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
@@ -413,22 +501,118 @@ class AdminPage extends StatelessWidget {
           'Administração',
           style: Theme.of(context).textTheme.headlineMedium,
         ),
-        const SizedBox(height: 6),
-        const Text(
-          'Área reservada para coordenação/TI. Ações de infraestrutura ficam separadas do trabalho editorial dos bolsistas.',
-        ),
-        const SizedBox(height: 20),
-        ...items.map(
-          (item) => Card(
-            child: ListTile(
-              leading: Icon(item.$3),
-              title: Text(item.$1),
-              subtitle: Text(item.$2),
-              trailing: const Chip(label: Text('controle técnico')),
-            ),
+        const SizedBox(height: 16),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.lock_outline),
+            title: const Text('Acesso restrito'),
+            subtitle: Text(message),
           ),
         ),
       ],
+    );
+  }
+
+  Widget _content(BuildContext context) {
+    final payload = operations ?? const <String, dynamic>{};
+    final incidents = (payload['incidents'] as List<dynamic>? ?? const [])
+        .map((item) => Map<String, dynamic>.from(item as Map))
+        .toList();
+    final checks = Map<String, dynamic>.from(payload['checks'] as Map? ?? {});
+    final healthy = payload['ok'] == true;
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(
+        padding: const EdgeInsets.all(24),
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Administração',
+                      style: Theme.of(context).textTheme.headlineMedium,
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Área reservada para coordenação/TI. O painel é somente leitura.',
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Atualizar operação',
+                onPressed: loading ? null : _load,
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          if (loading) const LinearProgressIndicator(),
+          if (error != null)
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.error_outline),
+                title: const Text('Não foi possível consultar a operação'),
+                subtitle: Text(error!),
+              ),
+            )
+          else if (operations != null)
+            Card(
+              child: ListTile(
+                leading: Icon(
+                  healthy
+                      ? Icons.check_circle_outline
+                      : Icons.warning_amber_outlined,
+                ),
+                title: Text(
+                  healthy ? 'Operação saudável' : 'Incidentes detectados',
+                ),
+                subtitle: Text(
+                  'Tailscale: ${checks['tailscale'] == true ? 'OK' : 'falha'} • '
+                  'Serve: ${checks['tailscale_serve'] == true ? 'OK' : 'falha'} • '
+                  'Drupal: ${checks['drupal'] == true ? 'OK' : 'falha'} • '
+                  'Poste.io: ${checks['poste_tls'] == true ? 'OK' : 'falha'}',
+                ),
+              ),
+            ),
+          if (incidents.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            Text('Incidentes', style: Theme.of(context).textTheme.titleLarge),
+            ...incidents.map(
+              (incident) => Card(
+                child: ListTile(
+                  leading: const Icon(Icons.report_problem_outlined),
+                  title: Text(incident['service']?.toString() ?? 'Serviço'),
+                  subtitle: Text('Código: ${incident['code'] ?? '-'}'),
+                  trailing: Chip(
+                    label: Text(incident['severity']?.toString() ?? 'info'),
+                  ),
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 20),
+          Text(
+            'Controles operacionais',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+          const SizedBox(height: 8),
+          ...items.map(
+            (item) => Card(
+              child: ListTile(
+                leading: Icon(item.$3),
+                title: Text(item.$1),
+                subtitle: Text(item.$2),
+                trailing: const Chip(label: Text('somente leitura')),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

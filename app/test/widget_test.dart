@@ -18,8 +18,23 @@ void main() {
     expect(find.text('Entrar'), findsOneWidget);
   });
 
-  testWidgets('expõe missão e oportunidades com autenticação obrigatória',
-      (tester) async {
+  testWidgets('restringe administração sem sessão autorizada', (tester) async {
+    await tester.pumpWidget(const NerudsControlApp());
+    await tester.pump();
+
+    await tester.tap(find.text('Administração'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Acesso restrito'), findsOneWidget);
+    expect(
+      find.text('Entre no portal para acessar a Administração.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('expõe missão e oportunidades com autenticação obrigatória', (
+    tester,
+  ) async {
     await tester.pumpWidget(const NerudsControlApp());
     await tester.pump();
 

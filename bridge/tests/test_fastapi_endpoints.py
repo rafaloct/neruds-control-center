@@ -1,4 +1,5 @@
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import pytest
 import respx
@@ -16,11 +17,112 @@ async def test_health_and_capabilities(async_client):
     assert data_h["ok"] is True
     assert data_h["service"] == "neruds-control-bridge"
 
+    res_ready = await async_client.get("/ready")
+    assert res_ready.status_code == 200
+    assert res_ready.json()["database_ready"] is True
+
     res_cap = await async_client.get("/capabilities")
     assert res_cap.status_code == 200
     data_c = res_cap.json()
     assert data_c["news_draft"] is True
     assert data_c["draft_queue"] is True
+
+
+async def test_readiness_returns_503_when_database_is_unavailable(
+    async_client, monkeypatch
+):
+    def broken_connect():
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(main.mission_store, "connect", broken_connect)
+    response = await async_client.get("/ready")
+    assert response.status_code == 503
+    assert response.json()["ok"] is False
+    assert response.json()["database_ready"] is False
+
+
+def test_infra_status_validates_expected_tailscale_proxy(monkeypatch):
+    commands = iter(
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout='{"Self":{"HostName":"LARGeo"}}',
+            ),
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    '{"Web":{"largeo.tail2faed0.ts.net:8443":'
+                    '{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}}}'
+                ),
+            ),
+        ]
+    )
+    monkeypatch.setattr(main.subprocess, "run", lambda *args, **kwargs: next(commands))
+    monkeypatch.setattr(main, "tcp_reachable", lambda *args, **kwargs: True)
+
+    status = main._infra_status()
+    assert status["tailscale_available"] is True
+    assert status["tailscale_serve"] is True
+    assert status["vps_reachable"] is True
+    assert "vps_host" not in status
+
+
+async def test_admin_operations_require_publish_permission(
+    async_client,
+    extensionista_session,
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    for path in ("/mail/status", "/infra/status", "/operations/incidents"):
+        response = await async_client.get(path, headers=headers)
+        assert response.status_code == 403
+        assert "coordenação/TI" in response.json()["detail"]
+
+
+async def test_admin_operations_panel_for_coordinator(
+    async_client,
+    publicador_session,
+    monkeypatch,
+    respx_mock,
+):
+    token, _ = publicador_session
+    headers = {"Authorization": f"Bearer {token}"}
+
+    monkeypatch.setattr(
+        main,
+        "_infra_status",
+        lambda: {
+            "tailscale_available": True,
+            "tailscale_serve": True,
+            "tailscale_self": "LARGeo",
+            "vps_ports": {"ssh": True, "http": True, "https": True},
+            "vps_reachable": True,
+        },
+    )
+
+    async def healthy_mail():
+        return {
+            "port": 25,
+            "starttls": True,
+            "port_open": True,
+            "tls_ok": True,
+            "tls_error": None,
+            "credentials_configured": False,
+            "review_recipient_configured": True,
+        }
+
+    monkeypatch.setattr(main, "_mail_status", healthy_mail)
+    respx_mock.get("https://neruds.org/user/login").mock(
+        return_value=Response(200, text="login")
+    )
+
+    response = await async_client.get("/operations/incidents", headers=headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["incidents"] == []
+    assert payload["checks"]["tailscale_serve"] is True
+    assert "infra" not in payload
 
 
 async def test_unauthenticated_access_rejected(async_client):
