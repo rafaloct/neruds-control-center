@@ -20,6 +20,7 @@ def init_review_db() -> None:
                 drupal_nid TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 author TEXT NOT NULL,
+                owner_uid TEXT,
                 review_status TEXT NOT NULL DEFAULT 'pending',
                 reviewer TEXT,
                 review_note TEXT,
@@ -49,6 +50,8 @@ def init_review_db() -> None:
             row["name"]
             for row in conn.execute("PRAGMA table_info(draft_review)").fetchall()
         }
+        if "owner_uid" not in columns:
+            conn.execute("ALTER TABLE draft_review ADD COLUMN owner_uid TEXT")
         if "opportunity_item_id" not in columns:
             conn.execute("ALTER TABLE draft_review ADD COLUMN opportunity_item_id INTEGER")
         if "mission_task_id" not in columns:
@@ -61,6 +64,7 @@ def register_draft(
     title: str,
     author: str,
     *,
+    owner_uid: str | None = None,
     opportunity_item_id: int | None = None,
     mission_task_id: int | None = None,
 ) -> dict[str, Any]:
@@ -73,14 +77,15 @@ def register_draft(
         conn.execute(
             """
             INSERT INTO draft_review
-              (drupal_nid,title,author,review_status,opportunity_item_id,mission_task_id,created_at,updated_at)
-            VALUES (?,?,?,'pending',?,?,?,?)
+              (drupal_nid,title,author,owner_uid,review_status,opportunity_item_id,mission_task_id,created_at,updated_at)
+            VALUES (?,?,?,?,'pending',?,?,?,?)
             ON CONFLICT(drupal_nid) DO UPDATE SET
               title=excluded.title,
               author=CASE
                 WHEN draft_review.author='' THEN excluded.author
                 ELSE draft_review.author
               END,
+              owner_uid=COALESCE(excluded.owner_uid, draft_review.owner_uid),
               opportunity_item_id=COALESCE(
                 excluded.opportunity_item_id,
                 draft_review.opportunity_item_id
@@ -91,7 +96,7 @@ def register_draft(
               ),
               updated_at=excluded.updated_at
             """,
-            (nid, title, author, opportunity_item_id, mission_task_id, now, now),
+            (nid, title, author, owner_uid, opportunity_item_id, mission_task_id, now, now),
         )
         conn.execute(
             """
@@ -126,6 +131,69 @@ def ensure_draft(
         opportunity_item_id=opportunity_item_id,
         mission_task_id=mission_task_id,
     )
+
+
+def reconcile_draft(
+    drupal_nid: str,
+    title: str,
+    *,
+    owner_uid: str | None,
+    author: str | None = None,
+    published: bool,
+) -> dict[str, Any]:
+    """Reconcile metadata observed through an authorized Drupal response.
+
+    A username is supplied only when Drupal's UID proves that identity.
+    Observing a publication does not invent its publication timestamp.
+    """
+    current = ensure_draft(drupal_nid, title, author or "Drupal")
+    observed_owner = owner_uid or current.get("owner_uid")
+    observed_author = current["author"]
+    if owner_uid and current.get("owner_uid") not in (None, "", owner_uid):
+        observed_author = "Drupal"
+    if author is not None:
+        observed_author = author
+
+    observed_status = current["review_status"]
+    if published:
+        observed_status = "published"
+    elif observed_status == "published":
+        observed_status = "pending"
+
+    if (
+        current["title"] == title
+        and current.get("owner_uid") == observed_owner
+        and current["author"] == observed_author
+        and current["review_status"] == observed_status
+    ):
+        return current
+
+    now = utcnow()
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE draft_review
+            SET title=?,owner_uid=?,author=?,review_status=?,updated_at=?
+            WHERE drupal_nid=?
+            """,
+            (title, observed_owner, observed_author, observed_status, now, str(drupal_nid)),
+        )
+        conn.execute(
+            """
+            INSERT INTO draft_review_event
+              (drupal_nid,actor,event_type,note,created_at)
+            VALUES (?,?,?,?,?)
+            """,
+            (
+                str(drupal_nid),
+                "Drupal",
+                "drupal_sync",
+                "Estado e autoria conferidos na leitura autorizada do portal.",
+                now,
+            ),
+        )
+        conn.commit()
+    return get_review(str(drupal_nid)) or {}
 
 
 def get_review(drupal_nid: str) -> dict[str, Any] | None:
