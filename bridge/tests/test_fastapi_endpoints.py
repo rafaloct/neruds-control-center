@@ -89,6 +89,8 @@ async def test_create_news_draft_born_as_draft(async_client, extensionista_sessi
         "title": "Notícia de Teste Criada por Extensionista",
         "summary": "Resumo da notícia de teste",
         "body": "Corpo detalhado da notícia de teste.",
+        "opportunity_item_id": 21,
+        "mission_task_id": 34,
     }
 
     res = await async_client.post("/content/news/draft", json=payload, headers=headers)
@@ -105,6 +107,8 @@ async def test_create_news_draft_born_as_draft(async_client, extensionista_sessi
     assert rev is not None
     assert rev["review_status"] == "pending"
     assert rev["author"] == "extensionista.test"
+    assert rev["opportunity_item_id"] == 21
+    assert rev["mission_task_id"] == 34
 
 
 async def test_negative_extensionista_permissions(async_client, extensionista_session):
@@ -129,6 +133,73 @@ async def test_negative_extensionista_permissions(async_client, extensionista_se
     )
     assert res_pub.status_code == 403
     assert "publicar" in res_pub.json()["detail"]
+
+
+async def test_author_can_resubmit_own_draft(async_client, extensionista_session):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    review_store.register_draft("357", title="Notícia 357", author="extensionista.test")
+    review_store.decide(
+        "357",
+        actor="revisor.test",
+        status="changes_requested",
+        note="Inclua a fonte.",
+    )
+
+    res = await async_client.patch(
+        "/content/news/drafts/357/review",
+        json={"status": "pending", "note": "Fonte incluída."},
+        headers=headers,
+    )
+
+    assert res.status_code == 200
+    assert res.json()["review"]["review_status"] == "pending"
+    assert res.json()["review"]["events"][0]["actor"] == "extensionista.test"
+
+
+@respx.mock
+async def test_draft_queue_filters_status_author_and_search(
+    async_client, extensionista_session, respx_mock
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    review_store.register_draft("601", title="Edital da autora", author="extensionista.test")
+    review_store.register_draft("602", title="Notícia de terceiro", author="outra.pessoa")
+    review_store.decide("602", actor="revisor.test", status="approved", note="Aprovado.")
+
+    respx_mock.get("https://neruds.org/jsonapi/node/noticia").mock(
+        return_value=Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "uuid-601",
+                        "attributes": {
+                            "drupal_internal__nid": 601,
+                            "title": "Edital da autora",
+                            "changed": "2026-10-05T00:00:00+00:00",
+                        },
+                    },
+                    {
+                        "id": "uuid-602",
+                        "attributes": {
+                            "drupal_internal__nid": 602,
+                            "title": "Notícia de terceiro",
+                            "changed": "2026-10-05T00:00:00+00:00",
+                        },
+                    },
+                ]
+            },
+        )
+    )
+
+    res = await async_client.get(
+        "/content/news/drafts?status=pending&mine_only=true&query=edital",
+        headers=headers,
+    )
+
+    assert res.status_code == 200
+    assert [item["nid"] for item in res.json()["items"]] == [601]
 
 
 async def test_negative_revisor_permissions(async_client, revisor_session):
@@ -243,6 +314,9 @@ async def test_opportunity_to_draft_workflow(async_client, extensionista_session
     updated_item = rss_store.item_detail(item_id)
     assert updated_item["status"] == "rascunho_criado"
     assert updated_item["drupal_draft_id"] == "789"
+    review = review_store.get_review("789")
+    assert review is not None
+    assert review["opportunity_item_id"] == item_id
 
 
 async def test_mission_endpoints(async_client, extensionista_session, seeded_mission):

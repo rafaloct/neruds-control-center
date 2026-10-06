@@ -24,18 +24,22 @@ class _EditorialPageState extends State<EditorialPage> {
   final _title = TextEditingController();
   final _summary = TextEditingController();
   final _body = TextEditingController();
+  final _opportunityItemId = TextEditingController();
+  final _missionTaskId = TextEditingController();
 
   String? _token;
   String? _loggedUser;
   bool _busy = false;
   bool _showPassword = false;
   bool _loadingDrafts = false;
+  String? _reviewStatus = 'pending';
+  bool _mineOnly = false;
   List<Map<String, dynamic>> _drafts = const [];
 
   Map<String, String> get _authHeaders => {
-        'Authorization': 'Bearer $_token',
-        'Content-Type': 'application/json',
-      };
+    'Authorization': 'Bearer $_token',
+    'Content-Type': 'application/json',
+  };
 
   @override
   void dispose() {
@@ -44,6 +48,8 @@ class _EditorialPageState extends State<EditorialPage> {
     _title.dispose();
     _summary.dispose();
     _body.dispose();
+    _opportunityItemId.dispose();
+    _missionTaskId.dispose();
     super.dispose();
   }
 
@@ -130,10 +136,7 @@ class _EditorialPageState extends State<EditorialPage> {
     if (token != null) {
       try {
         await http
-            .post(
-              Uri.parse(_endpoint('/auth/logout')),
-              headers: _authHeaders,
-            )
+            .post(Uri.parse(_endpoint('/auth/logout')), headers: _authHeaders)
             .timeout(const Duration(seconds: 10));
       } catch (_) {}
     }
@@ -150,9 +153,14 @@ class _EditorialPageState extends State<EditorialPage> {
     if (_token == null) return;
     setState(() => _loadingDrafts = true);
     try {
+      final query = <String, String>{};
+      if (_reviewStatus != null) query['status'] = _reviewStatus!;
+      if (_mineOnly) query['mine_only'] = 'true';
       final response = await http
           .get(
-            Uri.parse(_endpoint('/content/news/drafts')),
+            Uri.parse(
+              _endpoint('/content/news/drafts'),
+            ).replace(queryParameters: query),
             headers: _authHeaders,
           )
           .timeout(const Duration(seconds: 15));
@@ -183,6 +191,16 @@ class _EditorialPageState extends State<EditorialPage> {
       _message('Preencha pelo menos título e texto.');
       return;
     }
+    if (_opportunityItemId.text.trim().isNotEmpty &&
+        int.tryParse(_opportunityItemId.text.trim()) == null) {
+      _message('O ID da oportunidade deve ser um número inteiro.');
+      return;
+    }
+    if (_missionTaskId.text.trim().isNotEmpty &&
+        int.tryParse(_missionTaskId.text.trim()) == null) {
+      _message('O ID da tarefa da missão deve ser um número inteiro.');
+      return;
+    }
 
     setState(() => _busy = true);
     try {
@@ -194,6 +212,12 @@ class _EditorialPageState extends State<EditorialPage> {
               'title': _title.text.trim(),
               'summary': _summary.text.trim(),
               'body': _body.text.trim(),
+              if (int.tryParse(_opportunityItemId.text.trim()) != null)
+                'opportunity_item_id': int.parse(
+                  _opportunityItemId.text.trim(),
+                ),
+              if (int.tryParse(_missionTaskId.text.trim()) != null)
+                'mission_task_id': int.parse(_missionTaskId.text.trim()),
             }),
           )
           .timeout(const Duration(seconds: 25));
@@ -203,6 +227,7 @@ class _EditorialPageState extends State<EditorialPage> {
         _message('Sua sessão expirou. Entre novamente.');
         return;
       }
+
       if (response.statusCode != 200 && response.statusCode != 201) {
         _message(_errorMessage(response));
         return;
@@ -214,12 +239,139 @@ class _EditorialPageState extends State<EditorialPage> {
       _title.clear();
       _summary.clear();
       _body.clear();
-      _message(emailSent
-          ? 'Rascunho criado e revisão avisada por e-mail.'
-          : 'Rascunho criado no Drupal. A notificação por e-mail ainda não está configurada.');
+      _opportunityItemId.clear();
+      _missionTaskId.clear();
+      _message(
+        emailSent
+            ? 'Rascunho criado e revisão avisada por e-mail.'
+            : 'Rascunho criado no Drupal. A notificação por e-mail ainda não está configurada.',
+      );
       await _loadDrafts();
     } catch (error) {
       _message('Não foi possível criar o rascunho: $error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _reviewDraft(Map<String, dynamic> item, String status) async {
+    final nid = item['nid'];
+    if (nid == null) {
+      _message('O rascunho não possui identificador do Drupal.');
+      return;
+    }
+
+    final noteController = TextEditingController();
+    final needsNote = status == 'changes_requested';
+    final note = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          status == 'approved'
+              ? 'Aprovar rascunho'
+              : status == 'pending'
+              ? 'Reenviar para revisão'
+              : 'Devolver para ajuste',
+        ),
+        content: TextField(
+          controller: noteController,
+          autofocus: true,
+          minLines: 3,
+          maxLines: 6,
+          decoration: InputDecoration(
+            labelText: needsNote ? 'Orientações para ajuste *' : 'Comentário',
+            border: const OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, noteController.text.trim()),
+            child: Text(
+              status == 'approved'
+                  ? 'Aprovar'
+                  : status == 'pending'
+                  ? 'Reenviar'
+                  : 'Devolver',
+            ),
+          ),
+        ],
+      ),
+    );
+    noteController.dispose();
+    if (note == null) return;
+    if (needsNote && note.isEmpty) {
+      _message('Informe o que precisa ser ajustado.');
+      return;
+    }
+
+    setState(() => _busy = true);
+    try {
+      final response = await http
+          .patch(
+            Uri.parse(_endpoint('/content/news/drafts/$nid/review')),
+            headers: _authHeaders,
+            body: jsonEncode({
+              'status': status,
+              if (note.isNotEmpty) 'note': note,
+            }),
+          )
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode == 401) {
+        await _logout();
+        _message('Sua sessão expirou. Entre novamente.');
+        return;
+      }
+      if (response.statusCode != 200) {
+        _message(_errorMessage(response));
+        return;
+      }
+      _message(
+        status == 'approved'
+            ? 'Rascunho aprovado.'
+            : status == 'pending'
+            ? 'Rascunho reenviado para revisão.'
+            : 'Rascunho devolvido para ajuste.',
+      );
+      await _loadDrafts();
+    } catch (error) {
+      _message('Não foi possível atualizar a revisão: $error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _publishDraft(Map<String, dynamic> item) async {
+    final nid = item['nid'];
+    if (nid == null) {
+      _message('O rascunho não possui identificador do Drupal.');
+      return;
+    }
+
+    setState(() => _busy = true);
+    try {
+      final response = await http
+          .post(
+            Uri.parse(_endpoint('/content/news/drafts/$nid/publish')),
+            headers: _authHeaders,
+          )
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode == 401) {
+        await _logout();
+        _message('Sua sessão expirou. Entre novamente.');
+        return;
+      }
+      if (response.statusCode != 200) {
+        _message(_errorMessage(response));
+        return;
+      }
+      _message('Notícia publicada no Drupal.');
+      await _loadDrafts();
+    } catch (error) {
+      _message('Não foi possível publicar a notícia: $error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -259,11 +411,13 @@ class _EditorialPageState extends State<EditorialPage> {
                   const TabBar(
                     tabs: [
                       Tab(
-                          icon: Icon(Icons.edit_note_outlined),
-                          text: 'Nova notícia'),
+                        icon: Icon(Icons.edit_note_outlined),
+                        text: 'Nova notícia',
+                      ),
                       Tab(
-                          icon: Icon(Icons.rate_review_outlined),
-                          text: 'Rascunhos'),
+                        icon: Icon(Icons.rate_review_outlined),
+                        text: 'Rascunhos',
+                      ),
                     ],
                   ),
                 ],
@@ -272,10 +426,7 @@ class _EditorialPageState extends State<EditorialPage> {
           ),
           Expanded(
             child: TabBarView(
-              children: [
-                _draftForm(context),
-                _draftQueue(context),
-              ],
+              children: [_draftForm(context), _draftQueue(context)],
             ),
           ),
         ],
@@ -323,7 +474,8 @@ class _EditorialPageState extends State<EditorialPage> {
                         },
                         decoration: const InputDecoration(
                           labelText: 'Usuário do portal *',
-                          helperText: 'Ex.: extensionista.1 ou seu usuário institucional',
+                          helperText:
+                              'Ex.: extensionista.1 ou seu usuário institucional',
                           prefixIcon: Icon(Icons.person_outline),
                           border: OutlineInputBorder(),
                         ),
@@ -344,7 +496,8 @@ class _EditorialPageState extends State<EditorialPage> {
                         onFieldSubmitted: (_) => _login(),
                         decoration: InputDecoration(
                           labelText: 'Senha *',
-                          helperText: 'Sua senha é validada pelo Drupal e não fica salva no app.',
+                          helperText:
+                              'Sua senha é validada pelo Drupal e não fica salva no app.',
                           prefixIcon: const Icon(Icons.lock_outline),
                           border: const OutlineInputBorder(),
                           suffixIcon: IconButton(
@@ -354,8 +507,8 @@ class _EditorialPageState extends State<EditorialPage> {
                             onPressed: _busy
                                 ? null
                                 : () => setState(
-                                      () => _showPassword = !_showPassword,
-                                    ),
+                                    () => _showPassword = !_showPassword,
+                                  ),
                             icon: Icon(
                               _showPassword
                                   ? Icons.visibility_off_outlined
@@ -376,8 +529,9 @@ class _EditorialPageState extends State<EditorialPage> {
                               ? const SizedBox(
                                   width: 18,
                                   height: 18,
-                                  child:
-                                      CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
                                 )
                               : const Icon(Icons.login),
                           label: Text(_busy ? 'Entrando...' : 'Entrar'),
@@ -403,10 +557,7 @@ class _EditorialPageState extends State<EditorialPage> {
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
-        Text(
-          'Criar notícia',
-          style: Theme.of(context).textTheme.headlineSmall,
-        ),
+        Text('Criar notícia', style: Theme.of(context).textTheme.headlineSmall),
         const SizedBox(height: 6),
         const Text(
           'O conteúdo é salvo como rascunho. A publicação continua dependendo das permissões e da revisão editorial.',
@@ -430,7 +581,8 @@ class _EditorialPageState extends State<EditorialPage> {
           maxLines: 4,
           decoration: const InputDecoration(
             labelText: 'Resumo curto',
-            hintText: 'Explique em poucas linhas o que aconteceu e por que é relevante.',
+            hintText:
+                'Explique em poucas linhas o que aconteceu e por que é relevante.',
             border: OutlineInputBorder(),
           ),
         ),
@@ -445,6 +597,29 @@ class _EditorialPageState extends State<EditorialPage> {
             hintText:
                 'Escreva normalmente. Separe parágrafos com uma linha em branco; o sistema formata para o Drupal.',
             alignLabelWithHint: true,
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _opportunityItemId,
+          enabled: !_busy,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'ID da oportunidade (opcional)',
+            helperText:
+                'Use ao transformar uma oportunidade em pauta editorial.',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _missionTaskId,
+          enabled: !_busy,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'ID da tarefa da missão (opcional)',
+            helperText: 'Mantém o rascunho ligado ao acompanhamento da missão.',
             border: OutlineInputBorder(),
           ),
         ),
@@ -466,6 +641,7 @@ class _EditorialPageState extends State<EditorialPage> {
       return const Center(child: CircularProgressIndicator());
     }
 
+    final colorScheme = Theme.of(context).colorScheme;
     return RefreshIndicator(
       onRefresh: _loadDrafts,
       child: ListView(
@@ -488,7 +664,29 @@ class _EditorialPageState extends State<EditorialPage> {
           ),
           const SizedBox(height: 6),
           const Text(
-            'A lista respeita o que sua conta Drupal tem permissão para visualizar.',
+            'Ações de revisão e publicação respeitam as permissões do seu perfil Drupal.',
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _queueFilter('Todos', null),
+              _queueFilter('Aguardando revisão', 'pending'),
+              _queueFilter('Para ajuste', 'changes_requested'),
+              _queueFilter('Aprovados', 'approved'),
+              _queueFilter('Publicados', 'published'),
+              FilterChip(
+                label: const Text('Minhas pendências'),
+                selected: _mineOnly,
+                onSelected: _busy
+                    ? null
+                    : (selected) {
+                        setState(() => _mineOnly = selected);
+                        _loadDrafts();
+                      },
+              ),
+            ],
           ),
           const SizedBox(height: 16),
           if (_drafts.isEmpty)
@@ -499,21 +697,193 @@ class _EditorialPageState extends State<EditorialPage> {
               ),
             )
           else
-            ..._drafts.map(
-              (item) => Card(
-                child: ListTile(
-                  leading: const Icon(Icons.article_outlined),
-                  title: Text(item['title']?.toString() ?? 'Sem título'),
-                  subtitle: Text(
-                    item['moderation_state']?.toString().isNotEmpty == true
-                        ? 'Estado: ${item['moderation_state']}'
-                        : 'Rascunho não publicado',
+            ..._drafts.map((item) {
+              final review = item['review'] is Map
+                  ? Map<String, dynamic>.from(item['review'] as Map)
+                  : const <String, dynamic>{};
+              final status = review['review_status']?.toString() ?? 'pending';
+              final isAuthor = review['author'] == _loggedUser;
+              final statusColor = _statusColor(status, colorScheme);
+              final events = review['events'] is List
+                  ? List<dynamic>.from(review['events'] as List)
+                  : const <dynamic>[];
+
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Padding(
+                            padding: EdgeInsets.only(right: 12),
+                            child: Icon(Icons.article_outlined),
+                          ),
+                          Expanded(
+                            child: Text(
+                              item['title']?.toString() ?? 'Sem título',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Chip(
+                        label: Text(_statusLabel(status)),
+                        avatar: Icon(
+                          Icons.circle,
+                          color: statusColor,
+                          size: 12,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      Text(
+                        'Autor: ${review['author'] ?? 'não informado'}'
+                        '${item['nid'] != null ? ' · Drupal #${item['nid']}' : ''}',
+                      ),
+                      if (review['opportunity_item_id'] != null ||
+                          review['mission_task_id'] != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          [
+                            if (review['opportunity_item_id'] != null)
+                              'Oportunidade #${review['opportunity_item_id']}',
+                            if (review['mission_task_id'] != null)
+                              'Tarefa #${review['mission_task_id']}',
+                          ].join(' · '),
+                        ),
+                      ],
+                      if ((review['review_note']?.toString() ?? '')
+                          .isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Último comentário: ${review['review_note']}',
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                      ],
+                      if (events.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        ExpansionTile(
+                          tilePadding: EdgeInsets.zero,
+                          title: Text(
+                            'Histórico de decisão (${events.length})',
+                          ),
+                          children: events
+                              .map(
+                                (event) => ListTile(
+                                  dense: true,
+                                  title: Text(
+                                    '${_statusLabel(event['event_type']?.toString() ?? '')} · '
+                                    '${event['actor'] ?? 'Sistema'}',
+                                  ),
+                                  subtitle:
+                                      (event['note']?.toString() ?? '').isEmpty
+                                      ? null
+                                      : Text(event['note'].toString()),
+                                ),
+                              )
+                              .toList(),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          if (AppSession.instance.canReview &&
+                              status != 'published')
+                            OutlinedButton.icon(
+                              onPressed: _busy
+                                  ? null
+                                  : () =>
+                                        _reviewDraft(item, 'changes_requested'),
+                              icon: const Icon(
+                                Icons.assignment_return_outlined,
+                              ),
+                              label: const Text('Devolver para ajuste'),
+                            ),
+                          if (AppSession.instance.canReview &&
+                              status != 'published')
+                            FilledButton.icon(
+                              onPressed: _busy
+                                  ? null
+                                  : () => _reviewDraft(item, 'approved'),
+                              icon: const Icon(Icons.check_circle_outline),
+                              label: const Text('Aprovar'),
+                            ),
+                          if (isAuthor && status == 'changes_requested')
+                            OutlinedButton.icon(
+                              onPressed: _busy
+                                  ? null
+                                  : () => _reviewDraft(item, 'pending'),
+                              icon: const Icon(Icons.send_outlined),
+                              label: const Text('Reenviar'),
+                            ),
+                          if (AppSession.instance.canPublish &&
+                              status == 'approved')
+                            FilledButton.icon(
+                              onPressed: _busy
+                                  ? null
+                                  : () => _publishDraft(item),
+                              icon: const Icon(Icons.publish_outlined),
+                              label: const Text('Publicar'),
+                            ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
-              ),
-            ),
+              );
+            }),
         ],
       ),
     );
+  }
+
+  Widget _queueFilter(String label, String? status) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: _reviewStatus == status,
+      onSelected: _busy
+          ? null
+          : (_) {
+              setState(() => _reviewStatus = status);
+              _loadDrafts();
+            },
+    );
+  }
+
+  String _statusLabel(String status) {
+    switch (status) {
+      case 'pending':
+        return 'Aguardando revisão';
+      case 'changes_requested':
+        return 'Ajustes solicitados';
+      case 'approved':
+        return 'Aprovado';
+      case 'published':
+        return 'Publicado';
+      case 'draft_registered':
+        return 'Rascunho criado';
+      default:
+        return status;
+    }
+  }
+
+  Color _statusColor(String status, ColorScheme colorScheme) {
+    switch (status) {
+      case 'pending':
+        return Colors.amber.shade800;
+      case 'changes_requested':
+        return colorScheme.error;
+      case 'approved':
+        return Colors.green.shade700;
+      case 'published':
+        return Colors.blue.shade700;
+      default:
+        return colorScheme.outline;
+    }
   }
 }
