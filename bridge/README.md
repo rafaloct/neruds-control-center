@@ -32,6 +32,70 @@ alterar `primary_owner`, `cross_reviewer` ou `internal_deadline`. Extensionistas
 continuam autorizados a atualizar evidências, fontes, observações, checklists e
 etapas operacionais.
 
+### Evidência por arquivo
+
+Além do texto/URL, tarefas aceitam arquivos anexados:
+
+- `POST /mission-tasks/{task_id}/evidence-files` recebe `multipart/form-data`
+  com `file` (obrigatório, até 10 MB) e `note` (opcional). O conteúdo vai para
+  `data/evidence/{task_id}/`, com sha256 e metadados em `task_evidence_file`,
+  e gera evento `evidence_registered` na trilha da tarefa.
+- `GET /mission-tasks/{task_id}/evidence-files` lista os anexos (também
+  expostos em `GET /mission-tasks/{task_id}` como `evidence_files`).
+- `GET /mission-evidence/{id}` devolve o arquivo com `FileResponse`.
+
+## Automação da missão
+
+`GET /missions/{mission_id}/automation` consolida os sinais automáticos da
+missão. Tudo é consultivo: nenhuma automação altera etapa, status ou conclui
+tarefa sozinha.
+
+- `suggested_tasks`: próximas tarefas P0/P1 abertas, ordenadas por prioridade,
+  prazo vencido, responsável e etapa, cada uma com `reason` explicável.
+- `missing_evidence`: tarefas a partir de `Evidência registrada` sem texto de
+  evidência nem evento com `evidence_url`.
+- `possible_duplicates`: grupos internos com mesma URL pública ou título
+  normalizado, e tarefas cujo título coincide com rascunho já registrado no
+  Drupal (fila de revisão).
+- `url_check`: último estado da verificação de URLs públicas, com `issues`
+  listando as quebradas e `pending` as ainda não verificadas.
+
+`POST /missions/{mission_id}/url-check?limit=N` verifica um lote de URLs
+públicas (padrão 25, máximo 100), priorizando as nunca verificadas e as mais
+antigas. A validação reutiliza a proteção SSRF do módulo de fontes RSS e o
+resultado fica persistido em `task_url_check`.
+
+`GET /mission-tasks/{task_id}/drupal-duplicates` consulta o JSON:API do Drupal
+com o título exato da tarefa no bundle correspondente ao `content_type`,
+sinalizando conteúdo já existente no portal antes de criar rascunho.
+
+## Identidade e ciclo de vida de extensionistas
+
+Endpoints sob `/identity` exigem a permissão Drupal
+`administer neruds extensionistas` (a sessão do bridge recebe
+`can_admin_users` a partir dela). O módulo `neruds_extensionista_guard`
+executa as operações de conta server-side — o bridge não precisa de
+`administer users` nem de credenciais administrativas.
+
+- `GET /identity/roster` lista as contas com papel `extensionista`,
+  enriquecendo cada uma com tarefas abertas da missão, rascunhos pendentes
+  e o registro local de offboarding.
+- `POST /identity/accounts` provisiona `{name, mail}` com papel
+  `extensionista`; sem `password`, o Drupal gera uma senha temporária
+  retornada apenas nesta resposta (nunca persistida).
+- `POST /identity/accounts/{uid}/status` ativa ou bloqueia a conta.
+- `POST /identity/accounts/{uid}/password-reset` devolve um link de reset
+  de uso único do Drupal; o link não é armazenado pelo bridge.
+- `POST /identity/accounts/{uid}/offboarding` bloqueia a conta, transfere
+  as tarefas abertas da missão para `transfer_to`, marca o checklist e
+  devolve alertas pendentes (rascunhos, mailbox Poste.io, sessões Drupal).
+- `GET|POST /identity/accounts/{uid}/checklist` lê/marca as etapas do
+  offboarding; `GET /identity/events` expõe o histórico de quem ocupou
+  cada conta operacional.
+
+O histórico local fica em `data/identity.sqlite3` (fora do Git), mantendo
+rastro de provisão, bloqueio, reset e offboarding por ator.
+
 ## Fluxo editorial
 
 Toda notícia criada pelo bridge é registrada como rascunho e entra na fila de

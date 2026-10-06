@@ -159,6 +159,17 @@ Não pode:
 
 O módulo `neruds_extensionista_guard` força novos `noticia` e `relatorio` criados por Extensionista a permanecerem **não publicados** e pertencentes ao próprio usuário.
 
+## Ciclo de vida de contas extensionistas
+
+A aba **Administração → Usuários e papéis** permite à coordenação (permissão Drupal `administer neruds extensionistas`, sinalizada como `can_admin_users` na sessão do bridge):
+
+- provisionar `extensionista.N` com senha temporária de uso único, sem SSH;
+- bloquear/reativar a conta;
+- gerar link de reset de senha de uso único (entregue por canal seguro);
+- executar offboarding: bloqueio, transferência das tarefas abertas da missão para outra conta, checklist de saída e alertas (rascunhos pendentes, mailbox Poste.io, sessões Drupal abertas).
+
+Cada operação é registrada no histórico local (`data/identity.sqlite3`), mantendo trilha de quem ocupou cada conta operacional.
+
 ## Fluxo editorial
 
 Fluxo de baixo risco:

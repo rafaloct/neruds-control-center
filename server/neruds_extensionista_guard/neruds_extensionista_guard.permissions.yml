@@ -7,3 +7,8 @@ publish neruds news:
   title: 'Publish NERUDS news drafts'
   description: 'Publish reviewed NERUDS news through the Control Center.'
   restrict access: true
+
+administer neruds extensionistas:
+  title: 'Administer NERUDS extensionista accounts'
+  description: 'Provision, block and offboard extensionista accounts through the Control Center.'
+  restrict access: true

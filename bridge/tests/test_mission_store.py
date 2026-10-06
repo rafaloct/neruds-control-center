@@ -1,3 +1,4 @@
+import hashlib
 import pytest
 import mission_store
 import zipfile
@@ -243,3 +244,51 @@ def test_sla_saved_filters_weekly_report_and_xlsx(seeded_mission):
     with zipfile.ZipFile(BytesIO(workbook)) as archive:
         assert "xl/worksheets/sheet1.xml" in archive.namelist()
         assert "Controle Master" in archive.read("xl/workbook.xml").decode()
+
+
+def test_evidence_file_lifecycle(seeded_mission, tmp_path):
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+    content = b"print-quality-evidence-bytes"
+
+    item = mission_store.add_evidence_file(
+        task["id"],
+        actor="extensionista.test",
+        filename="captura portal.png",
+        content=content,
+        content_type="image/png",
+        note="Print do link público",
+    )
+    assert item["filename"] == "captura_portal.png"
+    assert item["size_bytes"] == len(content)
+    assert item["uploaded_by"] == "extensionista.test"
+    assert item["sha256"] == hashlib.sha256(content).hexdigest()
+    assert item["download_url"] == f"/mission-evidence/{item['id']}"
+
+    files = mission_store.list_evidence_files(task["id"])
+    assert len(files) == 1
+    assert files[0]["id"] == item["id"]
+    assert "stored_name" not in files[0]
+
+    path = mission_store.evidence_file_path(item["id"])
+    assert path.read_bytes() == content
+    assert path.parent == tmp_path / "evidence" / str(task["id"])
+
+    detail = mission_store.task_detail(task["id"])
+    assert detail["evidence_files"][0]["id"] == item["id"]
+    assert detail["events"][0]["event_type"] == "evidence_registered"
+    assert detail["events"][0]["evidence_url"] == item["download_url"]
+
+
+def test_evidence_file_requires_task(temp_db):
+    with pytest.raises(KeyError):
+        mission_store.add_evidence_file(9999, "actor", "a.txt", b"x")
+
+
+def test_evidence_file_missing_blob(seeded_mission):
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+    item = mission_store.add_evidence_file(
+        task["id"], "actor", "f.txt", b"data"
+    )
+    mission_store.evidence_file_path(item["id"]).unlink()
+    with pytest.raises(FileNotFoundError):
+        mission_store.evidence_file_path(item["id"])
