@@ -60,6 +60,7 @@ def register_draft(
     drupal_nid: str,
     title: str,
     author: str,
+    *,
     opportunity_item_id: int | None = None,
     mission_task_id: int | None = None,
 ) -> dict[str, Any]:
@@ -80,8 +81,14 @@ def register_draft(
                 WHEN draft_review.author='' THEN excluded.author
                 ELSE draft_review.author
               END,
-              opportunity_item_id=COALESCE(excluded.opportunity_item_id, draft_review.opportunity_item_id),
-              mission_task_id=COALESCE(excluded.mission_task_id, draft_review.mission_task_id),
+              opportunity_item_id=COALESCE(
+                excluded.opportunity_item_id,
+                draft_review.opportunity_item_id
+              ),
+              mission_task_id=COALESCE(
+                excluded.mission_task_id,
+                draft_review.mission_task_id
+              ),
               updated_at=excluded.updated_at
             """,
             (nid, title, author, opportunity_item_id, mission_task_id, now, now),

@@ -153,6 +153,8 @@ class FeedDecision(BaseModel):
     status: str
     note: str | None = None
     category: str | None = None
+    deadline_at: str | None = Field(default=None, max_length=32)
+    fit_tags: list[str] | None = None
 
 
 class ManualOpportunityCreate(BaseModel):
@@ -160,6 +162,7 @@ class ManualOpportunityCreate(BaseModel):
     url: str = Field(min_length=8, max_length=2048)
     category: str
     summary: str | None = Field(default=None, max_length=5000)
+    deadline_at: str | None = Field(default=None, max_length=32)
 
 
 class DraftReviewDecision(BaseModel):
@@ -1098,18 +1101,23 @@ def opportunity_items(
     category: str | None = None,
     source_id: int | None = None,
     q: str | None = None,
+    deadline_status: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    return rss_store.list_items(
-        status=status,
-        category=category,
-        source_id=source_id,
-        query=q,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        return rss_store.list_items(
+            status=status,
+            category=category,
+            source_id=source_id,
+            query=q,
+            deadline_status=deadline_status,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.post("/opportunities/items/manual")
@@ -1124,6 +1132,7 @@ def opportunity_manual_capture(
             category=payload.category,
             summary=payload.summary,
             actor=session["username"],
+            deadline_at=payload.deadline_at,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -1146,6 +1155,11 @@ def opportunity_decision(
     payload: FeedDecision,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
+    if payload.status == "aprovado_pauta" and not session.get("can_review", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Somente perfis de revisão/coordenação podem aprovar uma pauta.",
+        )
     try:
         return rss_store.decide(
             item_id,
@@ -1153,6 +1167,8 @@ def opportunity_decision(
             status=payload.status,
             note=payload.note,
             category=payload.category,
+            deadline_at=payload.deadline_at,
+            fit_tags=payload.fit_tags,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Oportunidade não encontrada.")
@@ -1174,6 +1190,11 @@ async def opportunity_create_draft(
         raise HTTPException(
             status_code=409,
             detail="A oportunidade precisa ser aprovada como pauta antes de virar rascunho.",
+        )
+    if item["duplicate_of_item_id"] is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Uma oportunidade duplicada não pode virar rascunho. Use o item de referência para preservar a auditoria.",
         )
 
     source_line = f"Fonte original: {item['url']}"

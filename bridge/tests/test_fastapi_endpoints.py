@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 import pytest
 import respx
 from httpx import Response
@@ -479,3 +481,76 @@ async def test_opportunity_manual_capture_endpoint(async_client, extensionista_s
     assert data["title"] == "Chamada para Capítulo de Livro NERUDS 2026"
     assert data["category"] == "Chamada para revista"
     assert data["status"] == "novo"
+
+
+async def test_opportunity_approval_requires_reviewer_permission(
+    async_client, extensionista_session, revisor_session
+):
+    extensionista_token, _ = extensionista_session
+    revisor_token, _ = revisor_session
+    extensionista_headers = {"Authorization": f"Bearer {extensionista_token}"}
+    revisor_headers = {"Authorization": f"Bearer {revisor_token}"}
+
+    item = rss_store.add_manual_item(
+        title="Edital para aprovação por revisor",
+        url="https://example.org/edital-revisor",
+        category="Edital",
+        summary="Oportunidade aguardando decisão editorial.",
+        actor="extensionista.test",
+    )
+    item_id = item["id"]
+
+    denied = await async_client.patch(
+        f"/opportunities/items/{item_id}/decision",
+        json={"status": "aprovado_pauta", "note": "Tentativa sem revisão."},
+        headers=extensionista_headers,
+    )
+    assert denied.status_code == 403
+    assert "revisão/coordenação" in denied.json()["detail"]
+    assert rss_store.item_detail(item_id)["status"] == "novo"
+
+    allowed = await async_client.patch(
+        f"/opportunities/items/{item_id}/decision",
+        json={"status": "aprovado_pauta", "note": "Pauta aprovada pelo revisor."},
+        headers=revisor_headers,
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "aprovado_pauta"
+    assert allowed.json()["reviewed_by"] == "revisor.test"
+
+
+async def test_opportunity_deadline_filter_and_duplicate_draft_rejection(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    original = rss_store.add_manual_item(
+        title="Edital de extensão 2026",
+        url="https://neruds.org/edital-extensao",
+        category="Edital",
+        actor="user",
+        deadline_at=(date.today() + timedelta(days=3)).isoformat(),
+    )
+    duplicate = rss_store.add_manual_item(
+        title="Edital de extensão 2026",
+        url="https://other.example.org/edital-extensao",
+        category="Edital",
+        actor="user",
+    )
+    rss_store.decide(
+        duplicate["id"],
+        actor="reviewer",
+        status="aprovado_pauta",
+    )
+
+    res_items = await async_client.get(
+        "/opportunities/items?deadline_status=upcoming", headers=headers
+    )
+    assert res_items.status_code == 200
+    assert [item["id"] for item in res_items.json()["items"]] == [original["id"]]
+
+    res_draft = await async_client.post(
+        f"/opportunities/items/{duplicate['id']}/draft", headers=headers
+    )
+    assert res_draft.status_code == 409
+    assert "duplicada" in res_draft.json()["detail"]
