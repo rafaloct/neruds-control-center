@@ -38,7 +38,7 @@ neruds_extensionista_guard.extensionistas_create:
     _controller: '\Drupal\neruds_extensionista_guard\Controller\IdentityController::createAccount'
   requirements:
     _permission: 'administer neruds extensionistas'
-    _csrf_token: 'TRUE'
+    _csrf_request_header_token: 'TRUE'
   options:
     no_cache: TRUE
 
@@ -49,7 +49,7 @@ neruds_extensionista_guard.extensionistas_status:
     _controller: '\Drupal\neruds_extensionista_guard\Controller\IdentityController::setStatus'
   requirements:
     _permission: 'administer neruds extensionistas'
-    _csrf_token: 'TRUE'
+    _csrf_request_header_token: 'TRUE'
   options:
     no_cache: TRUE
 
@@ -60,6 +60,6 @@ neruds_extensionista_guard.extensionistas_password_reset:
     _controller: '\Drupal\neruds_extensionista_guard\Controller\IdentityController::passwordReset'
   requirements:
     _permission: 'administer neruds extensionistas'
-    _csrf_token: 'TRUE'
+    _csrf_request_header_token: 'TRUE'
   options:
     no_cache: TRUE

@@ -6,6 +6,7 @@ namespace Drupal\neruds_extensionista_guard\Controller;
 
 use Drupal\Core\Controller\ControllerBase;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\Core\Password\PasswordGeneratorInterface;
 use Drupal\Core\Session\AccountProxyInterface;
 use Drupal\user\UserInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -24,12 +25,14 @@ final class IdentityController extends ControllerBase {
   public function __construct(
     private readonly AccountProxyInterface $account,
     private readonly EntityTypeManagerInterface $entityTypes,
+    private readonly PasswordGeneratorInterface $passwordGenerator,
   ) {}
 
   public static function create(ContainerInterface $container): static {
     return new static(
       $container->get('current_user'),
       $container->get('entity_type.manager'),
+      $container->get('password_generator'),
     );
   }
 
@@ -79,7 +82,7 @@ final class IdentityController extends ControllerBase {
     $temporaryPassword = NULL;
     $password = (string) ($payload['pass'] ?? '');
     if ($password === '') {
-      $temporaryPassword = user_password(24);
+      $temporaryPassword = $this->passwordGenerator->generate(24);
       $password = $temporaryPassword;
     }
 
