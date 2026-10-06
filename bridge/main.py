@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
@@ -23,6 +24,7 @@ import rss_store
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 load_dotenv()
@@ -100,6 +102,8 @@ class NewsDraftRequest(BaseModel):
     summary: str = Field(default="", max_length=4000)
     body: str = Field(min_length=1)
     publication_date: str | None = None
+    opportunity_item_id: int | None = None
+    mission_task_id: int | None = None
 
 
 class MissionTaskPatch(BaseModel):
@@ -117,6 +121,11 @@ class MissionTaskPatch(BaseModel):
     internal_deadline: str | None = None
     note: str | None = None
     evidence_url: str | None = None
+
+
+class SavedMissionFilterCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    filters: dict[str, str] = Field(default_factory=dict)
 
 
 class ChecklistPatch(BaseModel):
@@ -146,6 +155,8 @@ class FeedDecision(BaseModel):
     status: str
     note: str | None = None
     category: str | None = None
+    deadline_at: str | None = Field(default=None, max_length=32)
+    fit_tags: list[str] | None = None
 
 
 class ManualOpportunityCreate(BaseModel):
@@ -153,6 +164,7 @@ class ManualOpportunityCreate(BaseModel):
     url: str = Field(min_length=8, max_length=2048)
     category: str
     summary: str | None = Field(default=None, max_length=5000)
+    deadline_at: str | None = Field(default=None, max_length=32)
 
 
 class DraftReviewDecision(BaseModel):
@@ -256,6 +268,8 @@ async def _create_news_draft_internal(
     body: str,
     publication_date: str | None,
     session: dict[str, Any],
+    opportunity_item_id: int | None = None,
+    mission_task_id: int | None = None,
 ) -> dict[str, Any]:
     async with drupal_client(session) as client:
         form = await client.get("/node/add/noticia")
@@ -326,6 +340,8 @@ async def _create_news_draft_internal(
                 str(draft_id),
                 title,
                 session["username"],
+                opportunity_item_id=opportunity_item_id,
+                mission_task_id=mission_task_id,
             )
 
         return {
@@ -561,7 +577,12 @@ async def portal_snapshot() -> dict[str, Any]:
 
 
 @app.get("/content/news/drafts")
-async def news_drafts(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+async def news_drafts(
+    status: str | None = Query(default=None),
+    mine_only: bool = Query(default=False),
+    query: str | None = Query(default=None),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
     params = {
         "filter[status]": "0",
         "sort": "-changed",
@@ -585,6 +606,16 @@ async def news_drafts(session: dict[str, Any] = Depends(require_session)) -> dic
                     attrs.get("title", "Sem título"),
                     "Drupal",
                 )
+            if status and (not review or review.get("review_status") != status):
+                continue
+            if mine_only and (not review or review.get("author") != session["username"]):
+                continue
+            if query and query.strip():
+                needle = query.strip().lower()
+                title = (attrs.get("title") or "").lower()
+                author = (review or {}).get("author", "").lower()
+                if needle not in title and needle not in author:
+                    continue
             drafts.append(
                 {
                     "id": item.get("id"),
@@ -614,6 +645,8 @@ async def create_news_draft(
         body=payload.body,
         publication_date=payload.publication_date,
         session=session,
+        opportunity_item_id=payload.opportunity_item_id,
+        mission_task_id=payload.mission_task_id,
     )
     notification = await notify_review(payload.title, session["username"])
     return {
@@ -632,15 +665,24 @@ async def review_news_draft(
     payload: DraftReviewDecision,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    if not session.get("can_review", False):
-        raise HTTPException(
-            status_code=403,
-            detail="Sua conta não tem permissão para revisar notícias.",
-        )
-
     current = review_store.get_review(str(nid))
     if not current:
         raise HTTPException(status_code=404, detail="Rascunho não registrado para revisão.")
+
+    if payload.status in {"approved", "changes_requested"}:
+        if not session.get("can_review", False):
+            raise HTTPException(
+                status_code=403,
+                detail="Sua conta não tem permissão para revisar notícias.",
+            )
+    elif payload.status == "pending":
+        if not session.get("can_review", False) and current["author"] != session["username"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Sua conta não tem permissão para reenviar o rascunho de terceiros.",
+            )
+    else:
+        raise HTTPException(status_code=422, detail="Status de revisão inválido.")
 
     if payload.status == "changes_requested" and not (payload.note or "").strip():
         raise HTTPException(
@@ -849,6 +891,7 @@ def mission_tasks(
     priority: str | None = None,
     owner: str | None = None,
     content_type: str | None = None,
+    due_status: str | None = Query(default=None, pattern="^(overdue|upcoming)$"),
     q: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -861,8 +904,82 @@ def mission_tasks(
         owner=owner,
         content_type=content_type,
         query=q,
+        due_status=due_status,
         limit=limit,
         offset=offset,
+    )
+
+
+@app.get("/missions/{mission_id}/saved-filters")
+def mission_saved_filters(
+    mission_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> list[dict[str, Any]]:
+    return mission_store.list_saved_filters(mission_id, session["username"])
+
+
+@app.post("/missions/{mission_id}/saved-filters")
+def mission_saved_filter_create(
+    mission_id: int,
+    payload: SavedMissionFilterCreate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        return mission_store.save_filter(
+            mission_id,
+            session["username"],
+            payload.name,
+            payload.filters,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Missão não encontrada.")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.delete("/missions/{mission_id}/saved-filters/{filter_id}")
+def mission_saved_filter_delete(
+    mission_id: int,
+    filter_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, bool]:
+    try:
+        mission_store.delete_saved_filter(mission_id, filter_id, session["username"])
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Filtro salvo não encontrado.")
+    return {"ok": True}
+
+
+@app.get("/missions/{mission_id}/weekly-report")
+def mission_weekly_report(
+    mission_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        return mission_store.weekly_report(mission_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Missão não encontrada.")
+
+
+@app.get("/missions/{mission_id}/export.xlsx")
+def mission_export_xlsx(
+    mission_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> StreamingResponse:
+    try:
+        content = mission_store.export_tasks_xlsx(mission_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Missão não encontrada.")
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="missao-neruds-{mission_id}-controle-master.xlsx"'
+            )
+        },
     )
 
 
@@ -887,6 +1004,20 @@ def mission_task_update(
         exclude_none=True,
         exclude={"note", "evidence_url"},
     )
+    controlled_assignment_fields = {
+        "primary_owner",
+        "cross_reviewer",
+        "internal_deadline",
+    }
+    requested_controlled_fields = controlled_assignment_fields.intersection(changes)
+    if requested_controlled_fields and not session.get("can_review", False):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Somente perfis de revisão/coordenação podem alterar "
+                "responsável, revisor cruzado ou prazo interno."
+            ),
+        )
     if payload.current_stage and payload.current_stage not in mission_store.WORKFLOW:
         raise HTTPException(status_code=422, detail="Etapa da missão inválida.")
     try:
@@ -1032,18 +1163,23 @@ def opportunity_items(
     category: str | None = None,
     source_id: int | None = None,
     q: str | None = None,
+    deadline_status: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    return rss_store.list_items(
-        status=status,
-        category=category,
-        source_id=source_id,
-        query=q,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        return rss_store.list_items(
+            status=status,
+            category=category,
+            source_id=source_id,
+            query=q,
+            deadline_status=deadline_status,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.post("/opportunities/items/manual")
@@ -1058,6 +1194,7 @@ def opportunity_manual_capture(
             category=payload.category,
             summary=payload.summary,
             actor=session["username"],
+            deadline_at=payload.deadline_at,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -1080,6 +1217,11 @@ def opportunity_decision(
     payload: FeedDecision,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
+    if payload.status == "aprovado_pauta" and not session.get("can_review", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Somente perfis de revisão/coordenação podem aprovar uma pauta.",
+        )
     try:
         return rss_store.decide(
             item_id,
@@ -1087,6 +1229,8 @@ def opportunity_decision(
             status=payload.status,
             note=payload.note,
             category=payload.category,
+            deadline_at=payload.deadline_at,
+            fit_tags=payload.fit_tags,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Oportunidade não encontrada.")
@@ -1109,6 +1253,11 @@ async def opportunity_create_draft(
             status_code=409,
             detail="A oportunidade precisa ser aprovada como pauta antes de virar rascunho.",
         )
+    if item["duplicate_of_item_id"] is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Uma oportunidade duplicada não pode virar rascunho. Use o item de referência para preservar a auditoria.",
+        )
 
     source_line = f"Fonte original: {item['url']}"
     body_parts = [
@@ -1124,6 +1273,7 @@ async def opportunity_create_draft(
         body=body,
         publication_date=None,
         session=session,
+        opportunity_item_id=item_id,
     )
     drupal_id = str(created.get("id") or "")
     rss_store.mark_draft(item_id, session["username"], drupal_id)

@@ -39,8 +39,10 @@ class _MissionPageState extends State<MissionPage> {
   Map<String, dynamic>? dashboard;
   List<Map<String, dynamic>> tasks = const [];
   List<Map<String, dynamic>> workItems = const [];
+  List<Map<String, dynamic>> savedFilters = const [];
   String? stage;
   String? priority;
+  String? dueStatus;
 
   static const stages = [
     'Triagem',
@@ -76,6 +78,7 @@ class _MissionPageState extends State<MissionPage> {
         dashboard = null;
         tasks = const [];
         workItems = const [];
+        savedFilters = const [];
       });
     }
   }
@@ -94,6 +97,7 @@ class _MissionPageState extends State<MissionPage> {
       final query = <String, String>{'limit': '250'};
       if (stage case final value?) query['stage'] = value;
       if (priority case final value?) query['priority'] = value;
+      if (dueStatus case final value?) query['due_status'] = value;
       if (search.text.trim().isNotEmpty) query['q'] = search.text.trim();
       final responses = await Future.wait([
         http.get(
@@ -106,6 +110,10 @@ class _MissionPageState extends State<MissionPage> {
         ),
         http.get(
           _uri('/missions/1/work-items'),
+          headers: AppSession.instance.authHeaders,
+        ),
+        http.get(
+          _uri('/missions/1/saved-filters'),
           headers: AppSession.instance.authHeaders,
         ),
       ]);
@@ -137,12 +145,18 @@ class _MissionPageState extends State<MissionPage> {
       final workList = (workPayload['items'] as List<dynamic>? ?? const [])
           .map((e) => Map<String, dynamic>.from(e as Map))
           .toList();
+      final savedList =
+          (jsonDecode(utf8.decode(responses[3].bodyBytes)) as List<dynamic>? ??
+                  const [])
+              .map((e) => Map<String, dynamic>.from(e as Map))
+              .toList();
 
       if (mounted) {
         setState(() {
           dashboard = d;
           tasks = list;
           workItems = workList;
+          savedFilters = savedList;
         });
       }
     } catch (e) {
@@ -166,6 +180,98 @@ class _MissionPageState extends State<MissionPage> {
       builder: (_) => MissionWorkItemDialog(workItemId: id),
     );
     if (changed == true) _load();
+  }
+
+  Future<void> _saveCurrentFilter() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Salvar filtros'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Nome do filtro',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Salvar'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name == null || name.isEmpty) return;
+
+    final filters = <String, String>{};
+    if (priority != null) filters['priority'] = priority!;
+    if (stage != null) filters['stage'] = stage!;
+    if (dueStatus != null) filters['due_status'] = dueStatus!;
+    if (search.text.trim().isNotEmpty) filters['q'] = search.text.trim();
+    final response = await http.post(
+      _uri('/missions/1/saved-filters'),
+      headers: AppSession.instance.authHeaders,
+      body: jsonEncode({'name': name, 'filters': filters}),
+    );
+    if (response.statusCode != 200) {
+      _message(_error(response));
+      return;
+    }
+    _message('Filtro salvo.');
+    await _load();
+  }
+
+  void _applySavedFilter(Map<String, dynamic> saved) {
+    final filters = Map<String, dynamic>.from(saved['filters'] as Map? ?? {});
+    setState(() {
+      priority = filters['priority']?.toString();
+      stage = filters['stage']?.toString();
+      dueStatus = filters['due_status']?.toString();
+      search.text = filters['q']?.toString() ?? '';
+    });
+    _load();
+  }
+
+  Future<void> _showWeeklyReport() async {
+    final response = await http.get(
+      _uri('/missions/1/weekly-report'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      _message(_error(response));
+      return;
+    }
+    final report = Map<String, dynamic>.from(
+      jsonDecode(utf8.decode(response.bodyBytes)),
+    );
+    final summary = Map<String, dynamic>.from(report['summary'] as Map? ?? {});
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Relatório semanal'),
+        content: Text(
+          'Progresso: ${summary['overall_concluded'] ?? 0}/${summary['overall_total'] ?? 0}\n'
+          'Atrasados: ${summary['overdue'] ?? 0}\n'
+          'Próximos 7 dias: ${summary['upcoming'] ?? 0}\n'
+          'Eventos na semana: ${(report['recent_events'] as List? ?? const []).length}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Fechar'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -226,6 +332,8 @@ class _MissionPageState extends State<MissionPage> {
               _Metric('P0', '${p['P0'] ?? 0}'),
               _Metric('P1', '${p['P1'] ?? 0}'),
               _Metric('P2', '${p['P2'] ?? 0}'),
+              _Metric('Atrasados', '${d['overdue'] ?? 0}'),
+              _Metric('Próx. 7 dias', '${d['upcoming'] ?? 0}'),
               _Metric(
                 'Complementares',
                 '${d['work_concluded'] ?? 0}/${d['work_total'] ?? 73}',
@@ -250,35 +358,37 @@ class _MissionPageState extends State<MissionPage> {
           Card(
             child: ExpansionTile(
               leading: const Icon(Icons.account_tree_outlined),
-              title: Text(
-                'Pacotes complementares (${workItems.length})',
-              ),
+              title: Text('Pacotes complementares (${workItems.length})'),
               subtitle: const Text(
                 'Entrevistas, MVV, história, organograma, Instagram, páginas futuras, diário, chamados e encerramento.',
               ),
               children: workItems.isEmpty
                   ? const [
                       ListTile(
-                        title: Text('Nenhuma atividade complementar carregada.'),
+                        title: Text(
+                          'Nenhuma atividade complementar carregada.',
+                        ),
                       ),
                     ]
                   : workItems
-                      .map(
-                        (item) => ListTile(
-                          onTap: () => _openWorkItem(item['id'] as int),
-                          leading: Icon(
-                            item['completed'] == true
-                                ? Icons.check_circle
-                                : Icons.radio_button_unchecked,
+                        .map(
+                          (item) => ListTile(
+                            onTap: () => _openWorkItem(item['id'] as int),
+                            leading: Icon(
+                              item['completed'] == true
+                                  ? Icons.check_circle
+                                  : Icons.radio_button_unchecked,
+                            ),
+                            title: Text(
+                              item['title']?.toString() ?? 'Sem título',
+                            ),
+                            subtitle: Text(
+                              '${_sectionLabel(item['section']?.toString() ?? '')} • ${item['status'] ?? 'A fazer'} • linha ${item['spreadsheet_row']}',
+                            ),
+                            trailing: const Icon(Icons.chevron_right),
                           ),
-                          title: Text(item['title']?.toString() ?? 'Sem título'),
-                          subtitle: Text(
-                            '${_sectionLabel(item['section']?.toString() ?? '')} • ${item['status'] ?? 'A fazer'} • linha ${item['spreadsheet_row']}',
-                          ),
-                          trailing: const Icon(Icons.chevron_right),
-                        ),
-                      )
-                      .toList(),
+                        )
+                        .toList(),
             ),
           ),
           const SizedBox(height: 20),
@@ -344,6 +454,65 @@ class _MissionPageState extends State<MissionPage> {
                   },
                 ),
               ),
+              SizedBox(
+                width: 210,
+                child: DropdownButtonFormField<String?>(
+                  initialValue: dueStatus,
+                  decoration: const InputDecoration(
+                    labelText: 'Prazo',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: null,
+                      child: Text('Todos os prazos'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'overdue',
+                      child: Text('Atrasados'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'upcoming',
+                      child: Text('Próximos 7 dias'),
+                    ),
+                  ],
+                  onChanged: (v) {
+                    setState(() => dueStatus = v);
+                    _load();
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _saveCurrentFilter,
+                icon: const Icon(Icons.bookmark_add_outlined),
+                label: const Text('Salvar filtros'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _showWeeklyReport,
+                icon: const Icon(Icons.summarize_outlined),
+                label: const Text('Relatório semanal'),
+              ),
+              if (savedFilters.isNotEmpty)
+                PopupMenuButton<Map<String, dynamic>>(
+                  tooltip: 'Aplicar filtro salvo',
+                  onSelected: _applySavedFilter,
+                  itemBuilder: (context) => savedFilters
+                      .map(
+                        (filter) => PopupMenuItem(
+                          value: filter,
+                          child: Text(filter['name']?.toString() ?? 'Sem nome'),
+                        ),
+                      )
+                      .toList(),
+                  icon: const Icon(Icons.bookmarks_outlined),
+                ),
             ],
           ),
           const SizedBox(height: 18),
@@ -365,7 +534,13 @@ class _MissionPageState extends State<MissionPage> {
                   title: Text(item['title']?.toString() ?? 'Sem título'),
                   subtitle: Text(
                     '${item['content_type'] ?? 'Sem tipo'} • ${item['current_stage'] ?? 'Triagem'}\n'
-                    '${item['primary_owner'] ?? 'Não atribuído'} → revisão: ${item['cross_reviewer'] ?? 'Não atribuído'} • linha ${item['spreadsheet_row']}',
+                    '${item['primary_owner'] ?? 'Não atribuído'} → revisão: ${item['cross_reviewer'] ?? 'Não atribuído'}'
+                    '${item['deadline_date'] != null ? ' • prazo ${item['deadline_date']}${item['deadline_status'] == 'overdue'
+                              ? ' (atrasado)'
+                              : item['deadline_status'] == 'upcoming'
+                              ? ' (próximo)'
+                              : ''}' : ''}'
+                    ' • linha ${item['spreadsheet_row']}',
                   ),
                   isThreeLine: true,
                   trailing: const Icon(Icons.chevron_right),
@@ -424,6 +599,9 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
   final source = TextEditingController();
   final observations = TextEditingController();
   final note = TextEditingController();
+  final primaryOwner = TextEditingController();
+  final crossReviewer = TextEditingController();
+  final internalDeadline = TextEditingController();
 
   static const stages = _MissionPageState.stages;
 
@@ -439,6 +617,9 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
     source.dispose();
     observations.dispose();
     note.dispose();
+    primaryOwner.dispose();
+    crossReviewer.dispose();
+    internalDeadline.dispose();
     super.dispose();
   }
 
@@ -450,8 +631,9 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
     if (!mounted) return;
     if (response.statusCode != 200) {
       setState(() => loading = false);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(_error(response))));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_error(response))));
       return;
     }
     final data = Map<String, dynamic>.from(
@@ -464,6 +646,12 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
       evidence.text = data['evidence']?.toString() ?? '';
       source.text = data['confirmed_source']?.toString() ?? '';
       observations.text = data['observations']?.toString() ?? '';
+      primaryOwner.text = data['primary_owner']?.toString() ?? '';
+      crossReviewer.text = data['cross_reviewer']?.toString() ?? '';
+      internalDeadline.text =
+          data['deadline_date']?.toString() ??
+          data['internal_deadline']?.toString() ??
+          '';
       loading = false;
     });
   }
@@ -480,23 +668,33 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
           'confirmed_source': source.text.trim(),
           'observations': observations.text.trim(),
           'public_check_ok': publicCheck,
-          'consultation_date':
-              DateTime.now().toIso8601String().substring(0, 10),
+          if (AppSession.instance.canReview) ...{
+            'primary_owner': primaryOwner.text.trim(),
+            'cross_reviewer': crossReviewer.text.trim(),
+            'internal_deadline': internalDeadline.text.trim(),
+          },
+          'consultation_date': DateTime.now().toIso8601String().substring(
+            0,
+            10,
+          ),
           'note': note.text.trim().isEmpty ? null : note.text.trim(),
-          'evidence_url': source.text.trim().isEmpty ? null : source.text.trim(),
+          'evidence_url': source.text.trim().isEmpty
+              ? null
+              : source.text.trim(),
         }),
       );
       if (response.statusCode != 200) throw Exception(_error(response));
       await _load();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Rastreio atualizado.')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Rastreio atualizado.')));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Erro ao salvar: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Erro ao salvar: $e')));
       }
     } finally {
       if (mounted) setState(() => saving = false);
@@ -512,8 +710,9 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
     if (response.statusCode == 200) {
       await _load();
     } else if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(_error(response))));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_error(response))));
     }
   }
 
@@ -539,16 +738,17 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
         body: loading
             ? const Center(child: CircularProgressIndicator())
             : task == null
-                ? const Center(child: Text('Tarefa não encontrada.'))
-                : _taskBody(context),
+            ? const Center(child: Text('Tarefa não encontrada.'))
+            : _taskBody(context),
       ),
     );
   }
 
   Widget _taskBody(BuildContext context) {
     final data = task!;
-    final checklists =
-        Map<String, dynamic>.from(data['checklists'] as Map? ?? {});
+    final checklists = Map<String, dynamic>.from(
+      data['checklists'] as Map? ?? {},
+    );
     final events = (data['events'] as List<dynamic>? ?? const [])
         .map((e) => Map<String, dynamic>.from(e as Map))
         .toList();
@@ -587,6 +787,37 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
               .map((v) => DropdownMenuItem(value: v, child: Text(v)))
               .toList(),
           onChanged: (v) => setState(() => stage = v),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: primaryOwner,
+          enabled: AppSession.instance.canReview,
+          decoration: const InputDecoration(
+            labelText: 'Responsável principal',
+            helperText: 'Somente revisão/coordenação pode alterar este campo.',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: crossReviewer,
+          enabled: AppSession.instance.canReview,
+          decoration: const InputDecoration(
+            labelText: 'Revisor cruzado',
+            helperText: 'Somente revisão/coordenação pode alterar este campo.',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: internalDeadline,
+          enabled: AppSession.instance.canReview,
+          keyboardType: TextInputType.datetime,
+          decoration: const InputDecoration(
+            labelText: 'Prazo interno (AAAA-MM-DD)',
+            helperText: 'Somente revisão/coordenação pode alterar este campo.',
+            border: OutlineInputBorder(),
+          ),
         ),
         const SizedBox(height: 12),
         TextField(
@@ -636,16 +867,22 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
           ),
         ),
         const Divider(height: 32),
-        Text('Checklist de pesquisa',
-            style: Theme.of(context).textTheme.titleLarge),
+        Text(
+          'Checklist de pesquisa',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
         ..._checks('pesquisa', checklists['pesquisa']),
         const Divider(height: 32),
-        Text('Checklist de publicação',
-            style: Theme.of(context).textTheme.titleLarge),
+        Text(
+          'Checklist de publicação',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
         ..._checks('publicacao', checklists['publicacao']),
         const Divider(height: 32),
-        Text('Histórico do item',
-            style: Theme.of(context).textTheme.titleLarge),
+        Text(
+          'Histórico do item',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
         if (events.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 12),
@@ -656,9 +893,7 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
             (event) => ListTile(
               leading: const Icon(Icons.history),
               title: Text('${event['event_type']} • ${event['actor']}'),
-              subtitle: Text(
-                '${event['created_at']}\n${event['note'] ?? ''}',
-              ),
+              subtitle: Text('${event['created_at']}\n${event['note'] ?? ''}'),
               isThreeLine: true,
             ),
           ),
@@ -674,11 +909,8 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
         .map(
           (item) => CheckboxListTile(
             value: item['completed'] == true,
-            onChanged: (v) => _check(
-              kind,
-              item['item_order'] as int,
-              v == true,
-            ),
+            onChanged: (v) =>
+                _check(kind, item['item_order'] as int, v == true),
             title: Text(item['item']?.toString() ?? ''),
             subtitle: item['criterion'] == null
                 ? null
@@ -700,14 +932,10 @@ class _Info extends StatelessWidget {
     final text = value?.toString().trim() ?? '';
     if (text.isEmpty) return const SizedBox.shrink();
     return Card(
-      child: ListTile(
-        title: Text(label),
-        subtitle: SelectableText(text),
-      ),
+      child: ListTile(title: Text(label), subtitle: SelectableText(text)),
     );
   }
 }
-
 
 String _sectionLabel(String value) {
   const labels = {
@@ -766,8 +994,9 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
     if (!mounted) return;
     if (response.statusCode != 200) {
       setState(() => loading = false);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(_error(response))));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_error(response))));
       return;
     }
 
@@ -808,8 +1037,9 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Erro ao salvar: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Erro ao salvar: $e')));
       }
     } finally {
       if (mounted) setState(() => saving = false);
@@ -838,16 +1068,15 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
         body: loading
             ? const Center(child: CircularProgressIndicator())
             : item == null
-                ? const Center(child: Text('Atividade não encontrada.'))
-                : _body(context),
+            ? const Center(child: Text('Atividade não encontrada.'))
+            : _body(context),
       ),
     );
   }
 
   Widget _body(BuildContext context) {
     final data = item!;
-    final payload =
-        Map<String, dynamic>.from(data['payload'] as Map? ?? {});
+    final payload = Map<String, dynamic>.from(data['payload'] as Map? ?? {});
     final events = (data['events'] as List<dynamic>? ?? const [])
         .map((e) => Map<String, dynamic>.from(e as Map))
         .toList();
@@ -937,8 +1166,7 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
           ),
         ),
         const Divider(height: 32),
-        Text('Histórico',
-            style: Theme.of(context).textTheme.titleLarge),
+        Text('Histórico', style: Theme.of(context).textTheme.titleLarge),
         if (events.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 12),
@@ -949,9 +1177,7 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
             (event) => ListTile(
               leading: const Icon(Icons.history),
               title: Text('${event['event_type']} • ${event['actor']}'),
-              subtitle: Text(
-                '${event['created_at']}\n${event['note'] ?? ''}',
-              ),
+              subtitle: Text('${event['created_at']}\n${event['note'] ?? ''}'),
               isThreeLine: true,
             ),
           ),

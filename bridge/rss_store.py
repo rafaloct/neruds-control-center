@@ -6,7 +6,7 @@ import json
 import re
 import socket
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -45,6 +45,28 @@ KEYWORDS = [
     ("Edital", ("edital", "chamada pública", "chamada publica", "seleção pública", "selecao publica")),
 ]
 
+FIT_TAGS = [
+    "ensino",
+    "pesquisa",
+    "extensão",
+    "inovação",
+    "interdisciplinaridade",
+    "território",
+    "formação",
+    "rede de colaboração",
+]
+
+FIT_KEYWORDS = {
+    "ensino": ("ensino", "educação", "educacao", "formação", "formacao"),
+    "pesquisa": ("pesquisa", "científica", "cientifica", "laboratório", "laboratorio"),
+    "extensão": ("extensão", "extensao", "comunidade", "território", "territorio"),
+    "inovação": ("inovação", "inovacao", "tecnologia", "empreendedorismo"),
+    "interdisciplinaridade": ("interdisciplinar", "multidisciplinar", "transdisciplinar"),
+    "território": ("território", "territorio", "regional", "local"),
+    "formação": ("curso", "capacitação", "capacitacao", "oficina", "formação", "formacao"),
+    "rede de colaboração": ("rede", "parceria", "cooperação", "cooperacao", "colaboração", "colaboracao"),
+}
+
 
 def init_rss_db() -> None:
     with connect() as conn:
@@ -73,9 +95,15 @@ def init_rss_db() -> None:
                 summary TEXT,
                 author TEXT,
                 published_at TEXT,
+                deadline_at TEXT,
                 category TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'novo',
                 source_verified INTEGER NOT NULL DEFAULT 0,
+                normalized_url TEXT NOT NULL DEFAULT '',
+                normalized_title TEXT NOT NULL DEFAULT '',
+                duplicate_of_item_id INTEGER REFERENCES feed_item(id),
+                duplicate_reason TEXT,
+                fit_tags_json TEXT NOT NULL DEFAULT '[]',
                 decision_note TEXT,
                 reviewed_by TEXT,
                 reviewed_at TEXT,
@@ -103,6 +131,49 @@ def init_rss_db() -> None:
                 ON feed_source(active);
             """
         )
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(feed_item)").fetchall()
+        }
+        migrations = {
+            "deadline_at": "TEXT",
+            "normalized_url": "TEXT NOT NULL DEFAULT ''",
+            "normalized_title": "TEXT NOT NULL DEFAULT ''",
+            "duplicate_of_item_id": "INTEGER REFERENCES feed_item(id)",
+            "duplicate_reason": "TEXT",
+            "fit_tags_json": "TEXT NOT NULL DEFAULT '[]'",
+        }
+        for name, definition in migrations.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE feed_item ADD COLUMN {name} {definition}")
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_feed_item_deadline
+                ON feed_item(deadline_at, status);
+            CREATE INDEX IF NOT EXISTS idx_feed_item_duplicate
+                ON feed_item(duplicate_of_item_id);
+            """
+        )
+        rows_to_normalize = conn.execute(
+            """
+            SELECT id, url, title FROM feed_item
+            WHERE normalized_url='' OR normalized_title=''
+            """
+        ).fetchall()
+        for row in rows_to_normalize:
+            conn.execute(
+                """
+                UPDATE feed_item
+                SET normalized_url=?, normalized_title=?
+                WHERE id=?
+                """,
+                (
+                    _normalize_url(row["url"]),
+                    _normalize_title(row["title"]),
+                    row["id"],
+                ),
+            )
+        conn.commit()
 
 
 def _clean_text(value: Any) -> str:
@@ -113,6 +184,111 @@ def _clean_text(value: Any) -> str:
     text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_url(value: str) -> str:
+    parsed = urlparse(value.strip())
+    query = "&".join(
+        sorted(
+            part
+            for part in parsed.query.split("&")
+            if part and not part.lower().startswith(("utm_", "fbclid=", "gclid="))
+        )
+    )
+    return parsed._replace(
+        scheme=parsed.scheme.lower(),
+        netloc=parsed.netloc.lower(),
+        path=parsed.path.rstrip("/") or "/",
+        query=query,
+        fragment="",
+    ).geturl()
+
+
+def _normalize_title(value: str) -> str:
+    return re.sub(r"\W+", " ", _clean_text(value).casefold()).strip()
+
+
+def suggest_fit_tags(title: str, summary: str) -> list[str]:
+    haystack = f"{title} {summary}".casefold()
+    return [
+        tag
+        for tag, keywords in FIT_KEYWORDS.items()
+        if any(keyword.casefold() in haystack for keyword in keywords)
+    ]
+
+
+def _parse_deadline(value: Any) -> str | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    for pattern in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text, pattern).date().isoformat()
+        except ValueError:
+            pass
+    match = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](20\d{2})\b", text)
+    if match:
+        day, month, year = (int(part) for part in match.groups())
+        try:
+            return date(year, month, day).isoformat()
+        except ValueError:
+            return None
+    return None
+
+
+def _entry_deadline(entry: Any, title: str, summary: str) -> str | None:
+    for key in ("deadline", "application_deadline", "end_date", "expires", "expiration_date"):
+        deadline = _parse_deadline(entry.get(key))
+        if deadline:
+            return deadline
+    return _parse_deadline(f"{title} {summary}")
+
+
+def _find_duplicate(
+    conn: sqlite3.Connection,
+    *,
+    normalized_url: str,
+    normalized_title: str,
+    source_id: int,
+) -> tuple[int | None, str | None]:
+    row = conn.execute(
+        """
+        SELECT id FROM feed_item
+        WHERE normalized_url = ? AND normalized_url != ''
+        ORDER BY id ASC LIMIT 1
+        """,
+        (normalized_url,),
+    ).fetchone()
+    if row:
+        return int(row["id"]), "url"
+    if normalized_title:
+        row = conn.execute(
+            """
+            SELECT id FROM feed_item
+            WHERE normalized_title = ? AND normalized_title != ''
+            ORDER BY id ASC LIMIT 1
+            """,
+            (normalized_title,),
+        ).fetchone()
+        if row:
+            return int(row["id"]), "title"
+    return None, None
+
+
+def _source_health(source: dict[str, Any]) -> str:
+    if source["last_error"] and (
+        not source["last_success_at"]
+        or not source["last_checked_at"]
+        or source["last_checked_at"] >= source["last_success_at"]
+    ):
+        return "error"
+    if not source["last_success_at"]:
+        return "pending"
+    try:
+        last_success = datetime.fromisoformat(source["last_success_at"]).date()
+    except ValueError:
+        return "stale"
+    return "stale" if last_success < date.today() - timedelta(days=7) else "healthy"
 
 
 def _validate_public_url(url: str) -> str:
@@ -219,6 +395,7 @@ def list_sources() -> list[dict[str, Any]]:
 def _source_row(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["active"] = bool(item["active"])
+    item["health"] = _source_health(item)
     return item
 
 
@@ -329,12 +506,22 @@ def refresh_source(source_id: int) -> dict[str, Any]:
                     summary,
                     source["default_category"],
                 )
+                normalized_url = _normalize_url(link)
+                normalized_title = _normalize_title(title)
+                deadline = _entry_deadline(entry, title, summary)
+                duplicate_of_item_id, duplicate_reason = _find_duplicate(
+                    conn,
+                    normalized_url=normalized_url,
+                    normalized_title=normalized_title,
+                    source_id=source_id,
+                )
                 cur = conn.execute(
                     """
                     INSERT OR IGNORE INTO feed_item
                     (source_id,guid,url,title,summary,author,published_at,category,status,
-                     source_verified,raw_json,created_at,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     source_verified,deadline_at,normalized_url,normalized_title,
+                     duplicate_of_item_id,duplicate_reason,fit_tags_json,raw_json,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         source_id,
@@ -347,6 +534,12 @@ def refresh_source(source_id: int) -> dict[str, Any]:
                         category,
                         "novo",
                         1,
+                        deadline,
+                        normalized_url,
+                        normalized_title,
+                        duplicate_of_item_id,
+                        duplicate_reason,
+                        json.dumps(suggest_fit_tags(title, summary), ensure_ascii=False),
                         json.dumps(dict(entry), ensure_ascii=False, default=str),
                         checked_at,
                         checked_at,
@@ -354,6 +547,27 @@ def refresh_source(source_id: int) -> dict[str, Any]:
                 )
                 if cur.rowcount:
                     inserted += 1
+                    if duplicate_of_item_id:
+                        conn.execute(
+                            """
+                            INSERT INTO feed_event(item_id,actor,event_type,note,changes_json,created_at)
+                            VALUES (?,?,?,?,?,?)
+                            """,
+                            (
+                                int(cur.lastrowid),
+                                "system",
+                                "duplicate_detected",
+                                "Item preservado para auditoria e vinculado à oportunidade já capturada.",
+                                json.dumps(
+                                    {
+                                        "duplicate_of_item_id": duplicate_of_item_id,
+                                        "reason": duplicate_reason,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                                checked_at,
+                            ),
+                        )
                 else:
                     existing += 1
             conn.commit()
@@ -398,6 +612,7 @@ def list_items(
     category: str | None = None,
     source_id: int | None = None,
     query: str | None = None,
+    deadline_status: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -417,6 +632,17 @@ def list_items(
         where.append("(i.title LIKE ? OR i.summary LIKE ?)")
         q = f"%{query}%"
         args.extend([q, q])
+    if deadline_status:
+        today = date.today().isoformat()
+        upcoming = (date.today() + timedelta(days=7)).isoformat()
+        if deadline_status == "upcoming":
+            where.append("i.deadline_at >= ? AND i.deadline_at <= ?")
+            args.extend([today, upcoming])
+        elif deadline_status == "overdue":
+            where.append("i.deadline_at < ?")
+            args.append(today)
+        else:
+            raise ValueError("Filtro de prazo inválido.")
     clause = " AND ".join(where)
 
     with connect() as conn:
@@ -440,6 +666,11 @@ def list_items(
 def _item_row(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["source_verified"] = bool(item["source_verified"])
+    try:
+        item["fit_tags"] = json.loads(item.pop("fit_tags_json") or "[]")
+    except json.JSONDecodeError:
+        item["fit_tags"] = []
+    item["is_duplicate"] = item["duplicate_of_item_id"] is not None
     item.pop("raw_json", None)
     return item
 
@@ -471,11 +702,20 @@ def decide(
     status: str,
     note: str | None = None,
     category: str | None = None,
+    deadline_at: str | None = None,
+    fit_tags: list[str] | None = None,
 ) -> dict[str, Any]:
     if status not in STATUSES:
         raise ValueError("Status inválido.")
     if category is not None and category not in CATEGORIES:
         raise ValueError("Categoria inválida.")
+    normalized_deadline = _parse_deadline(deadline_at) if deadline_at else None
+    if deadline_at and not normalized_deadline:
+        raise ValueError("Prazo deve estar no formato AAAA-MM-DD ou DD/MM/AAAA.")
+    if fit_tags is not None:
+        invalid_tags = sorted(set(fit_tags).difference(FIT_TAGS))
+        if invalid_tags:
+            raise ValueError("Tag de aderência inválida.")
 
     with connect() as conn:
         before = conn.execute("SELECT * FROM feed_item WHERE id=?", (item_id,)).fetchone()
@@ -491,6 +731,20 @@ def decide(
             updates.append("category=?")
             args.append(category)
             changes["category"] = {"from": before["category"], "to": category}
+        if deadline_at is not None and normalized_deadline != before["deadline_at"]:
+            updates.append("deadline_at=?")
+            args.append(normalized_deadline)
+            changes["deadline_at"] = {
+                "from": before["deadline_at"],
+                "to": normalized_deadline,
+            }
+        if fit_tags is not None:
+            reviewed_tags = list(dict.fromkeys(fit_tags))
+            previous_tags = json.loads(before["fit_tags_json"] or "[]")
+            if reviewed_tags != previous_tags:
+                updates.append("fit_tags_json=?")
+                args.append(json.dumps(reviewed_tags, ensure_ascii=False))
+                changes["fit_tags"] = {"from": previous_tags, "to": reviewed_tags}
         args.append(item_id)
         conn.execute(
             f"UPDATE feed_item SET {', '.join(updates)} WHERE id=?",
@@ -550,6 +804,17 @@ def dashboard() -> dict[str, Any]:
     with connect() as conn:
         source_count = conn.execute("SELECT COUNT(*) FROM feed_source WHERE active=1").fetchone()[0]
         rows = conn.execute("SELECT status,category FROM feed_item").fetchall()
+        expiring_soon = conn.execute(
+            """
+            SELECT COUNT(*) FROM feed_item
+            WHERE deadline_at >= ? AND deadline_at <= ?
+              AND status NOT IN ('descartado', 'arquivado', 'rascunho_criado')
+            """,
+            (date.today().isoformat(), (date.today() + timedelta(days=7)).isoformat()),
+        ).fetchone()[0]
+        duplicate_count = conn.execute(
+            "SELECT COUNT(*) FROM feed_item WHERE duplicate_of_item_id IS NOT NULL"
+        ).fetchone()[0]
     by_status: dict[str, int] = {}
     by_category: dict[str, int] = {}
     for row in rows:
@@ -560,6 +825,8 @@ def dashboard() -> dict[str, Any]:
         "total_items": len(rows),
         "by_status": by_status,
         "by_category": by_category,
+        "expiring_soon": int(expiring_soon),
+        "duplicates": int(duplicate_count),
         "categories": CATEGORIES,
         "statuses": STATUSES,
     }
@@ -589,12 +856,16 @@ def add_manual_item(
     category: str,
     actor: str,
     summary: str | None = None,
+    deadline_at: str | None = None,
 ) -> dict[str, Any]:
     """Capture an official-page opportunity when no RSS/Atom feed is available."""
     init_rss_db()
     if category not in CATEGORIES:
         raise ValueError("Categoria inválida.")
     normalized = _validate_reference_url(url)
+    normalized_deadline = _parse_deadline(deadline_at) if deadline_at else None
+    if deadline_at and not normalized_deadline:
+        raise ValueError("Prazo deve estar no formato AAAA-MM-DD ou DD/MM/AAAA.")
     now = utcnow()
     with connect() as conn:
         source = conn.execute(
@@ -623,12 +894,21 @@ def add_manual_item(
         guid = f"manual:{normalized}"
         clean_title = _clean_text(title) or "Sem título"
         clean_summary = _clean_text(summary)
+        normalized_url = _normalize_url(normalized)
+        normalized_title = _normalize_title(clean_title)
+        duplicate_of_item_id, duplicate_reason = _find_duplicate(
+            conn,
+            normalized_url=normalized_url,
+            normalized_title=normalized_title,
+            source_id=source_id,
+        )
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO feed_item
             (source_id,guid,url,title,summary,author,published_at,category,status,
-             source_verified,raw_json,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+             source_verified,deadline_at,normalized_url,normalized_title,
+             duplicate_of_item_id,duplicate_reason,fit_tags_json,raw_json,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 source_id,
@@ -641,6 +921,12 @@ def add_manual_item(
                 category,
                 "novo",
                 0,
+                normalized_deadline,
+                normalized_url,
+                normalized_title,
+                duplicate_of_item_id,
+                duplicate_reason,
+                json.dumps(suggest_fit_tags(clean_title, clean_summary), ensure_ascii=False),
                 json.dumps(
                     {"manual": True, "captured_by": actor, "url": normalized},
                     ensure_ascii=False,
@@ -670,9 +956,38 @@ def add_manual_item(
                 actor,
                 "manual_capture",
                 "URL oficial capturada manualmente porque a fonte não oferece RSS/Atom utilizável.",
-                json.dumps({"category": category}, ensure_ascii=False),
+                json.dumps(
+                    {
+                        "category": category,
+                        "deadline_at": normalized_deadline,
+                        "duplicate_of_item_id": duplicate_of_item_id,
+                        "duplicate_reason": duplicate_reason,
+                    },
+                    ensure_ascii=False,
+                ),
                 now,
             ),
         )
+        if cur.rowcount and duplicate_of_item_id:
+            conn.execute(
+                """
+                INSERT INTO feed_event(item_id,actor,event_type,note,changes_json,created_at)
+                VALUES (?,?,?,?,?,?)
+                """,
+                (
+                    item_id,
+                    actor,
+                    "duplicate_detected",
+                    "Item preservado para auditoria e vinculado à oportunidade já capturada.",
+                    json.dumps(
+                        {
+                            "duplicate_of_item_id": duplicate_of_item_id,
+                            "reason": duplicate_reason,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    now,
+                ),
+            )
         conn.commit()
     return item_detail(item_id)

@@ -23,6 +23,8 @@ def init_review_db() -> None:
                 review_status TEXT NOT NULL DEFAULT 'pending',
                 reviewer TEXT,
                 review_note TEXT,
+                opportunity_item_id INTEGER,
+                mission_task_id INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 published_at TEXT
@@ -43,10 +45,25 @@ def init_review_db() -> None:
                 ON draft_review_event(drupal_nid, id);
             """
         )
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(draft_review)").fetchall()
+        }
+        if "opportunity_item_id" not in columns:
+            conn.execute("ALTER TABLE draft_review ADD COLUMN opportunity_item_id INTEGER")
+        if "mission_task_id" not in columns:
+            conn.execute("ALTER TABLE draft_review ADD COLUMN mission_task_id INTEGER")
         conn.commit()
 
 
-def register_draft(drupal_nid: str, title: str, author: str) -> dict[str, Any]:
+def register_draft(
+    drupal_nid: str,
+    title: str,
+    author: str,
+    *,
+    opportunity_item_id: int | None = None,
+    mission_task_id: int | None = None,
+) -> dict[str, Any]:
     init_review_db()
     nid = str(drupal_nid or "").strip()
     if not nid:
@@ -56,17 +73,25 @@ def register_draft(drupal_nid: str, title: str, author: str) -> dict[str, Any]:
         conn.execute(
             """
             INSERT INTO draft_review
-              (drupal_nid,title,author,review_status,created_at,updated_at)
-            VALUES (?,?,?,'pending',?,?)
+              (drupal_nid,title,author,review_status,opportunity_item_id,mission_task_id,created_at,updated_at)
+            VALUES (?,?,?,'pending',?,?,?,?)
             ON CONFLICT(drupal_nid) DO UPDATE SET
               title=excluded.title,
               author=CASE
                 WHEN draft_review.author='' THEN excluded.author
                 ELSE draft_review.author
               END,
+              opportunity_item_id=COALESCE(
+                excluded.opportunity_item_id,
+                draft_review.opportunity_item_id
+              ),
+              mission_task_id=COALESCE(
+                excluded.mission_task_id,
+                draft_review.mission_task_id
+              ),
               updated_at=excluded.updated_at
             """,
-            (nid, title, author, now, now),
+            (nid, title, author, opportunity_item_id, mission_task_id, now, now),
         )
         conn.execute(
             """
@@ -80,7 +105,13 @@ def register_draft(drupal_nid: str, title: str, author: str) -> dict[str, Any]:
     return get_review(nid)
 
 
-def ensure_draft(drupal_nid: str, title: str, author: str = "Drupal") -> dict[str, Any]:
+def ensure_draft(
+    drupal_nid: str,
+    title: str,
+    author: str = "Drupal",
+    opportunity_item_id: int | None = None,
+    mission_task_id: int | None = None,
+) -> dict[str, Any]:
     init_review_db()
     nid = str(drupal_nid or "").strip()
     if not nid:
@@ -88,7 +119,13 @@ def ensure_draft(drupal_nid: str, title: str, author: str = "Drupal") -> dict[st
     current = get_review(nid)
     if current:
         return current
-    return register_draft(nid, title, author)
+    return register_draft(
+        nid,
+        title,
+        author,
+        opportunity_item_id=opportunity_item_id,
+        mission_task_id=mission_task_id,
+    )
 
 
 def get_review(drupal_nid: str) -> dict[str, Any] | None:
@@ -132,6 +169,8 @@ def decide(
         if not title:
             raise KeyError(nid)
         current = register_draft(nid, title, "Drupal")
+    if current["review_status"] == "published":
+        raise ValueError("published drafts cannot be reviewed again")
 
     now = utcnow()
     with connect() as conn:

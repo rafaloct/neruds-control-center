@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 import pytest
 import respx
 from httpx import Response
@@ -93,6 +95,8 @@ async def test_create_news_draft_born_as_draft(async_client, extensionista_sessi
         "title": "Notícia de Teste Criada por Extensionista",
         "summary": "Resumo da notícia de teste",
         "body": "Corpo detalhado da notícia de teste.",
+        "opportunity_item_id": 21,
+        "mission_task_id": 34,
     }
 
     res = await async_client.post("/content/news/draft", json=payload, headers=headers)
@@ -109,6 +113,8 @@ async def test_create_news_draft_born_as_draft(async_client, extensionista_sessi
     assert rev is not None
     assert rev["review_status"] == "pending"
     assert rev["author"] == "extensionista.test"
+    assert rev["opportunity_item_id"] == 21
+    assert rev["mission_task_id"] == 34
 
 
 async def test_negative_extensionista_permissions(async_client, extensionista_session):
@@ -133,6 +139,73 @@ async def test_negative_extensionista_permissions(async_client, extensionista_se
     )
     assert res_pub.status_code == 403
     assert "publicar" in res_pub.json()["detail"]
+
+
+async def test_author_can_resubmit_own_draft(async_client, extensionista_session):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    review_store.register_draft("357", title="Notícia 357", author="extensionista.test")
+    review_store.decide(
+        "357",
+        actor="revisor.test",
+        status="changes_requested",
+        note="Inclua a fonte.",
+    )
+
+    res = await async_client.patch(
+        "/content/news/drafts/357/review",
+        json={"status": "pending", "note": "Fonte incluída."},
+        headers=headers,
+    )
+
+    assert res.status_code == 200
+    assert res.json()["review"]["review_status"] == "pending"
+    assert res.json()["review"]["events"][0]["actor"] == "extensionista.test"
+
+
+@respx.mock
+async def test_draft_queue_filters_status_author_and_search(
+    async_client, extensionista_session, respx_mock
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    review_store.register_draft("601", title="Edital da autora", author="extensionista.test")
+    review_store.register_draft("602", title="Notícia de terceiro", author="outra.pessoa")
+    review_store.decide("602", actor="revisor.test", status="approved", note="Aprovado.")
+
+    respx_mock.get("https://neruds.org/jsonapi/node/noticia").mock(
+        return_value=Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "uuid-601",
+                        "attributes": {
+                            "drupal_internal__nid": 601,
+                            "title": "Edital da autora",
+                            "changed": "2026-10-05T00:00:00+00:00",
+                        },
+                    },
+                    {
+                        "id": "uuid-602",
+                        "attributes": {
+                            "drupal_internal__nid": 602,
+                            "title": "Notícia de terceiro",
+                            "changed": "2026-10-05T00:00:00+00:00",
+                        },
+                    },
+                ]
+            },
+        )
+    )
+
+    res = await async_client.get(
+        "/content/news/drafts?status=pending&mine_only=true&query=edital",
+        headers=headers,
+    )
+
+    assert res.status_code == 200
+    assert [item["nid"] for item in res.json()["items"]] == [601]
 
 
 async def test_negative_revisor_permissions(async_client, revisor_session):
@@ -247,6 +320,9 @@ async def test_opportunity_to_draft_workflow(async_client, extensionista_session
     updated_item = rss_store.item_detail(item_id)
     assert updated_item["status"] == "rascunho_criado"
     assert updated_item["drupal_draft_id"] == "789"
+    review = review_store.get_review("789")
+    assert review is not None
+    assert review["opportunity_item_id"] == item_id
 
 
 async def test_mission_endpoints(async_client, extensionista_session, seeded_mission):
@@ -294,6 +370,104 @@ async def test_mission_endpoints(async_client, extensionista_session, seeded_mis
     assert res_check.status_code == 200
 
 
+async def test_mission_assignment_fields_require_reviewer_permission(
+    async_client, extensionista_session, revisor_session, seeded_mission
+):
+    extensionista_token, _ = extensionista_session
+    revisor_token, _ = revisor_session
+    extensionista_headers = {"Authorization": f"Bearer {extensionista_token}"}
+    revisor_headers = {"Authorization": f"Bearer {revisor_token}"}
+
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+    task_id = task["id"]
+    original = mission_store.task_detail(task_id)
+
+    denied = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={
+            "primary_owner": "outra.pessoa",
+            "cross_reviewer": "revisor.test",
+            "internal_deadline": "2026-12-31",
+        },
+        headers=extensionista_headers,
+    )
+    assert denied.status_code == 403
+    assert "revisão/coordenação" in denied.json()["detail"]
+
+    after_denied = mission_store.task_detail(task_id)
+    assert after_denied["primary_owner"] == original["primary_owner"]
+    assert after_denied["cross_reviewer"] == original["cross_reviewer"]
+    assert after_denied["internal_deadline"] == original["internal_deadline"]
+
+    operational = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={"current_stage": "Em pesquisa", "note": "Avanço operacional"},
+        headers=extensionista_headers,
+    )
+    assert operational.status_code == 200
+    assert operational.json()["current_stage"] == "Em pesquisa"
+
+    allowed = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={
+            "primary_owner": "extensionista.2",
+            "cross_reviewer": "revisor.test",
+            "internal_deadline": "2026-12-31",
+        },
+        headers=revisor_headers,
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["primary_owner"] == "extensionista.2"
+    assert allowed.json()["cross_reviewer"] == "revisor.test"
+    assert allowed.json()["internal_deadline"] == "2026-12-31"
+
+
+async def test_mission_sla_filters_reports_exports_and_saved_filters(
+    async_client, extensionista_session, seeded_mission
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+    mission_store.update_task(
+        task["id"],
+        actor="extensionista.test",
+        changes={"internal_deadline": "2020-01-01"},
+    )
+
+    res_tasks = await async_client.get(
+        "/missions/1/tasks?due_status=overdue",
+        headers=headers,
+    )
+    assert res_tasks.status_code == 200
+    assert any(item["id"] == task["id"] for item in res_tasks.json()["items"])
+
+    res_save = await async_client.post(
+        "/missions/1/saved-filters",
+        json={"name": "P0 atrasadas", "filters": {"priority": "P0", "due_status": "overdue"}},
+        headers=headers,
+    )
+    assert res_save.status_code == 200
+    filter_id = res_save.json()["id"]
+    assert (await async_client.get("/missions/1/saved-filters", headers=headers)).status_code == 200
+    assert (
+        await async_client.delete(
+            f"/missions/1/saved-filters/{filter_id}",
+            headers=headers,
+        )
+    ).json() == {"ok": True}
+
+    res_report = await async_client.get("/missions/1/weekly-report", headers=headers)
+    assert res_report.status_code == 200
+    assert res_report.json()["summary"]["overdue"] >= 1
+
+    res_export = await async_client.get("/missions/1/export.xlsx", headers=headers)
+    assert res_export.status_code == 200
+    assert res_export.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    assert res_export.content[:2] == b"PK"
+
+
 async def test_opportunity_manual_capture_endpoint(async_client, extensionista_session):
     token, _ = extensionista_session
     headers = {"Authorization": f"Bearer {token}"}
@@ -311,3 +485,76 @@ async def test_opportunity_manual_capture_endpoint(async_client, extensionista_s
     assert data["title"] == "Chamada para Capítulo de Livro NERUDS 2026"
     assert data["category"] == "Chamada para revista"
     assert data["status"] == "novo"
+
+
+async def test_opportunity_approval_requires_reviewer_permission(
+    async_client, extensionista_session, revisor_session
+):
+    extensionista_token, _ = extensionista_session
+    revisor_token, _ = revisor_session
+    extensionista_headers = {"Authorization": f"Bearer {extensionista_token}"}
+    revisor_headers = {"Authorization": f"Bearer {revisor_token}"}
+
+    item = rss_store.add_manual_item(
+        title="Edital para aprovação por revisor",
+        url="https://example.org/edital-revisor",
+        category="Edital",
+        summary="Oportunidade aguardando decisão editorial.",
+        actor="extensionista.test",
+    )
+    item_id = item["id"]
+
+    denied = await async_client.patch(
+        f"/opportunities/items/{item_id}/decision",
+        json={"status": "aprovado_pauta", "note": "Tentativa sem revisão."},
+        headers=extensionista_headers,
+    )
+    assert denied.status_code == 403
+    assert "revisão/coordenação" in denied.json()["detail"]
+    assert rss_store.item_detail(item_id)["status"] == "novo"
+
+    allowed = await async_client.patch(
+        f"/opportunities/items/{item_id}/decision",
+        json={"status": "aprovado_pauta", "note": "Pauta aprovada pelo revisor."},
+        headers=revisor_headers,
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "aprovado_pauta"
+    assert allowed.json()["reviewed_by"] == "revisor.test"
+
+
+async def test_opportunity_deadline_filter_and_duplicate_draft_rejection(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    original = rss_store.add_manual_item(
+        title="Edital de extensão 2026",
+        url="https://neruds.org/edital-extensao",
+        category="Edital",
+        actor="user",
+        deadline_at=(date.today() + timedelta(days=3)).isoformat(),
+    )
+    duplicate = rss_store.add_manual_item(
+        title="Edital de extensão 2026",
+        url="https://other.example.org/edital-extensao",
+        category="Edital",
+        actor="user",
+    )
+    rss_store.decide(
+        duplicate["id"],
+        actor="reviewer",
+        status="aprovado_pauta",
+    )
+
+    res_items = await async_client.get(
+        "/opportunities/items?deadline_status=upcoming", headers=headers
+    )
+    assert res_items.status_code == 200
+    assert [item["id"] for item in res_items.json()["items"]] == [original["id"]]
+
+    res_draft = await async_client.post(
+        f"/opportunities/items/{duplicate['id']}/draft", headers=headers
+    )
+    assert res_draft.status_code == 409
+    assert "duplicada" in res_draft.json()["detail"]
