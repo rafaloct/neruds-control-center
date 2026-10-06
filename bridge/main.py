@@ -31,6 +31,14 @@ load_dotenv()
 
 PORTAL_URL = os.getenv("NERUDS_PORTAL_URL", "https://neruds.org").rstrip("/")
 VPS_TAILSCALE_HOST = os.getenv("NERUDS_VPS_TAILSCALE_HOST", "100.111.132.36")
+TAILSCALE_SERVE_HOST = os.getenv(
+    "NERUDS_TAILSCALE_SERVE_HOST",
+    "largeo.tail2faed0.ts.net:8443",
+)
+TAILSCALE_SERVE_TARGET = os.getenv(
+    "NERUDS_TAILSCALE_SERVE_TARGET",
+    "http://127.0.0.1:8787",
+)
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -212,6 +220,17 @@ def require_session(authorization: str | None = Header(default=None)) -> dict[st
         raise HTTPException(status_code=401, detail="Sessão expirada por inatividade.")
 
     session["last_seen"] = now.isoformat()
+    return session
+
+
+def require_admin_session(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    if not session.get("can_publish", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Área operacional restrita à coordenação/TI.",
+        )
     return session
 
 
@@ -755,8 +774,7 @@ async def publish_news_draft(
     }
 
 
-@app.get("/mail/status")
-async def mail_status(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+async def _mail_status() -> dict[str, Any]:
     port_open = await asyncio.to_thread(tcp_reachable, SMTP_CONNECT_HOST, SMTP_PORT, 2.0)
     tls_ok = False
     tls_error = None
@@ -779,8 +797,6 @@ async def mail_status(session: dict[str, Any] = Depends(require_session)) -> dic
             tls_error = exc.__class__.__name__
 
     return {
-        "host": SMTP_HOST,
-        "connect_host": SMTP_CONNECT_HOST,
         "port": SMTP_PORT,
         "starttls": SMTP_STARTTLS,
         "port_open": port_open,
@@ -791,8 +807,14 @@ async def mail_status(session: dict[str, Any] = Depends(require_session)) -> dic
     }
 
 
-@app.get("/infra/status")
-def infra_status() -> dict[str, Any]:
+@app.get("/mail/status")
+async def mail_status(
+    session: dict[str, Any] = Depends(require_admin_session),
+) -> dict[str, Any]:
+    return await _mail_status()
+
+
+def _infra_status() -> dict[str, Any]:
     ssh = tcp_reachable(VPS_TAILSCALE_HOST, 22)
     http = tcp_reachable(VPS_TAILSCALE_HOST, 80)
     https = tcp_reachable(VPS_TAILSCALE_HOST, 443)
@@ -812,6 +834,7 @@ def infra_status() -> dict[str, Any]:
         if tailscale_available:
             data = json.loads(proc.stdout)
             tailscale_self = data.get("Self", {}).get("HostName")
+
         serve = subprocess.run(
             ["tailscale", "serve", "status", "--json"],
             check=False,
@@ -819,25 +842,42 @@ def infra_status() -> dict[str, Any]:
             text=True,
             timeout=4,
         )
-        tailscale_serve = serve.returncode == 0
-    except (OSError, subprocess.SubprocessError, ValueError):
+        if serve.returncode == 0:
+            serve_data = json.loads(serve.stdout or "{}")
+            handlers = (
+                serve_data.get("Web", {})
+                .get(TAILSCALE_SERVE_HOST, {})
+                .get("Handlers", {})
+            )
+            tailscale_serve = any(
+                isinstance(handler, dict)
+                and handler.get("Proxy") == TAILSCALE_SERVE_TARGET
+                for handler in handlers.values()
+            )
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
         pass
 
     return {
         "tailscale_available": tailscale_available,
         "tailscale_serve": tailscale_serve,
         "tailscale_self": tailscale_self,
-        "vps_host": VPS_TAILSCALE_HOST,
         "vps_ports": {"ssh": ssh, "http": http, "https": https},
         "vps_reachable": ssh or http or https,
     }
 
 
+@app.get("/infra/status")
+def infra_status(
+    session: dict[str, Any] = Depends(require_admin_session),
+) -> dict[str, Any]:
+    return _infra_status()
+
+
 @app.get("/operations/incidents")
 async def operations_incidents(
-    session: dict[str, Any] = Depends(require_session),
+    session: dict[str, Any] = Depends(require_admin_session),
 ) -> dict[str, Any]:
-    infra = await asyncio.to_thread(infra_status)
+    infra = await asyncio.to_thread(_infra_status)
     incidents: list[dict[str, str]] = []
     if not infra["tailscale_available"]:
         incidents.append({"service": "Tailscale", "severity": "high", "code": "client_unavailable"})
@@ -849,19 +889,33 @@ async def operations_incidents(
     try:
         async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
             portal = await client.get(f"{PORTAL_URL}/user/login")
-        if portal.status_code >= 500:
-            incidents.append({"service": "Drupal", "severity": "high", "code": "server_error"})
+        if portal.status_code >= 400:
+            incidents.append({"service": "Drupal", "severity": "high", "code": "http_error"})
     except httpx.HTTPError:
         incidents.append({"service": "Drupal", "severity": "high", "code": "unreachable"})
 
-    mail = await mail_status(session)
+    mail = await _mail_status()
     if not mail["tls_ok"]:
         incidents.append({"service": "Poste.io", "severity": "medium", "code": "smtp_tls_unavailable"})
+
     OPERATIONS_LOG.info(
         "operations_incidents_checked",
-        extra={"incident_count": len(incidents), "services": [item["service"] for item in incidents]},
+        extra={
+            "incident_count": len(incidents),
+            "services": [item["service"] for item in incidents],
+        },
     )
-    return {"ok": not incidents, "incidents": incidents, "infra": infra}
+    return {
+        "ok": not incidents,
+        "incidents": incidents,
+        "checks": {
+            "tailscale": bool(infra["tailscale_available"]),
+            "tailscale_serve": bool(infra["tailscale_serve"]),
+            "vps_reachable": bool(infra["vps_reachable"]),
+            "drupal": not any(item["service"] == "Drupal" for item in incidents),
+            "poste_tls": bool(mail["tls_ok"]),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

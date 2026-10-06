@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-_SENSITIVE = ("password", "token", "cookie", "csrf", "authorization")
+_SENSITIVE = ("password", "token", "cookie", "csrf", "authorization", "secret", "credential", "session")
 
 
 class JsonFormatter(logging.Formatter):

@@ -73,11 +73,11 @@ cd D:\AI-Shared\neruds-control-center\bridge
 uv run uvicorn main:app --host 127.0.0.1 --port 8787
 ```
 
-Para instalação persistente, use os scripts em
-`tools/operations/`: a tarefa `NERUDS-Control-Bridge` roda como `SYSTEM`,
-inicia no boot e substitui o supervisor dependente do logon. O procedimento de
-backup, restauração ensaiada e incidentes está em
-[`tools/operations/README.md`](tools/operations/README.md).
+Para instalação persistente, use os scripts em `tools/operations/`. O bridge
+é instalado como **Windows Service** `NERUDS-Control-Bridge`, executado como
+`LocalSystem`, com inicialização automática, recovery e bind apenas em
+`127.0.0.1:8787`. O procedimento de instalação, backup, restauração ensaiada e
+incidentes está em [`tools/operations/README.md`](tools/operations/README.md).
 
 Verifique a exposição segura com:
 

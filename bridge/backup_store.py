@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import shutil
 import sqlite3
 from datetime import datetime, timezone
@@ -13,9 +14,30 @@ def _timestamp() -> str:
 
 
 def _validate(database: Path) -> None:
-    with sqlite3.connect(database) as conn:
-        if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-            raise ValueError("O banco SQLite falhou na verificação de integridade.")
+    try:
+        with sqlite3.connect(database) as conn:
+            if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ValueError("O banco SQLite falhou na verificação de integridade.")
+    except sqlite3.DatabaseError as exc:
+        raise ValueError("O arquivo não é um banco SQLite íntegro.") from exc
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_checksum(source: Path) -> None:
+    checksum_file = source.with_suffix(".sha256")
+    if not checksum_file.is_file():
+        return
+    expected = checksum_file.read_text(encoding="ascii").strip().split()[0]
+    actual = _sha256(source)
+    if not hmac.compare_digest(expected, actual):
+        raise ValueError("O SHA-256 do backup não confere.")
 
 
 def backup(source: Path, destination: Path) -> Path:
@@ -28,7 +50,7 @@ def backup(source: Path, destination: Path) -> Path:
         source_conn.backup(target_conn)
     _validate(temporary)
     temporary.replace(target)
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    digest = _sha256(target)
     target.with_suffix(".sha256").write_text(f"{digest}  {target.name}\n", encoding="ascii")
     return target
 
@@ -36,6 +58,7 @@ def backup(source: Path, destination: Path) -> Path:
 def restore(source: Path, destination: Path) -> Path | None:
     if not source.is_file():
         raise FileNotFoundError(f"Backup não encontrado: {source}")
+    _verify_checksum(source)
     _validate(source)
     previous = None
     if destination.exists():
