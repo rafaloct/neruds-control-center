@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Continue'
-$root = 'D:\AI-Shared\neruds-control-center\app\build\web'
+$root = Join-Path $PSScriptRoot 'app\build\web'
 $health = 'http://127.0.0.1:8790/'
 Set-Location $root
 

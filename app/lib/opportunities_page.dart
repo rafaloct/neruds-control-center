@@ -5,12 +5,15 @@ import 'package:http/http.dart' as http;
 
 import 'app_session.dart';
 
-const _opBridgeUrl = String.fromEnvironment(
-  'NERUDS_BRIDGE_URL',
-  defaultValue: 'https://largeo.tail2faed0.ts.net:8443',
-);
+const _opBridgeUrl = String.fromEnvironment('NERUDS_BRIDGE_URL');
 
 Uri _opUri(String path, [Map<String, String>? query]) {
+  if (_opBridgeUrl.isEmpty) {
+    throw StateError(
+      'NERUDS_BRIDGE_URL não configurada. Execute o app com '
+      '--dart-define=NERUDS_BRIDGE_URL=https://<bridge>:<porta>',
+    );
+  }
   final base = _opBridgeUrl.endsWith('/')
       ? _opBridgeUrl.substring(0, _opBridgeUrl.length - 1)
       : _opBridgeUrl;

@@ -28,7 +28,7 @@ Validado em 05/10/2026:
 
 O FastAPI não é exposto diretamente na interface Tailscale.
 
-No LARGeo ele escuta apenas em:
+No host do bridge ele escuta apenas em:
 
 ```text
 http://127.0.0.1:8787
@@ -37,17 +37,17 @@ http://127.0.0.1:8787
 O Tailscale Serve publica, somente para a tailnet:
 
 ```text
-https://largeo.tail2faed0.ts.net:8443
+https://<host-bridge>.<tailnet>.ts.net:8443
 ```
 
 Configuração esperada:
 
 ```text
-https://largeo.tail2faed0.ts.net:8443
+https://<host-bridge>.<tailnet>.ts.net:8443
 └── /  ->  http://127.0.0.1:8787
 ```
 
-Não voltar a bindar o Uvicorn em `0.0.0.0` ou `100.111.132.8` sem uma necessidade específica.
+Não voltar a bindar o Uvicorn em `0.0.0.0` ou no IP Tailscale sem uma necessidade específica.
 
 ## Estrutura
 
@@ -66,10 +66,10 @@ Não voltar a bindar o Uvicorn em `0.0.0.0` ou `100.111.132.8` sem uma necessida
 
 ## Bridge
 
-Para execução manual no LARGeo:
+Para execução manual no host do bridge:
 
 ```powershell
-cd D:\AI-Shared\neruds-control-center\bridge
+cd <pasta-do-checkout>\neruds-control-center\bridge
 uv run uvicorn main:app --host 127.0.0.1 --port 8787
 ```
 
@@ -77,7 +77,7 @@ Também existem:
 
 - `start_bridge.ps1`;
 - `bridge_supervisor.ps1`;
-- startup do usuário Rafael para iniciar o supervisor no logon.
+- startup do Windows para iniciar o supervisor no logon do operador.
 
 Verifique a exposição segura com:
 
@@ -88,31 +88,33 @@ tailscale serve status
 Health pela tailnet:
 
 ```text
-https://largeo.tail2faed0.ts.net:8443/health
+https://<host-bridge>.<tailnet>.ts.net:8443/health
 ```
 
 ## Aplicativo
 
-O endpoint HTTPS da tailnet já é o valor padrão no código Flutter. Em desenvolvimento:
+O endpoint HTTPS do bridge não fica gravado no código: configure-o em tempo de execução/compilação via `NERUDS_BRIDGE_URL` (ex.: `https://<host-bridge>.<tailnet>.ts.net:8443`). Em desenvolvimento:
 
 ### Windows
 
 ```powershell
-cd D:\AI-Shared\neruds-control-center\app
-flutter run -d windows
+cd app
+flutter run -d windows --dart-define=NERUDS_BRIDGE_URL=https://<host-bridge>.<tailnet>.ts.net:8443
 ```
 
 ### Web
 
 ```powershell
-flutter run -d chrome
+flutter run -d chrome --dart-define=NERUDS_BRIDGE_URL=https://<host-bridge>.<tailnet>.ts.net:8443
 ```
 
 ### Android
 
 ```powershell
-flutter run -d android
+flutter run -d android --dart-define=NERUDS_BRIDGE_URL=https://<host-bridge>.<tailnet>.ts.net:8443
 ```
+
+Sem `NERUDS_BRIDGE_URL` o app segue funcionando apenas com leitura pública do portal; as funções privadas (login, missão, oportunidades, revisão) avisam que a URL da bridge não foi configurada.
 
 O dispositivo precisa estar conectado à mesma tailnet para usar as funções privadas do Control Center.
 
@@ -226,7 +228,7 @@ Há captura manual de URL oficial para fontes sem RSS/Atom. A URL manual não é
 
 ## Poste.io
 
-O Poste.io roda no `srv1011336`.
+O Poste.io roda no VPS de e-mail.
 
 TLS validado:
 
@@ -238,7 +240,7 @@ TLS validado:
 
 O bridge envia notificações internas por:
 
-- conexão: `100.111.132.36:25` via Tailscale;
+- conexão: `<ip-tailscale-do-vps>:25` via Tailscale;
 - identidade TLS: `mail.neruds.org`;
 - STARTTLS validado;
 - sem armazenar senha SMTP;
@@ -285,6 +287,6 @@ Artefatos:
 
 ### Android formal
 
-O projeto possui configuração de `key.properties`, mas não existe atualmente um arquivo `.jks/.keystore` no LARGeo/projeto.
+O projeto possui configuração de `key.properties`, mas não existe atualmente um arquivo `.jks/.keystore` no host de operação/projeto.
 
 Por isso o APK entregue é **debug para uso interno**. Não criar uma nova chave de assinatura sem decisão explícita, porque essa chave passa a definir a identidade das futuras atualizações Android.

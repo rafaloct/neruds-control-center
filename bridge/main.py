@@ -29,17 +29,14 @@ from pydantic import BaseModel, Field
 load_dotenv()
 
 PORTAL_URL = os.getenv("NERUDS_PORTAL_URL", "https://neruds.org").rstrip("/")
-VPS_TAILSCALE_HOST = os.getenv("NERUDS_VPS_TAILSCALE_HOST", "100.111.132.36")
+VPS_TAILSCALE_HOST = os.getenv("NERUDS_VPS_TAILSCALE_HOST", "")
 ALLOWED_ORIGINS = [
     origin.strip()
-    for origin in os.getenv(
-        "NERUDS_ALLOWED_ORIGINS",
-        "https://largeo.tail2faed0.ts.net:8444",
-    ).split(",")
+    for origin in os.getenv("NERUDS_ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
 
-SMTP_HOST = os.getenv("NERUDS_SMTP_HOST", "mail.neruds.org")
+SMTP_HOST = os.getenv("NERUDS_SMTP_HOST", "")
 SMTP_CONNECT_HOST = os.getenv("NERUDS_SMTP_CONNECT_HOST", SMTP_HOST)
 SMTP_PORT = int(os.getenv("NERUDS_SMTP_PORT", "587"))
 SMTP_USER = os.getenv("NERUDS_SMTP_USER", "")
@@ -736,7 +733,9 @@ async def publish_news_draft(
 
 @app.get("/mail/status")
 async def mail_status(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
-    port_open = await asyncio.to_thread(tcp_reachable, SMTP_CONNECT_HOST, SMTP_PORT, 2.0)
+    port_open = False
+    if SMTP_CONNECT_HOST:
+        port_open = await asyncio.to_thread(tcp_reachable, SMTP_CONNECT_HOST, SMTP_PORT, 2.0)
     tls_ok = False
     tls_error = None
 
@@ -772,9 +771,11 @@ async def mail_status(session: dict[str, Any] = Depends(require_session)) -> dic
 
 @app.get("/infra/status")
 def infra_status() -> dict[str, Any]:
-    ssh = tcp_reachable(VPS_TAILSCALE_HOST, 22)
-    http = tcp_reachable(VPS_TAILSCALE_HOST, 80)
-    https = tcp_reachable(VPS_TAILSCALE_HOST, 443)
+    ssh = http = https = False
+    if VPS_TAILSCALE_HOST:
+        ssh = tcp_reachable(VPS_TAILSCALE_HOST, 22)
+        http = tcp_reachable(VPS_TAILSCALE_HOST, 80)
+        https = tcp_reachable(VPS_TAILSCALE_HOST, 443)
 
     tailscale_available = False
     tailscale_self = None
@@ -796,7 +797,8 @@ def infra_status() -> dict[str, Any]:
     return {
         "tailscale_available": tailscale_available,
         "tailscale_self": tailscale_self,
-        "vps_host": VPS_TAILSCALE_HOST,
+        "vps_host": VPS_TAILSCALE_HOST or None,
+        "vps_configured": bool(VPS_TAILSCALE_HOST),
         "vps_ports": {"ssh": ssh, "http": http, "https": https},
         "vps_reachable": ssh or http or https,
     }

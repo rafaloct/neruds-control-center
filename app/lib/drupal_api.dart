@@ -21,10 +21,7 @@ class PortalSnapshot {
 class DrupalApi {
   DrupalApi({
     this.baseUrl = 'https://neruds.org',
-    this.bridgeUrl = const String.fromEnvironment(
-      'NERUDS_BRIDGE_URL',
-      defaultValue: 'https://largeo.tail2faed0.ts.net:8443',
-    ),
+    this.bridgeUrl = const String.fromEnvironment('NERUDS_BRIDGE_URL'),
   });
 
   final String baseUrl;

@@ -6,9 +6,9 @@
 
 ## Acesso VPS
 
-- aliases: `cleiton-vps` / `neruds-vps`
-- destino operacional: `100.111.132.36` via Tailscale
-- host: `srv1011336`
+- aliases SSH de operação: registrados fora do repositório
+- destino operacional: `<ip-tailscale-do-vps>` via Tailscale
+- host: `<hostname-do-vps>`
 
 ## Papel Drupal
 

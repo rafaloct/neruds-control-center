@@ -1,6 +1,15 @@
+param(
+  [string]$Source = $env:NERUDS_MISSION_SOURCE,
+  [string]$Out = (Join-Path (Split-Path $PSScriptRoot -Parent) 'mission_seed.json')
+)
+
 $ErrorActionPreference = 'Stop'
-$source = 'D:\AI-Shared\neruds-control-center\source\TREINAMENTO_NERUDS_Gestao_e_Preenchimento.xlsm'
-$out = 'D:\AI-Shared\neruds-control-center\bridge\mission_seed.json'
+
+if (-not $Source) {
+  throw 'Informe -Source ou defina NERUDS_MISSION_SOURCE com o caminho da planilha .xlsm da missão (arquivo institucional, fora do repositório).'
+}
+$source = $Source
+$out = $Out
 
 $excel = New-Object -ComObject Excel.Application
 $excel.Visible = $false
