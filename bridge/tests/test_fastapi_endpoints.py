@@ -14,6 +14,10 @@ async def test_health_and_capabilities(async_client):
     assert data_h["ok"] is True
     assert data_h["service"] == "neruds-control-bridge"
 
+    res_ready = await async_client.get("/ready")
+    assert res_ready.status_code == 200
+    assert res_ready.json()["database_ready"] is True
+
     res_cap = await async_client.get("/capabilities")
     assert res_cap.status_code == 200
     data_c = res_cap.json()

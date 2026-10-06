@@ -17,10 +17,11 @@ from typing import Any
 
 import httpx
 import mission_store
+import operations_logging
 import review_store
 import rss_store
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -50,6 +51,7 @@ SMTP_STARTTLS = os.getenv("NERUDS_SMTP_STARTTLS", "true").lower() == "true"
 # Passwords are never stored. Drupal remains the source of truth for identity/permissions.
 SESSION_IDLE_TTL = timedelta(hours=int(os.getenv("NERUDS_SESSION_IDLE_HOURS", "8")))
 SESSIONS: dict[str, dict[str, Any]] = {}
+OPERATIONS_LOG = operations_logging.configure_operations_logger()
 
 app = FastAPI(
     title="NERUDS Control Bridge",
@@ -344,6 +346,25 @@ def health() -> dict[str, Any]:
         "version": "0.3.3",
         "time": datetime.now(timezone.utc).isoformat(),
         "active_sessions": len(SESSIONS),
+    }
+
+
+@app.get("/ready")
+def readiness(response: Response) -> dict[str, Any]:
+    try:
+        with mission_store.connect() as conn:
+            conn.execute("SELECT 1").fetchone()
+        database_ready = True
+    except Exception:
+        database_ready = False
+    if not database_ready:
+        response.status_code = 503
+        OPERATIONS_LOG.error("readiness_failed", extra={"component": "mission_store"})
+    return {
+        "ok": database_ready,
+        "service": "neruds-control-bridge",
+        "database_ready": database_ready,
+        "time": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -736,6 +757,7 @@ def infra_status() -> dict[str, Any]:
 
     tailscale_available = False
     tailscale_self = None
+    tailscale_serve = False
     try:
         proc = subprocess.run(
             ["tailscale", "status", "--json"],
@@ -748,16 +770,56 @@ def infra_status() -> dict[str, Any]:
         if tailscale_available:
             data = json.loads(proc.stdout)
             tailscale_self = data.get("Self", {}).get("HostName")
+        serve = subprocess.run(
+            ["tailscale", "serve", "status", "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        tailscale_serve = serve.returncode == 0
     except (OSError, subprocess.SubprocessError, ValueError):
         pass
 
     return {
         "tailscale_available": tailscale_available,
+        "tailscale_serve": tailscale_serve,
         "tailscale_self": tailscale_self,
         "vps_host": VPS_TAILSCALE_HOST,
         "vps_ports": {"ssh": ssh, "http": http, "https": https},
         "vps_reachable": ssh or http or https,
     }
+
+
+@app.get("/operations/incidents")
+async def operations_incidents(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    infra = await asyncio.to_thread(infra_status)
+    incidents: list[dict[str, str]] = []
+    if not infra["tailscale_available"]:
+        incidents.append({"service": "Tailscale", "severity": "high", "code": "client_unavailable"})
+    elif not infra["tailscale_serve"]:
+        incidents.append({"service": "Tailscale Serve", "severity": "high", "code": "serve_unavailable"})
+    if not infra["vps_reachable"]:
+        incidents.append({"service": "Drupal/Poste.io", "severity": "high", "code": "vps_unreachable"})
+
+    try:
+        async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
+            portal = await client.get(f"{PORTAL_URL}/user/login")
+        if portal.status_code >= 500:
+            incidents.append({"service": "Drupal", "severity": "high", "code": "server_error"})
+    except httpx.HTTPError:
+        incidents.append({"service": "Drupal", "severity": "high", "code": "unreachable"})
+
+    mail = await mail_status(session)
+    if not mail["tls_ok"]:
+        incidents.append({"service": "Poste.io", "severity": "medium", "code": "smtp_tls_unavailable"})
+    OPERATIONS_LOG.info(
+        "operations_incidents_checked",
+        extra={"incident_count": len(incidents), "services": [item["service"] for item in incidents]},
+    )
+    return {"ok": not incidents, "incidents": incidents, "infra": infra}
 
 
 # ---------------------------------------------------------------------------

@@ -73,11 +73,11 @@ cd D:\AI-Shared\neruds-control-center\bridge
 uv run uvicorn main:app --host 127.0.0.1 --port 8787
 ```
 
-Também existem:
-
-- `start_bridge.ps1`;
-- `bridge_supervisor.ps1`;
-- startup do usuário Rafael para iniciar o supervisor no logon.
+Para instalação persistente, use os scripts em
+`tools/operations/`: a tarefa `NERUDS-Control-Bridge` roda como `SYSTEM`,
+inicia no boot e substitui o supervisor dependente do logon. O procedimento de
+backup, restauração ensaiada e incidentes está em
+[`tools/operations/README.md`](tools/operations/README.md).
 
 Verifique a exposição segura com:
 
