@@ -1155,6 +1155,11 @@ def opportunity_decision(
     payload: FeedDecision,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
+    if payload.status == "aprovado_pauta" and not session.get("can_review", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Somente perfis de revisão/coordenação podem aprovar uma pauta.",
+        )
     try:
         return rss_store.decide(
             item_id,

@@ -483,6 +483,42 @@ async def test_opportunity_manual_capture_endpoint(async_client, extensionista_s
     assert data["status"] == "novo"
 
 
+async def test_opportunity_approval_requires_reviewer_permission(
+    async_client, extensionista_session, revisor_session
+):
+    extensionista_token, _ = extensionista_session
+    revisor_token, _ = revisor_session
+    extensionista_headers = {"Authorization": f"Bearer {extensionista_token}"}
+    revisor_headers = {"Authorization": f"Bearer {revisor_token}"}
+
+    item = rss_store.add_manual_item(
+        title="Edital para aprovação por revisor",
+        url="https://example.org/edital-revisor",
+        category="Edital",
+        summary="Oportunidade aguardando decisão editorial.",
+        actor="extensionista.test",
+    )
+    item_id = item["id"]
+
+    denied = await async_client.patch(
+        f"/opportunities/items/{item_id}/decision",
+        json={"status": "aprovado_pauta", "note": "Tentativa sem revisão."},
+        headers=extensionista_headers,
+    )
+    assert denied.status_code == 403
+    assert "revisão/coordenação" in denied.json()["detail"]
+    assert rss_store.item_detail(item_id)["status"] == "novo"
+
+    allowed = await async_client.patch(
+        f"/opportunities/items/{item_id}/decision",
+        json={"status": "aprovado_pauta", "note": "Pauta aprovada pelo revisor."},
+        headers=revisor_headers,
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "aprovado_pauta"
+    assert allowed.json()["reviewed_by"] == "revisor.test"
+
+
 async def test_opportunity_deadline_filter_and_duplicate_draft_rejection(
     async_client, extensionista_session
 ):

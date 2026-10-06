@@ -64,6 +64,8 @@ auditoria.
   `upcoming` (próximos sete dias) ou `overdue`.
 - Tags de aderência ao NERUDS são sugestões revisáveis pela curadoria e ficam
   registradas no evento da decisão.
+- A transição para `aprovado_pauta` exige uma sessão com `can_review`; captura,
+  triagem, verificação e descarte continuam disponíveis no fluxo operacional.
 - A saúde da fonte é calculada como `healthy`, `stale`, `pending` ou `error`
   com base nas últimas tentativas de atualização.
 - Mesmo uma pauta aprovada cria somente um rascunho não publicado no Drupal;

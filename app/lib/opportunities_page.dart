@@ -1055,7 +1055,9 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
               label: const Text('Fonte verificada'),
             ),
             FilledButton.icon(
-              onPressed: actionBusy ? null : () => _decide('aprovado_pauta'),
+              onPressed: actionBusy || !AppSession.instance.canReview
+                  ? null
+                  : () => _decide('aprovado_pauta'),
               icon: const Icon(Icons.thumb_up_alt_outlined),
               label: const Text('Aprovar como pauta'),
             ),
