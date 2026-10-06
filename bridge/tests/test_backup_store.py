@@ -1,3 +1,4 @@
+from contextlib import closing
 import logging
 import sqlite3
 
@@ -9,28 +10,31 @@ import operations_logging
 
 def test_backup_and_restore_roundtrip(tmp_path):
     database = tmp_path / "missions.sqlite3"
-    with sqlite3.connect(database) as conn:
+    with closing(sqlite3.connect(database)) as conn:
         conn.execute("CREATE TABLE sample (value TEXT)")
         conn.execute("INSERT INTO sample VALUES ('original')")
+        conn.commit()
 
     saved = backup_store.backup(database, tmp_path / "backups")
     assert saved.is_file()
     assert saved.with_suffix(".sha256").is_file()
 
-    with sqlite3.connect(database) as conn:
+    with closing(sqlite3.connect(database)) as conn:
         conn.execute("UPDATE sample SET value='changed'")
+        conn.commit()
 
     previous = backup_store.restore(saved, database)
     assert previous is not None and previous.is_file()
-    with sqlite3.connect(database) as conn:
+    with closing(sqlite3.connect(database)) as conn:
         assert conn.execute("SELECT value FROM sample").fetchone()[0] == "original"
 
 
 def test_restore_rejects_tampered_backup(tmp_path):
     database = tmp_path / "missions.sqlite3"
-    with sqlite3.connect(database) as conn:
+    with closing(sqlite3.connect(database)) as conn:
         conn.execute("CREATE TABLE sample (value TEXT)")
         conn.execute("INSERT INTO sample VALUES ('original')")
+        conn.commit()
 
     saved = backup_store.backup(database, tmp_path / "backups")
     saved.write_bytes(saved.read_bytes() + b"tampered")

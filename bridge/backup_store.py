@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import hmac
 import shutil
@@ -15,7 +16,7 @@ def _timestamp() -> str:
 
 def _validate(database: Path) -> None:
     try:
-        with sqlite3.connect(database) as conn:
+        with closing(sqlite3.connect(database)) as conn:
             if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ValueError("O banco SQLite falhou na verificação de integridade.")
     except sqlite3.DatabaseError as exc:
@@ -46,8 +47,9 @@ def backup(source: Path, destination: Path) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     target = destination / f"{source.stem}-{_timestamp()}.sqlite3"
     temporary = target.with_suffix(".tmp")
-    with sqlite3.connect(source) as source_conn, sqlite3.connect(temporary) as target_conn:
+    with closing(sqlite3.connect(source)) as source_conn, closing(sqlite3.connect(temporary)) as target_conn:
         source_conn.backup(target_conn)
+        target_conn.commit()
     _validate(temporary)
     temporary.replace(target)
     digest = _sha256(target)
