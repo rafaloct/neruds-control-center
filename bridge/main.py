@@ -17,6 +17,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 import httpx
+import mission_automation
 import mission_store
 import review_store
 import rss_store
@@ -55,7 +56,7 @@ SESSIONS: dict[str, dict[str, Any]] = {}
 
 app = FastAPI(
     title="NERUDS Control Bridge",
-    version="0.3.3",
+    version="0.4.0",
     description=(
         "Bridge do NERUDS entre Flutter, Drupal e serviços internos. "
         "Autenticação editorial é delegada ao Drupal."
@@ -357,7 +358,7 @@ def health() -> dict[str, Any]:
         "ok": True,
         "service": "neruds-control-bridge",
         "mode": "editorial-mvp",
-        "version": "0.3.3",
+        "version": "0.4.0",
         "time": datetime.now(timezone.utc).isoformat(),
         "active_sessions": len(SESSIONS),
     }
@@ -1019,6 +1020,81 @@ def mission_reference(
         return {"section": section, "items": mission_store.get_reference(section)}
     except KeyError:
         raise HTTPException(status_code=404, detail="Referência não encontrada.")
+
+
+# ---------------------------------------------------------------------------
+# Automação da missão: sugestões e sinais (nunca conclui tarefa sozinho)
+# ---------------------------------------------------------------------------
+
+@app.get("/missions/{mission_id}/automation")
+def mission_automation_summary(
+    mission_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        return mission_automation.summary(mission_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Missão não encontrada.")
+
+
+@app.post("/missions/{mission_id}/url-check")
+def mission_url_check(
+    mission_id: int,
+    limit: int = Query(
+        default=mission_automation.DEFAULT_URL_CHECK_LIMIT,
+        ge=1,
+        le=mission_automation.MAX_URL_CHECK_LIMIT,
+    ),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        result = mission_automation.check_public_urls(mission_id, limit=limit)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Missão não encontrada.")
+    result["summary"] = mission_automation.url_check_summary(mission_id)
+    return result
+
+
+@app.get("/mission-tasks/{task_id}/drupal-duplicates")
+async def mission_task_drupal_duplicates(
+    task_id: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    try:
+        task = mission_store.task_detail(task_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+
+    bundle = mission_automation.CONTENT_TYPE_BUNDLES.get(
+        (task.get("content_type") or "").strip()
+    )
+    title = (task.get("title") or "").strip()
+    if not bundle or not title:
+        return {"task_id": task_id, "bundle": bundle, "matches": []}
+
+    matches = []
+    async with drupal_client(session) as client:
+        response = await client.get(
+            f"/jsonapi/node/{bundle}",
+            params={"filter[title]": title, "page[limit]": 20},
+        )
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail="Drupal não respondeu à consulta de duplicidade.",
+            )
+        for item in response.json().get("data", []):
+            attrs = item.get("attributes", {})
+            matches.append(
+                {
+                    "nid": attrs.get("drupal_internal__nid"),
+                    "uuid": item.get("id"),
+                    "title": attrs.get("title", ""),
+                    "published": bool(attrs.get("status", False)),
+                    "path": (attrs.get("path") or {}).get("alias"),
+                }
+            )
+    return {"task_id": task_id, "bundle": bundle, "matches": matches}
 
 
 # ---------------------------------------------------------------------------

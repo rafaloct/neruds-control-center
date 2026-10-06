@@ -32,6 +32,31 @@ alterar `primary_owner`, `cross_reviewer` ou `internal_deadline`. Extensionistas
 continuam autorizados a atualizar evidências, fontes, observações, checklists e
 etapas operacionais.
 
+## Automação da missão
+
+`GET /missions/{mission_id}/automation` consolida os sinais automáticos da
+missão. Tudo é consultivo: nenhuma automação altera etapa, status ou conclui
+tarefa sozinha.
+
+- `suggested_tasks`: próximas tarefas P0/P1 abertas, ordenadas por prioridade,
+  prazo vencido, responsável e etapa, cada uma com `reason` explicável.
+- `missing_evidence`: tarefas a partir de `Evidência registrada` sem texto de
+  evidência nem evento com `evidence_url`.
+- `possible_duplicates`: grupos internos com mesma URL pública ou título
+  normalizado, e tarefas cujo título coincide com rascunho já registrado no
+  Drupal (fila de revisão).
+- `url_check`: último estado da verificação de URLs públicas, com `issues`
+  listando as quebradas e `pending` as ainda não verificadas.
+
+`POST /missions/{mission_id}/url-check?limit=N` verifica um lote de URLs
+públicas (padrão 25, máximo 100), priorizando as nunca verificadas e as mais
+antigas. A validação reutiliza a proteção SSRF do módulo de fontes RSS e o
+resultado fica persistido em `task_url_check`.
+
+`GET /mission-tasks/{task_id}/drupal-duplicates` consulta o JSON:API do Drupal
+com o título exato da tarefa no bundle correspondente ao `content_type`,
+sinalizando conteúdo já existente no portal antes de criar rascunho.
+
 ## Fluxo editorial
 
 Toda notícia criada pelo bridge é registrada como rascunho e entra na fila de

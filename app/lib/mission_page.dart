@@ -36,7 +36,9 @@ class MissionPage extends StatefulWidget {
 class _MissionPageState extends State<MissionPage> {
   final search = TextEditingController();
   bool loading = false;
+  bool checkingUrls = false;
   Map<String, dynamic>? dashboard;
+  Map<String, dynamic>? automation;
   List<Map<String, dynamic>> tasks = const [];
   List<Map<String, dynamic>> workItems = const [];
   List<Map<String, dynamic>> savedFilters = const [];
@@ -76,6 +78,7 @@ class _MissionPageState extends State<MissionPage> {
     } else {
       setState(() {
         dashboard = null;
+        automation = null;
         tasks = const [];
         workItems = const [];
         savedFilters = const [];
@@ -159,11 +162,99 @@ class _MissionPageState extends State<MissionPage> {
           savedFilters = savedList;
         });
       }
+      await _loadAutomation();
     } catch (e) {
       _message('Não foi possível carregar a missão: $e');
     } finally {
       if (mounted) setState(() => loading = false);
     }
+  }
+
+  Future<void> _loadAutomation() async {
+    if (!AppSession.instance.authenticated) return;
+    try {
+      final response = await http.get(
+        _uri('/missions/1/automation'),
+        headers: AppSession.instance.authHeaders,
+      );
+      if (response.statusCode == 200 && mounted) {
+        setState(() {
+          automation = Map<String, dynamic>.from(
+            jsonDecode(utf8.decode(response.bodyBytes)),
+          );
+        });
+      }
+    } catch (_) {
+      // Automação é opcional: bridges antigas sem o endpoint não quebram a tela.
+    }
+  }
+
+  Future<void> _runUrlCheck() async {
+    setState(() => checkingUrls = true);
+    try {
+      final response = await http.post(
+        _uri('/missions/1/url-check', {'limit': '25'}),
+        headers: AppSession.instance.authHeaders,
+      );
+      if (response.statusCode != 200) {
+        _message(_error(response));
+        return;
+      }
+      final data = Map<String, dynamic>.from(
+        jsonDecode(utf8.decode(response.bodyBytes)),
+      );
+      _message(
+        'Verificação concluída: ${data['checked']} URLs testadas, '
+        '${data['broken']} com problema.',
+      );
+      await _loadAutomation();
+    } catch (e) {
+      _message('Não foi possível verificar as URLs: $e');
+    } finally {
+      if (mounted) setState(() => checkingUrls = false);
+    }
+  }
+
+  Future<void> _showIssueList(
+    String title,
+    List<Map<String, dynamic>> items,
+    String Function(Map<String, dynamic>) subtitle,
+  ) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: 520,
+          child: items.isEmpty
+              ? const Text('Nada encontrado.')
+              : ListView(
+                  shrinkWrap: true,
+                  children: items
+                      .map(
+                        (item) => ListTile(
+                          dense: true,
+                          title: Text(item['title']?.toString() ?? 'Sem título'),
+                          subtitle: Text(subtitle(item)),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () {
+                            Navigator.pop(context);
+                            final id = item['task_id'] ?? item['id'];
+                            if (id is int) _openTask(id);
+                          },
+                        ),
+                      )
+                      .toList(),
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Fechar'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _openTask(int id) async {
@@ -391,6 +482,8 @@ class _MissionPageState extends State<MissionPage> {
                         .toList(),
             ),
           ),
+          const SizedBox(height: 12),
+          _automationCard(context),
           const SizedBox(height: 20),
           TextField(
             controller: search,
@@ -547,6 +640,137 @@ class _MissionPageState extends State<MissionPage> {
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _automationCard(BuildContext context) {
+    final a = automation ?? const <String, dynamic>{};
+    final suggested = (a['suggested_tasks'] as List? ?? const [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    final missing = Map<String, dynamic>.from(
+      a['missing_evidence'] as Map? ?? {},
+    );
+    final duplicates = Map<String, dynamic>.from(
+      a['possible_duplicates'] as Map? ?? {},
+    );
+    final urlCheck = Map<String, dynamic>.from(a['url_check'] as Map? ?? {});
+    final missingCount = missing['count'] ?? 0;
+    final dupeCount = duplicates['count'] ?? 0;
+    final brokenCount = urlCheck['broken'] ?? 0;
+    final pendingUrls = urlCheck['pending'] ?? 0;
+
+    final dupItems = <Map<String, dynamic>>[];
+    for (final group in (duplicates['internal'] as List? ?? const [])) {
+      final g = Map<String, dynamic>.from(group as Map);
+      final label = g['kind'] == 'url' ? 'mesma URL' : 'mesmo título';
+      for (final t in (g['tasks'] as List? ?? const [])) {
+        final task = Map<String, dynamic>.from(t as Map);
+        dupItems.add({
+          ...task,
+          'title': '${task['title'] ?? 'Sem título'} ($label)',
+        });
+      }
+    }
+    for (final m in (duplicates['drupal_matches'] as List? ?? const [])) {
+      final match = Map<String, dynamic>.from(m as Map);
+      final task = Map<String, dynamic>.from(match['task'] as Map? ?? {});
+      dupItems.add({
+        ...task,
+        'title':
+            '${task['title'] ?? 'Sem título'} (≈ rascunho ${match['drupal_nid']})',
+      });
+    }
+
+    return Card(
+      child: ExpansionTile(
+        leading: const Icon(Icons.auto_awesome_outlined),
+        title: const Text('Sugestões automáticas'),
+        subtitle: const Text(
+          'O sistema aponta prioridades e inconsistências. Nada é concluído sozinho.',
+        ),
+        children: [
+          if (suggested.isEmpty)
+            const ListTile(title: Text('Sem sugestões no momento.'))
+          else
+            ...suggested.map(
+              (task) => ListTile(
+                dense: true,
+                onTap: () => _openTask(task['id'] as int),
+                leading: CircleAvatar(
+                  radius: 16,
+                  child: Text(
+                    task['priority']?.toString() ?? '?',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+                title: Text(task['title']?.toString() ?? 'Sem título'),
+                subtitle: Text(task['reason']?.toString() ?? ''),
+                trailing: const Icon(Icons.chevron_right),
+              ),
+            ),
+          const Divider(height: 1),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                ActionChip(
+                  avatar: const Icon(Icons.fact_check_outlined, size: 18),
+                  label: Text('Sem evidência ($missingCount)'),
+                  onPressed: () => _showIssueList(
+                    'Etapas avançadas sem evidência',
+                    (missing['items'] as List? ?? const [])
+                        .map((e) => Map<String, dynamic>.from(e as Map))
+                        .toList(),
+                    (item) =>
+                        '${item['current_stage'] ?? 'Sem etapa'} • ${item['primary_owner'] ?? 'Não atribuído'}',
+                  ),
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.copy_all_outlined, size: 18),
+                  label: Text('Duplicidades ($dupeCount)'),
+                  onPressed: () => _showIssueList(
+                    'Possíveis duplicidades',
+                    dupItems,
+                    (item) =>
+                        '${item['content_type'] ?? 'Sem tipo'} • ${item['current_stage'] ?? 'Sem etapa'}',
+                  ),
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.link_off_outlined, size: 18),
+                  label: Text('URLs quebradas ($brokenCount)'),
+                  onPressed: () => _showIssueList(
+                    'URLs públicas com problema',
+                    (urlCheck['issues'] as List? ?? const [])
+                        .map((e) => Map<String, dynamic>.from(e as Map))
+                        .toList(),
+                    (item) =>
+                        '${item['url'] ?? ''}\n${item['error'] ?? 'HTTP ${item['http_code'] ?? '?'}'}',
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: checkingUrls ? null : _runUrlCheck,
+                  icon: checkingUrls
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.travel_explore_outlined),
+                  label: Text(
+                    pendingUrls > 0
+                        ? 'Verificar URLs ($pendingUrls pendentes)'
+                        : 'Verificar URLs novamente',
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
