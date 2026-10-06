@@ -40,6 +40,7 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
   List<Map<String, dynamic>> items = const [];
   String? status;
   String? category;
+  String? deadlineStatus;
 
   static const categories = [
     'Edital',
@@ -102,6 +103,9 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
       final query = <String, String>{'limit': '200'};
       if (status case final value?) query['status'] = value;
       if (category case final value?) query['category'] = value;
+      if (deadlineStatus case final value?) {
+        query['deadline_status'] = value;
+      }
       final results = await Future.wait([
         http.get(
           _opUri('/opportunities/dashboard'),
@@ -172,7 +176,9 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
         jsonDecode(utf8.decode(response.bodyBytes)),
       );
       final results = payload['sources'] as List<dynamic>? ?? const [];
-      final failures = results.where((e) => e is Map && e['ok'] == false).length;
+      final failures = results
+          .where((e) => e is Map && e['ok'] == false)
+          .length;
       _message(
         failures == 0
             ? 'Fontes atualizadas.'
@@ -341,12 +347,16 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
               _OpMetric('Novos', '${byStatus['novo'] ?? 0}'),
               _OpMetric('Em triagem', '${byStatus['em_triagem'] ?? 0}'),
               _OpMetric('Aprovados', '${byStatus['aprovado_pauta'] ?? 0}'),
+              _OpMetric('Vencem em 7 dias', '${d['expiring_soon'] ?? 0}'),
+              _OpMetric('Duplicidades', '${d['duplicates'] ?? 0}'),
               _OpMetric('Rascunhos', '${byStatus['rascunho_criado'] ?? 0}'),
             ],
           ),
           const SizedBox(height: 18),
-          Text('Fontes monitoradas',
-              style: Theme.of(context).textTheme.titleLarge),
+          Text(
+            'Fontes monitoradas',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
           const SizedBox(height: 8),
           if (sources.isEmpty)
             const Card(
@@ -363,18 +373,10 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
               (source) => Card(
                 child: ListTile(
                   leading: Icon(
-                    source['last_error'] == null
-                        ? Icons.rss_feed
-                        : Icons.warning_amber_outlined,
+                    _sourceHealthIcon(source['health']?.toString()),
                   ),
                   title: Text(source['name']?.toString() ?? 'Fonte'),
-                  subtitle: Text(
-                    source['last_error'] == null
-                        ? (source['feed_url']?.toString() ??
-                            source['url']?.toString() ??
-                            '')
-                        : 'Erro: ${source['last_error']}',
-                  ),
+                  subtitle: Text(_sourceHealthDescription(source)),
                   trailing: IconButton(
                     tooltip: 'Atualizar esta fonte',
                     onPressed: () => _refreshSource(source['id'] as int),
@@ -387,8 +389,10 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
           Row(
             children: [
               Expanded(
-                child: Text('Itens para curadoria',
-                    style: Theme.of(context).textTheme.titleLarge),
+                child: Text(
+                  'Itens para curadoria',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
               ),
               if (loading) const CircularProgressIndicator(),
             ],
@@ -408,7 +412,9 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
                   ),
                   items: [
                     const DropdownMenuItem(
-                        value: null, child: Text('Todas as categorias')),
+                      value: null,
+                      child: Text('Todas as categorias'),
+                    ),
                     ...categories.map(
                       (v) => DropdownMenuItem(value: v, child: Text(v)),
                     ),
@@ -429,7 +435,9 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
                   ),
                   items: [
                     const DropdownMenuItem(
-                        value: null, child: Text('Todas as situações')),
+                      value: null,
+                      child: Text('Todas as situações'),
+                    ),
                     ...statuses.map(
                       (v) => DropdownMenuItem(
                         value: v,
@@ -439,6 +447,34 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
                   ],
                   onChanged: (v) {
                     setState(() => status = v);
+                    _load();
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 220,
+                child: DropdownButtonFormField<String?>(
+                  initialValue: deadlineStatus,
+                  decoration: const InputDecoration(
+                    labelText: 'Prazo',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: null,
+                      child: Text('Todos os prazos'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'upcoming',
+                      child: Text('Vence em 7 dias'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'overdue',
+                      child: Text('Prazo vencido'),
+                    ),
+                  ],
+                  onChanged: (v) {
+                    setState(() => deadlineStatus = v);
                     _load();
                   },
                 ),
@@ -462,7 +498,7 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
                   title: Text(item['title']?.toString() ?? 'Sem título'),
                   subtitle: Text(
                     '${item['category']} • ${_statusLabel(item['status']?.toString() ?? '')}\n'
-                    'Fonte: ${item['source_name'] ?? ''}',
+                    'Fonte: ${item['source_name'] ?? ''}${_itemDeadline(item)}${item['is_duplicate'] == true ? ' • Duplicidade detectada' : ''}',
                   ),
                   isThreeLine: true,
                   trailing: const Icon(Icons.chevron_right),
@@ -486,6 +522,39 @@ String _statusLabel(String value) {
     'arquivado': 'Arquivado',
   };
   return labels[value] ?? value;
+}
+
+String _itemDeadline(Map<String, dynamic> item) {
+  final deadline = item['deadline_at']?.toString();
+  return deadline == null || deadline.isEmpty ? '' : ' • Prazo: $deadline';
+}
+
+IconData _sourceHealthIcon(String? health) {
+  switch (health) {
+    case 'healthy':
+      return Icons.rss_feed;
+    case 'stale':
+      return Icons.schedule_outlined;
+    case 'error':
+      return Icons.error_outline;
+    default:
+      return Icons.hourglass_empty;
+  }
+}
+
+String _sourceHealthDescription(Map<String, dynamic> source) {
+  final health = source['health']?.toString();
+  final base =
+      source['feed_url']?.toString() ?? source['url']?.toString() ?? '';
+  if (health == 'error') {
+    return 'Erro: ${source['last_error'] ?? 'falha desconhecida'}';
+  }
+  const labels = {
+    'healthy': 'Saudável',
+    'stale': 'Sem atualização há mais de 7 dias',
+    'pending': 'Ainda não atualizada',
+  };
+  return '${labels[health] ?? 'Estado desconhecido'} • $base';
 }
 
 class _OpMetric extends StatelessWidget {
@@ -526,6 +595,7 @@ class _ManualOpportunityDialogState extends State<ManualOpportunityDialog> {
   final title = TextEditingController();
   final url = TextEditingController();
   final summary = TextEditingController();
+  final deadline = TextEditingController();
   String category = 'Edital';
 
   @override
@@ -533,6 +603,7 @@ class _ManualOpportunityDialogState extends State<ManualOpportunityDialog> {
     title.dispose();
     url.dispose();
     summary.dispose();
+    deadline.dispose();
     super.dispose();
   }
 
@@ -574,12 +645,7 @@ class _ManualOpportunityDialogState extends State<ManualOpportunityDialog> {
                   border: OutlineInputBorder(),
                 ),
                 items: _OpportunitiesPageState.categories
-                    .map(
-                      (v) => DropdownMenuItem(
-                        value: v,
-                        child: Text(v),
-                      ),
-                    )
+                    .map((v) => DropdownMenuItem(value: v, child: Text(v)))
                     .toList(),
                 onChanged: (v) => setState(() => category = v ?? category),
               ),
@@ -590,6 +656,15 @@ class _ManualOpportunityDialogState extends State<ManualOpportunityDialog> {
                 maxLines: 6,
                 decoration: const InputDecoration(
                   labelText: 'Resumo / por que pode interessar ao NERUDS',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: deadline,
+                decoration: const InputDecoration(
+                  labelText: 'Prazo de inscrição/publicação (opcional)',
+                  hintText: 'AAAA-MM-DD',
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -615,6 +690,9 @@ class _ManualOpportunityDialogState extends State<ManualOpportunityDialog> {
               'summary': summary.text.trim().isEmpty
                   ? null
                   : summary.text.trim(),
+              'deadline_at': deadline.text.trim().isEmpty
+                  ? null
+                  : deadline.text.trim(),
             });
           },
           child: const Text('Enviar para triagem'),
@@ -623,7 +701,6 @@ class _ManualOpportunityDialogState extends State<ManualOpportunityDialog> {
     );
   }
 }
-
 
 class AddFeedSourceDialog extends StatefulWidget {
   const AddFeedSourceDialog({super.key});
@@ -727,7 +804,20 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
   bool loading = true;
   bool actionBusy = false;
   final note = TextEditingController();
+  final deadline = TextEditingController();
   String? category;
+  Set<String> fitTags = {};
+
+  static const availableFitTags = [
+    'ensino',
+    'pesquisa',
+    'extensão',
+    'inovação',
+    'interdisciplinaridade',
+    'território',
+    'formação',
+    'rede de colaboração',
+  ];
 
   @override
   void initState() {
@@ -738,6 +828,7 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
   @override
   void dispose() {
     note.dispose();
+    deadline.dispose();
     super.dispose();
   }
 
@@ -749,8 +840,9 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
     if (!mounted) return;
     if (response.statusCode != 200) {
       setState(() => loading = false);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(_opError(response))));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_opError(response))));
       return;
     }
     final data = Map<String, dynamic>.from(
@@ -760,6 +852,10 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
       item = data;
       category = data['category']?.toString();
       note.text = data['decision_note']?.toString() ?? '';
+      deadline.text = data['deadline_at']?.toString() ?? '';
+      fitTags = (data['fit_tags'] as List<dynamic>? ?? const [])
+          .map((tag) => tag.toString())
+          .toSet();
       loading = false;
     });
   }
@@ -774,14 +870,19 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
           'status': status,
           'note': note.text.trim().isEmpty ? null : note.text.trim(),
           'category': category,
+          'deadline_at': deadline.text.trim().isEmpty
+              ? null
+              : deadline.text.trim(),
+          'fit_tags': fitTags.toList(),
         }),
       );
       if (response.statusCode != 200) throw Exception(_opError(response));
       await _load();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Erro: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Erro: $e')));
       }
     } finally {
       if (mounted) setState(() => actionBusy = false);
@@ -807,8 +908,9 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
       await _load();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Erro: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Erro: $e')));
       }
     } finally {
       if (mounted) setState(() => actionBusy = false);
@@ -829,8 +931,8 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
         body: loading
             ? const Center(child: CircularProgressIndicator())
             : item == null
-                ? const Center(child: Text('Item não encontrado.'))
-                : _body(context),
+            ? const Center(child: Text('Item não encontrado.'))
+            : _body(context),
       ),
     );
   }
@@ -856,6 +958,11 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
                 avatar: Icon(Icons.verified_outlined, size: 18),
                 label: Text('Origem RSS verificada'),
               ),
+            if (data['is_duplicate'] == true)
+              const Chip(
+                avatar: Icon(Icons.copy_outlined, size: 18),
+                label: Text('Duplicidade detectada'),
+              ),
           ],
         ),
         const SizedBox(height: 12),
@@ -868,6 +975,12 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
         const SizedBox(height: 12),
         const Text('Fonte original'),
         SelectableText(data['url']?.toString() ?? ''),
+        if (data['duplicate_of_item_id'] != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Item de referência: #${data['duplicate_of_item_id']} (${data['duplicate_reason']})',
+          ),
+        ],
         const SizedBox(height: 18),
         DropdownButtonFormField<String>(
           initialValue: category,
@@ -879,6 +992,40 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
               .map((v) => DropdownMenuItem(value: v, child: Text(v)))
               .toList(),
           onChanged: (v) => setState(() => category = v),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: deadline,
+          decoration: const InputDecoration(
+            labelText: 'Prazo de inscrição/publicação',
+            hintText: 'AAAA-MM-DD',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'Aderência ao NERUDS',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          children: availableFitTags
+              .map(
+                (tag) => FilterChip(
+                  label: Text(tag),
+                  selected: fitTags.contains(tag),
+                  onSelected: (selected) => setState(() {
+                    if (selected) {
+                      fitTags.add(tag);
+                    } else {
+                      fitTags.remove(tag);
+                    }
+                  }),
+                ),
+              )
+              .toList(),
         ),
         const SizedBox(height: 12),
         TextField(
@@ -908,8 +1055,7 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
               label: const Text('Fonte verificada'),
             ),
             FilledButton.icon(
-              onPressed:
-                  actionBusy ? null : () => _decide('aprovado_pauta'),
+              onPressed: actionBusy ? null : () => _decide('aprovado_pauta'),
               icon: const Icon(Icons.thumb_up_alt_outlined),
               label: const Text('Aprovar como pauta'),
             ),
@@ -920,7 +1066,7 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
             ),
           ],
         ),
-        if (status == 'aprovado_pauta') ...[
+        if (status == 'aprovado_pauta' && data['is_duplicate'] != true) ...[
           const SizedBox(height: 18),
           Card(
             child: Padding(
@@ -942,6 +1088,18 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
             ),
           ),
         ],
+        if (status == 'aprovado_pauta' && data['is_duplicate'] == true) ...[
+          const SizedBox(height: 18),
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.copy_outlined),
+              title: Text('Rascunho bloqueado para duplicidade'),
+              subtitle: Text(
+                'Use o item de referência para criar a pauta e manter a rastreabilidade.',
+              ),
+            ),
+          ),
+        ],
         if (status == 'rascunho_criado') ...[
           const SizedBox(height: 18),
           Card(
@@ -955,8 +1113,10 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
           ),
         ],
         const Divider(height: 34),
-        Text('Histórico de decisões',
-            style: Theme.of(context).textTheme.titleLarge),
+        Text(
+          'Histórico de decisões',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
         if (events.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 12),
@@ -967,8 +1127,7 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
             (event) => ListTile(
               leading: const Icon(Icons.history),
               title: Text('${event['event_type']} • ${event['actor']}'),
-              subtitle:
-                  Text('${event['created_at']}\n${event['note'] ?? ''}'),
+              subtitle: Text('${event['created_at']}\n${event['note'] ?? ''}'),
               isThreeLine: true,
             ),
           ),

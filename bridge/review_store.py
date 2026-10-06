@@ -43,10 +43,22 @@ def init_review_db() -> None:
                 ON draft_review_event(drupal_nid, id);
             """
         )
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(draft_review)").fetchall()
+        }
+        if "opportunity_item_id" not in columns:
+            conn.execute("ALTER TABLE draft_review ADD COLUMN opportunity_item_id INTEGER")
         conn.commit()
 
 
-def register_draft(drupal_nid: str, title: str, author: str) -> dict[str, Any]:
+def register_draft(
+    drupal_nid: str,
+    title: str,
+    author: str,
+    *,
+    opportunity_item_id: int | None = None,
+) -> dict[str, Any]:
     init_review_db()
     nid = str(drupal_nid or "").strip()
     if not nid:
@@ -56,17 +68,21 @@ def register_draft(drupal_nid: str, title: str, author: str) -> dict[str, Any]:
         conn.execute(
             """
             INSERT INTO draft_review
-              (drupal_nid,title,author,review_status,created_at,updated_at)
-            VALUES (?,?,?,'pending',?,?)
+              (drupal_nid,title,author,review_status,opportunity_item_id,created_at,updated_at)
+            VALUES (?,?,?,'pending',?,?,?)
             ON CONFLICT(drupal_nid) DO UPDATE SET
               title=excluded.title,
               author=CASE
                 WHEN draft_review.author='' THEN excluded.author
                 ELSE draft_review.author
               END,
+              opportunity_item_id=COALESCE(
+                excluded.opportunity_item_id,
+                draft_review.opportunity_item_id
+              ),
               updated_at=excluded.updated_at
             """,
-            (nid, title, author, now, now),
+            (nid, title, author, opportunity_item_id, now, now),
         )
         conn.execute(
             """

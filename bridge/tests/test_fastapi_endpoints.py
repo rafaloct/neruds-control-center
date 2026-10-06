@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 import pytest
 import respx
 from httpx import Response
@@ -243,6 +245,7 @@ async def test_opportunity_to_draft_workflow(async_client, extensionista_session
     updated_item = rss_store.item_detail(item_id)
     assert updated_item["status"] == "rascunho_criado"
     assert updated_item["drupal_draft_id"] == "789"
+    assert review_store.get_review("789")["opportunity_item_id"] == item_id
 
 
 async def test_mission_endpoints(async_client, extensionista_session, seeded_mission):
@@ -307,3 +310,40 @@ async def test_opportunity_manual_capture_endpoint(async_client, extensionista_s
     assert data["title"] == "Chamada para Capítulo de Livro NERUDS 2026"
     assert data["category"] == "Chamada para revista"
     assert data["status"] == "novo"
+
+
+async def test_opportunity_deadline_filter_and_duplicate_draft_rejection(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    original = rss_store.add_manual_item(
+        title="Edital de extensão 2026",
+        url="https://neruds.org/edital-extensao",
+        category="Edital",
+        actor="user",
+        deadline_at=(date.today() + timedelta(days=3)).isoformat(),
+    )
+    duplicate = rss_store.add_manual_item(
+        title="Edital de extensão 2026",
+        url="https://other.example.org/edital-extensao",
+        category="Edital",
+        actor="user",
+    )
+    rss_store.decide(
+        duplicate["id"],
+        actor="reviewer",
+        status="aprovado_pauta",
+    )
+
+    res_items = await async_client.get(
+        "/opportunities/items?deadline_status=upcoming", headers=headers
+    )
+    assert res_items.status_code == 200
+    assert [item["id"] for item in res_items.json()["items"]] == [original["id"]]
+
+    res_draft = await async_client.post(
+        f"/opportunities/items/{duplicate['id']}/draft", headers=headers
+    )
+    assert res_draft.status_code == 409
+    assert "duplicada" in res_draft.json()["detail"]

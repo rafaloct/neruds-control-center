@@ -1,4 +1,5 @@
 import socket
+from datetime import date, timedelta
 import pytest
 import rss_store
 
@@ -191,3 +192,71 @@ def test_opportunity_dashboard(temp_db):
     assert "by_status" in dash
     assert "by_category" in dash
     assert "CATEGORIES" in dash or "categories" in dash
+
+
+def test_manual_duplicates_deadlines_tags_and_expiring_queue(temp_db):
+    deadline = (date.today() + timedelta(days=3)).isoformat()
+    original = rss_store.add_manual_item(
+        title="Edital de Pesquisa Aplicada 2026",
+        url="https://neruds.org/editais/pesquisa-aplicada",
+        category="Edital",
+        actor="user",
+        summary="Pesquisa, inovação e formação para comunidades.",
+        deadline_at=deadline,
+    )
+    duplicate = rss_store.add_manual_item(
+        title="Edital de Pesquisa Aplicada 2026",
+        url="https://another.example.org/edital-pesquisa",
+        category="Edital",
+        actor="user",
+    )
+
+    assert original["deadline_at"] == deadline
+    assert "pesquisa" in original["fit_tags"]
+    assert duplicate["duplicate_of_item_id"] == original["id"]
+    assert duplicate["duplicate_reason"] == "title"
+    assert any(event["event_type"] == "duplicate_detected" for event in duplicate["events"])
+
+    expiring = rss_store.list_items(deadline_status="upcoming")
+    assert [item["id"] for item in expiring["items"]] == [original["id"]]
+    assert rss_store.dashboard()["expiring_soon"] == 1
+
+
+def test_curation_decision_audits_deadline_and_tags(temp_db):
+    item = rss_store.add_manual_item(
+        title="Bolsa de pesquisa",
+        url="https://neruds.org/bolsa",
+        category="Bolsa",
+        actor="user",
+    )
+    updated = rss_store.decide(
+        item["id"],
+        actor="reviewer",
+        status="em_triagem",
+        deadline_at="20/12/2026",
+        fit_tags=["pesquisa", "formação"],
+        note="Prazo e aderência revisados pela curadoria.",
+    )
+    assert updated["deadline_at"] == "2026-12-20"
+    assert updated["fit_tags"] == ["pesquisa", "formação"]
+    assert "fit_tags" in updated["events"][0]["changes_json"]
+
+
+def test_source_health_states(temp_db):
+    source = rss_store.add_manual_item(
+        title="Item",
+        url="https://neruds.org/item",
+        category="Outro",
+        actor="user",
+    )
+    with rss_store.connect() as conn:
+        conn.execute(
+            """
+            UPDATE feed_source
+            SET last_checked_at=?, last_success_at=?, last_error=?
+            WHERE id=?
+            """,
+            ("2026-01-01T00:00:00+00:00", None, "HTTP 500", source["source_id"]),
+        )
+        conn.commit()
+    assert rss_store.list_sources()[0]["health"] == "error"
