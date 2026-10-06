@@ -299,3 +299,9 @@ Artefatos:
 O projeto possui configuração de `key.properties`, mas não existe atualmente um arquivo `.jks/.keystore` no LARGeo/projeto.
 
 Por isso o APK entregue é **debug para uso interno**. Não criar uma nova chave de assinatura sem decisão explícita, porque essa chave passa a definir a identidade das futuras atualizações Android.
+
+## Continuidade do trabalho no portal
+
+O [briefing operacional](docs/NERUDS_WORKFLOW_BRIEFING.md) relaciona a estrutura real do Drupal, os guias do NERUDS e as decisões das telas. Consulte a [instalação dos computadores](docs/WORKSTATION_SETUP.md) para compilar clientes com o mesmo serviço central e contas individuais. O [sistema visual](design-system/neruds-control-center/MASTER.md) usa o manual da marca e os percursos de pesquisa, proposta, revisão e conferência.
+
+Resultados de regressão, compilação e limites da evidência: [validação dos fluxos](docs/WORKFLOW_VALIDATION.md).
