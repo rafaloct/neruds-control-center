@@ -141,6 +141,72 @@ async def test_lacunas_rejects_unmonitored_field(async_client, extensionista_ses
     assert response.status_code == 422
 
 
+@respx.mock
+async def test_lacunas_campo_only_filters_to_matching_bundles(
+    async_client, extensionista_session
+):
+    """campo without tipo must apply to bundles that render the field,
+    not fail on the first bundle that lacks it."""
+    token, _ = extensionista_session
+    # field_ods is rendered in several bundles (boletim, boletim_periodico,
+    # evento_cientifico, perfil_pesquisador) — bundles lacking it must be
+    # skipped, not 422.
+    empty = _jsonapi_payload([])
+    for bundle in ("boletim", "boletim_periodico", "evento_cientifico"):
+        respx.get(f"{PORTAL}/jsonapi/node/{bundle}").mock(
+            return_value=Response(200, json=empty)
+        )
+    perfil_node = _node_item(7, "Perfil sem ODS", rels={"field_ods": {"data": []}})
+    perfil_node["type"] = "node--perfil_pesquisador"
+    respx.get(f"{PORTAL}/jsonapi/node/perfil_pesquisador").mock(
+        return_value=Response(200, json=_jsonapi_payload([perfil_node]))
+    )
+    response = await async_client.get(
+        "/portal/lacunas?campo=field_ods", headers=_auth(token)
+    )
+    assert response.status_code == 200
+    types = response.json()["types"]
+    # only bundles whose real form renders field_ods
+    expected = {
+        b
+        for b, m in __import__("content_map").MONITORED_TYPES.items()
+        if "field_ods" in m["fields"]
+    }
+    assert {t["type"] for t in types} == expected
+    for t in types:
+        assert all(f["field"] == "field_ods" for f in t["fields"])
+    perfil = next(t for t in types if t["type"] == "perfil_pesquisador")
+    assert perfil["fields"][0]["missing"] == 1
+
+
+async def test_lacunas_campo_unknown_everywhere(async_client, extensionista_session):
+    token, _ = extensionista_session
+    response = await async_client.get(
+        "/portal/lacunas?campo=field_inexistente", headers=_auth(token)
+    )
+    assert response.status_code == 422
+
+
+@respx.mock
+async def test_lacunas_cache_preserves_original_fetched_at(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    route = respx.get(f"{PORTAL}/jsonapi/node/noticia").mock(
+        return_value=Response(200, json=_jsonapi_payload([]))
+    )
+    first = await async_client.get(
+        "/portal/lacunas?tipo=noticia", headers=_auth(token)
+    )
+    second = await async_client.get(
+        "/portal/lacunas?tipo=noticia", headers=_auth(token)
+    )
+    assert first.status_code == second.status_code == 200
+    assert route.call_count == 1  # second response came from cache
+    # cached data keeps the fetch timestamp instead of stamping "now"
+    assert first.json()["fetched_at"] == second.json()["fetched_at"]
+
+
 async def test_lacunas_requires_session(async_client):
     response = await async_client.get("/portal/lacunas")
     assert response.status_code == 401
@@ -314,6 +380,27 @@ async def test_feeds_survives_broken_section(async_client, extensionista_session
     body = response.json()
     assert body["sections"]["noticias"] == {"ok": False, "items": []}
     assert body["sections"]["eventos"]["items"][0]["title"] == "Congresso X"
+
+
+@respx.mock
+async def test_feeds_isolates_transport_errors(async_client, extensionista_session):
+    """A transport failure in one section must not 500 the whole endpoint."""
+    import httpx
+
+    token, _ = extensionista_session
+    respx.get(f"{PORTAL}/jsonapi/node/noticia").mock(
+        side_effect=httpx.ConnectError("boom")
+    )
+    for bundle in ("evento_cientifico", "projeto_pesquisa_extensao",
+                   "publicacao_cientifica"):
+        respx.get(f"{PORTAL}/jsonapi/node/{bundle}").mock(
+            return_value=Response(200, json=_jsonapi_payload([]))
+        )
+    response = await async_client.get("/portal/feeds", headers=_auth(token))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sections"]["noticias"] == {"ok": False, "items": []}
+    assert body["sections"]["eventos"]["ok"] is True
 
 
 @respx.mock

@@ -804,6 +804,20 @@ def _portal_cache_set(key: str, value: Any) -> Any:
     return value
 
 
+async def _portal_nodes(
+    client: httpx.AsyncClient, bundle: str
+) -> dict[str, Any]:
+    """JSON:API items for a monitored bundle, cached with its fetch time."""
+    key = f"nodes:{bundle}"
+    cached = _portal_cache_get(key)
+    if cached is not None:
+        return cached
+    meta = content_map.MONITORED_TYPES[bundle]
+    result = await _jsonapi_items(client, bundle, list(meta["fields"]))
+    result["fetched_at"] = datetime.now(timezone.utc).isoformat()
+    return _portal_cache_set(key, result)
+
+
 async def _jsonapi_items(
     client: httpx.AsyncClient,
     bundle: str,
@@ -903,28 +917,32 @@ async def portal_lacunas(
     """Compute real field gaps per monitored bundle via JSON:API."""
     if tipo and tipo not in content_map.MONITORED_TYPES:
         raise HTTPException(status_code=422, detail="Tipo não monitorado.")
+    bundles = [tipo] if tipo else list(content_map.MONITORED_TYPES)
+    if campo:
+        if tipo and campo not in content_map.MONITORED_TYPES[tipo]["fields"]:
+            raise HTTPException(
+                status_code=422, detail="Campo não monitorado neste tipo."
+            )
+        if not tipo:
+            bundles = [
+                b
+                for b in bundles
+                if campo in content_map.MONITORED_TYPES[b]["fields"]
+            ]
+            if not bundles:
+                raise HTTPException(
+                    status_code=422, detail="Campo não monitorado em nenhum tipo."
+                )
     async with drupal_client(session) as client:
         result_types = []
-        for bundle, meta in content_map.MONITORED_TYPES.items():
-            if tipo and bundle != tipo:
-                continue
+        fetched_ats: list[str] = []
+        for bundle in bundles:
+            meta = content_map.MONITORED_TYPES[bundle]
             fields = meta["fields"]
             if campo:
-                if campo not in fields:
-                    raise HTTPException(
-                        status_code=422,
-                        detail="Campo não monitorado neste tipo.",
-                    )
                 fields = {campo: fields[campo]}
-            cache_key = f"nodes:{bundle}"
-            cached = _portal_cache_get(cache_key)
-            if cached is None:
-                cached = _portal_cache_set(
-                    cache_key,
-                    await _jsonapi_items(
-                        client, bundle, list(meta["fields"]), include=None
-                    ),
-                )
+            cached = await _portal_nodes(client, bundle)
+            fetched_ats.append(cached["fetched_at"])
             items = cached["data"]
             field_rows = []
             for fname, fmeta in fields.items():
@@ -953,7 +971,10 @@ async def portal_lacunas(
                     "fields": field_rows,
                 }
             )
-    return {"fetched_at": datetime.now(timezone.utc).isoformat(), "types": result_types}
+    return {
+        "fetched_at": min(fetched_ats) if fetched_ats else datetime.now(timezone.utc).isoformat(),
+        "types": result_types,
+    }
 
 
 @app.get("/portal/eventos")
@@ -961,6 +982,9 @@ async def portal_eventos(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Scientific events with real dates from evento_cientifico."""
+    cached = _portal_cache_get("ep:eventos")
+    if cached is not None:
+        return cached
     async with drupal_client(session) as client:
         fetched = await _jsonapi_items(
             client,
@@ -999,11 +1023,14 @@ async def portal_eventos(
             }
         )
     events.sort(key=lambda e: (e["past"], e["date"] or "9999"))
-    return {
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "events": events,
-        "listing_url": f"{PORTAL_URL}/eventos",
-    }
+    return _portal_cache_set(
+        "ep:eventos",
+        {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "events": events,
+            "listing_url": f"{PORTAL_URL}/eventos",
+        },
+    )
 
 
 @app.get("/portal/projetos")
@@ -1011,6 +1038,9 @@ async def portal_projetos(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Research/extension projects and extension actions with real fields."""
+    cached = _portal_cache_get("ep:projetos")
+    if cached is not None:
+        return cached
     async with drupal_client(session) as client:
         projetos = await _jsonapi_items(
             client,
@@ -1063,13 +1093,16 @@ async def portal_projetos(
                 "kind": _rel_term_names(item, "field_tipo_acao", names),
             }
         )
-    return {
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "projetos": out_projetos,
-        "acoes": out_acoes,
-        "listing_url": f"{PORTAL_URL}/projetos",
-        "map_url": f"{PORTAL_URL}/mapa-projetos",
-    }
+    return _portal_cache_set(
+        "ep:projetos",
+        {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "projetos": out_projetos,
+            "acoes": out_acoes,
+            "listing_url": f"{PORTAL_URL}/projetos",
+            "map_url": f"{PORTAL_URL}/mapa-projetos",
+        },
+    )
 
 
 # The portal's own RSS views (/feed/noticias, /feed/eventos, ...) currently
@@ -1088,18 +1121,25 @@ async def portal_feeds(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Latest published items per section, via JSON:API sorted by -created."""
+    cached = _portal_cache_get("ep:feeds")
+    if cached is not None:
+        return cached
     async with drupal_client(session) as client:
         sections: dict[str, Any] = {}
         for key, bundle in _PORTAL_SECTION_TYPES.items():
-            response = await client.get(
-                f"/jsonapi/node/{bundle}",
-                params={
-                    "fields[node--%s]" % bundle: "title,path,created,drupal_internal__nid",
-                    "filter[status]": "1",
-                    "sort": "-created",
-                    "page[limit]": "10",
-                },
-            )
+            try:
+                response = await client.get(
+                    f"/jsonapi/node/{bundle}",
+                    params={
+                        "fields[node--%s]" % bundle: "title,path,created,drupal_internal__nid",
+                        "filter[status]": "1",
+                        "sort": "-created",
+                        "page[limit]": "10",
+                    },
+                )
+            except httpx.RequestError:
+                sections[key] = {"ok": False, "items": []}
+                continue
             if response.status_code >= 400:
                 sections[key] = {"ok": False, "items": []}
                 continue
@@ -1115,10 +1155,13 @@ async def portal_feeds(
                     }
                 )
             sections[key] = {"ok": True, "items": items}
-    return {
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "sections": sections,
-    }
+    return _portal_cache_set(
+        "ep:feeds",
+        {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "sections": sections,
+        },
+    )
 
 
 @app.get("/content/news/drafts")
