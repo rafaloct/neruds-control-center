@@ -303,6 +303,11 @@ class _MonitoringPageState extends State<MonitoringPage> {
     final result = data.projetos;
     if (!result.ok) return ListView(children: [_sectionError(result.error!)]);
     final board = result.data!;
+    final gaps = data.gapsByNode();
+    final gapErrors = [
+      data.projetoGaps.error,
+      data.acaoGaps.error,
+    ].whereType<String>().toList();
 
     final statusTerms = <String>{
       for (final p in board.projects) ...p.status,
@@ -412,6 +417,14 @@ class _MonitoringPageState extends State<MonitoringPage> {
             ),
           ),
         const SizedBox(height: 12),
+        if (gapErrors.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              'Lacunas indisponíveis: ${gapErrors.join(' ')}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
         Text(
           'Projetos (${projects.length})',
           style: Theme.of(context).textTheme.titleMedium,
@@ -436,6 +449,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         if ((p.end ?? '').isNotEmpty) 'fim ${p.end}',
                       ].join(' · '),
                     ),
+                    _gapsLine(gaps[p.nid]),
                     if (p.status.isNotEmpty || p.kind.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
@@ -497,6 +511,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         ...a.kind,
                       ].join(' · '),
                     ),
+                    _gapsLine(gaps[a.nid]),
                     _linkRow([
                       PortalLinkButton(label: 'Ver', url: a.viewUrl),
                       PortalLinkButton(
@@ -535,6 +550,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
     final result = data.eventos;
     if (!result.ok) return ListView(children: [_sectionError(result.error!)]);
     final events = result.data!;
+    final gaps = data.gapsByNode();
     final upcoming = events
         .where((e) => !e.past && e.daysUntil != null)
         .toList()
@@ -560,7 +576,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
         if (upcoming.isNotEmpty) ...[
           Text('Próximos', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 6),
-          for (final e in upcoming) _eventTile(e),
+          for (final e in upcoming) _eventTile(e, gaps),
         ],
         if (undated.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -569,7 +585,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 6),
-          for (final e in undated) _eventTile(e),
+          for (final e in undated) _eventTile(e, gaps),
         ],
         if (past.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -578,13 +594,24 @@ class _MonitoringPageState extends State<MonitoringPage> {
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 6),
-          for (final e in past) _eventTile(e),
+          for (final e in past) _eventTile(e, gaps),
         ],
       ],
     );
   }
 
-  Widget _eventTile(PortalEvent event) => Card(
+  Widget _gapsLine(List<String>? missing) {
+    if (missing == null || missing.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Text(
+        'Faltam: ${missing.join(', ')}',
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+    );
+  }
+
+  Widget _eventTile(PortalEvent event, Map<int, List<String>> gaps) => Card(
     child: ListTile(
       title: Text(event.title),
       subtitle: Column(
@@ -598,6 +625,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
               if (event.callOpen == true) 'chamada aberta',
             ].join(' · '),
           ),
+          _gapsLine(gaps[event.nid]),
           _linkRow([
             if ((event.signupUrl ?? '').isNotEmpty)
               PortalLinkButton(label: 'Inscrição', url: event.signupUrl),

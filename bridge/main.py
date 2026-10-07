@@ -1038,7 +1038,10 @@ async def portal_eventos(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Scientific events with real dates from evento_cientifico."""
-    cached = _portal_cache_get("ep:eventos")
+    # Draft visibility is per-session (own/any unpublished permissions), so
+    # the cache must be scoped to the requesting user.
+    cache_key = f"ep:eventos:{session['username']}"
+    cached = _portal_cache_get(cache_key)
     if cached is not None:
         return cached
     async with drupal_client(session) as client:
@@ -1094,7 +1097,7 @@ async def portal_eventos(
         )
     events.sort(key=lambda e: (e["past"], e["date"] or "9999"))
     return _portal_cache_set(
-        "ep:eventos",
+        cache_key,
         {
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "events": events,

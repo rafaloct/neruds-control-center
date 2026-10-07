@@ -1578,12 +1578,13 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       nid = input;
     } else {
       final parsed = AppConfig.webUri(input);
-      // A configured portal may live under a path prefix (/neruds/node/1).
+      // A configured portal may live under a path prefix (/neruds/node/1);
+      // URLs on the same origin but outside that prefix do not belong to it.
       final basePath = portalUri.path.replaceAll(RegExp(r'/+$'), '');
       final path = parsed != null && basePath.isNotEmpty
           ? (parsed.path.startsWith('$basePath/')
               ? parsed.path.substring(basePath.length)
-              : parsed.path)
+              : null)
           : parsed?.path;
       final match = path == null
           ? null

@@ -247,6 +247,9 @@ class MonitoringData {
     required this.publicacoes,
     required this.noticias,
     required this.feeds,
+    required this.projetoGaps,
+    required this.acaoGaps,
+    required this.eventoGaps,
     this.eventsListingUrl,
     this.projetosListingUrl,
     this.projetosMapUrl,
@@ -260,11 +263,28 @@ class MonitoringData {
   final SectionResult<List<GapNode>> publicacoes;
   final SectionResult<List<GapNode>> noticias;
   final SectionResult<FeedList> feeds;
+
+  /// Per-node field gaps for the project/action and event axes.
+  final SectionResult<List<GapNode>> projetoGaps;
+  final SectionResult<List<GapNode>> acaoGaps;
+  final SectionResult<List<GapNode>> eventoGaps;
   final String? eventsListingUrl;
   final String? projetosListingUrl;
   final String? projetosMapUrl;
   final String? publicacoesListingUrl;
   final String? noticiasListingUrl;
+
+  /// Missing-field lists keyed by node id, merged across the gap sections.
+  Map<int, List<String>> gapsByNode() {
+    final map = <int, List<String>>{};
+    for (final section in [projetoGaps, acaoGaps, eventoGaps]) {
+      for (final gap in section.data ?? const <GapNode>[]) {
+        final nid = gap.nid;
+        if (nid != null) map[nid] = gap.missing;
+      }
+    }
+    return map;
+  }
 }
 
 class PortalReadApi {
@@ -558,6 +578,25 @@ class PortalReadApi {
         (body) => noticiasListingUrl = typeListingUrl(body, 'noticia'),
       ),
       _section<FeedList>(stamps, _parseFeeds, '/portal/feeds'),
+      // Per-node gaps for the remaining monitored bundles (plan §axes).
+      _section<List<GapNode>>(
+        stamps,
+        _gapNodes,
+        '/portal/lacunas',
+        {'tipo': 'projeto_pesquisa_extensao', 'limite_nodes': '200'},
+      ),
+      _section<List<GapNode>>(
+        stamps,
+        _gapNodes,
+        '/portal/lacunas',
+        {'tipo': 'acao_extensionista', 'limite_nodes': '200'},
+      ),
+      _section<List<GapNode>>(
+        stamps,
+        _gapNodes,
+        '/portal/lacunas',
+        {'tipo': 'evento_cientifico', 'limite_nodes': '200'},
+      ),
     ]);
 
     stamps.sort();
@@ -568,6 +607,9 @@ class PortalReadApi {
       publicacoes: results[2] as SectionResult<List<GapNode>>,
       noticias: results[3] as SectionResult<List<GapNode>>,
       feeds: results[4] as SectionResult<FeedList>,
+      projetoGaps: results[5] as SectionResult<List<GapNode>>,
+      acaoGaps: results[6] as SectionResult<List<GapNode>>,
+      eventoGaps: results[7] as SectionResult<List<GapNode>>,
       eventsListingUrl: eventsListingUrl,
       projetosListingUrl: projetosListingUrl,
       projetosMapUrl: projetosMapUrl,
