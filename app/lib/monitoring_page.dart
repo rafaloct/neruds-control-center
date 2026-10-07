@@ -169,7 +169,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                     avatar: const Icon(Icons.schedule, size: 16),
                     label: Text(_stamp(data!.fetchedAt)),
                   ),
-                _newFichaMenu(),
+                _newFichaMenu(context),
                 IconButton(
                   tooltip: 'Atualizar monitoramento',
                   onPressed: _loading ? null : _reload,
@@ -226,7 +226,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
     );
   }
 
-  Widget _newFichaMenu() {
+  Widget _newFichaMenu(BuildContext context) {
     return MenuAnchor(
       builder: (context, controller, _) => OutlinedButton.icon(
         onPressed: () =>
@@ -240,6 +240,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
             label: entry.value,
             bundle: entry.key,
             enabled: _canCreate(entry.key),
+            hostContext: context,
           ),
       ],
     );
@@ -628,16 +629,21 @@ class _FichaMenuItem extends StatelessWidget {
     required this.label,
     required this.bundle,
     required this.enabled,
+    required this.hostContext,
   });
 
   final String label;
   final String bundle;
   final bool enabled;
 
+  /// Live context from the page — menu item contexts are deactivated when
+  /// the menu closes, before the deferred callback runs.
+  final BuildContext hostContext;
+
   @override
   Widget build(BuildContext context) {
     return MenuItemButton(
-      onPressed: enabled ? () => _openForm(context) : null,
+      onPressed: enabled ? () => _openForm(hostContext) : null,
       child: Row(
         children: [
           Expanded(child: Text(label)),

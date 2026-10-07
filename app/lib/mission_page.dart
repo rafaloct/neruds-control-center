@@ -1567,17 +1567,29 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     );
     controller.dispose();
     if (!mounted || input == null || input.isEmpty) return;
-    final nid =
-        RegExp(r'node/(\d+)').firstMatch(input)?.group(1) ??
-        (RegExp(r'^\d+$').hasMatch(input) ? input : null);
-    if (nid == null) {
-      _message('Informe o endereço (/node/123) ou o número da ficha.');
-      return;
-    }
     final portal = AppConfig.portalUrl;
-    if (portal.isEmpty) {
+    final portalUri = AppConfig.webUri(portal);
+    if (portalUri == null) {
       _message('O endereço do portal não está configurado nesta estação.');
       return;
+    }
+    String? nid;
+    if (RegExp(r'^\d+$').hasMatch(input)) {
+      nid = input;
+    } else {
+      final parsed = AppConfig.webUri(input);
+      final match = parsed == null
+          ? null
+          : RegExp(r'^/node/(\d+)(?:/edit)?/?$').firstMatch(parsed.path);
+      if (parsed == null || match == null) {
+        _message('Informe o endereço (/node/123) ou o número da ficha.');
+        return;
+      }
+      if (parsed.origin.toLowerCase() != portalUri.origin.toLowerCase()) {
+        _message('O endereço informado não pertence ao portal configurado.');
+        return;
+      }
+      nid = match.group(1);
     }
     final revision = _beginSessionRequest();
     if (revision == null || saving) return;

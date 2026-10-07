@@ -843,6 +843,22 @@ def update_task(
                 args.append(value)
                 actual_changes[api_field] = {"from": old_value, "to": value}
 
+        if "public_url" in actual_changes:
+            # Relinked fichas must not inherit verification results recorded
+            # for the previous URL.
+            if before["public_check_ok"] and "public_check_ok" not in actual_changes:
+                assignments.append("public_check_ok=?")
+                args.append(0)
+                actual_changes["public_check_ok"] = {"from": 1, "to": 0}
+            url_check_table = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='task_url_check'"
+            ).fetchone()
+            if url_check_table:
+                conn.execute(
+                    "DELETE FROM task_url_check WHERE task_id=?", (task_id,)
+                )
+
         if assignments:
             assignments.append("updated_at=?")
             args.append(utcnow())

@@ -121,6 +121,45 @@ def test_task_portal_link_is_updatable(seeded_mission):
     assert "public_url" in change and "edit_url" in change
 
 
+def test_task_relink_resets_stale_verifications(seeded_mission):
+    tasks = mission_store.list_tasks(1, limit=5)
+    first_task_id = tasks["items"][0]["id"]
+
+    mission_store.update_task(
+        first_task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": "https://portal.example.org/node/555",
+            "public_check_ok": True,
+        },
+    )
+    import mission_automation
+
+    mission_automation.init_automation_db()
+    with mission_store.connect() as conn:
+        conn.execute(
+            "INSERT INTO task_url_check "
+            "(task_id,mission_id,url,ok,http_code,error,checked_at) "
+            "VALUES (?,1,'https://portal.example.org/node/555',1,200,NULL,'now')",
+            (first_task_id,),
+        )
+        conn.commit()
+
+    relinked = mission_store.update_task(
+        first_task_id,
+        actor="extensionista.test",
+        changes={"public_url": "https://portal.example.org/node/777"},
+    )
+    assert relinked["public_url"] == "https://portal.example.org/node/777"
+    assert relinked["public_check_ok"] is False
+    with mission_store.connect() as conn:
+        row = conn.execute(
+            "SELECT task_id FROM task_url_check WHERE task_id=?",
+            (first_task_id,),
+        ).fetchone()
+    assert row is None
+
+
 def test_task_detail_not_found(temp_db):
     with pytest.raises(KeyError, match="task_not_found"):
         mission_store.task_detail(99999)
