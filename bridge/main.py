@@ -457,22 +457,17 @@ async def _create_news_draft_internal(
         parser = HiddenInputParser()
         parser.feed(form.text)
         text_format = parser.body_format
-        if text_format is None:
-            raise HTTPException(
-                status_code=403,
-                detail="Drupal não ofereceu um formato de texto para esta conta. Confira o formulário no portal.",
-            )
         fields = parser.fields
+        use_html = text_format is not None and text_format != "plain_text"
         fields.update(
             {
                 "title[0][value]": title,
-                "body[0][summary]": summary
-                if text_format == "plain_text"
-                else plain_to_basic_html(summary),
-                "body[0][value]": body
-                if text_format == "plain_text"
-                else plain_to_basic_html(body),
-                "body[0][format]": text_format,
+                "body[0][summary]": plain_to_basic_html(summary)
+                if use_html
+                else summary,
+                "body[0][value]": plain_to_basic_html(body)
+                if use_html
+                else body,
                 "status[value]": "0",
                 "field_data_noticia[0][value][date]": publication_date
                 or datetime.now().date().isoformat(),
@@ -480,6 +475,10 @@ async def _create_news_draft_internal(
                 "op": fields.get("op", "Salvar"),
             }
         )
+        if text_format is None:
+            fields.pop("body[0][format]", None)
+        else:
+            fields["body[0][format]"] = text_format
         if publication_date:
             fields["field_data_publicacao[0][value][date]"] = publication_date
 

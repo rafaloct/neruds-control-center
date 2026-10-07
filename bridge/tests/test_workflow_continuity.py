@@ -379,21 +379,28 @@ async def test_native_creation_respects_offered_format_and_escapes_only_html(
         '<option value="full_html" disabled>Indisponível</option></select>',
     ],
 )
-async def test_no_available_text_format_stops_before_saving(
+async def test_hidden_format_selector_defers_to_portal_default(
     async_client, extensionista_session, respx_mock, format_field
 ):
     token, _ = extensionista_session
     respx_mock.get(f"{main.PORTAL_URL}/node/add/noticia").mock(
         return_value=Response(200, text=f'<form>{format_field}</form>')
     )
+    save = respx_mock.post(f"{main.PORTAL_URL}/node/add/noticia").mock(
+        return_value=Response(302, headers={"location": "/node/904"})
+    )
+    literal = "Texto <tags> <3 &amp;\nSegunda linha."
     response = await async_client.post(
         "/content/news/draft",
-        json={"title": "Registro bloqueado", "body": "Conteúdo conferido."},
+        json={"title": "Registro conferido", "body": literal},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert response.status_code == 403
-    assert "não ofereceu um formato" in response.json()["detail"]
-    assert all(call.request.method == "GET" for call in respx_mock.calls)
+    assert response.status_code == 200
+    fields = parse_qs(save.calls.last.request.content.decode())
+    assert "body[0][format]" not in fields
+    assert fields["body[0][value]"] == [literal]
+    assert fields["status[value]"] == ["0"]
+    assert response.json()["id"] == "904"
 
 
 async def test_plain_text_draft_review_preserves_literal_content(
