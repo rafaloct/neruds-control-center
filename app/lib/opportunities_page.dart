@@ -12,15 +12,6 @@ import 'workflow_widgets.dart';
 Uri _opUri(String path, [Map<String, String>? query]) =>
     AppConfig.endpoint(path).replace(queryParameters: query);
 
-String _opError(http.Response response) {
-  try {
-    final data = jsonDecode(utf8.decode(response.bodyBytes));
-    return data['detail']?.toString() ?? 'Erro HTTP ${response.statusCode}';
-  } catch (_) {
-    return 'Erro HTTP ${response.statusCode}';
-  }
-}
-
 class OpportunitiesPage extends StatefulWidget {
   const OpportunitiesPage({super.key});
 
@@ -138,7 +129,7 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
       ]);
       if (!_currentSession(epoch, token) || request != requestVersion) return;
       for (final response in results) {
-        if (response.statusCode != 200) throw StateError(_opError(response));
+        if (response.statusCode != 200) throw workflowResponseError(response);
       }
       final sourceData = jsonDecode(utf8.decode(results[1].bodyBytes)) as List;
       final itemPayload = jsonDecode(utf8.decode(results[2].bodyBytes)) as Map;
@@ -174,7 +165,7 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
         headers: AppSession.instance.authHeaders,
       );
       if (response.statusCode != 200) {
-        _message(_opError(response));
+        _message(workflowError(workflowResponseError(response)));
         return;
       }
       final payload = Map<String, dynamic>.from(
@@ -224,7 +215,7 @@ class _OpportunitiesPageState extends State<OpportunitiesPage> {
         headers: AppSession.instance.authHeaders,
       );
       if (!mounted || !AppSession.instance.authenticated) return;
-      if (response.statusCode != 200) throw StateError(_opError(response));
+      if (response.statusCode != 200) throw workflowResponseError(response);
       final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
       _message(
         'Fonte conferida: ${data['inserted'] ?? 0} novas oportunidades, '
@@ -754,7 +745,7 @@ class _OpportunityInputDialogState extends State<_OpportunityInputDialog> {
         return;
       }
       if (response.statusCode != 200 && response.statusCode != 201) {
-        throw StateError(_opError(response));
+        throw workflowResponseError(response);
       }
       final result = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
       _dirty = false;
@@ -1038,7 +1029,7 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
         headers: session.authHeaders,
       );
       if (!_sameSession(epoch, token) || request != _requestVersion) return;
-      if (response.statusCode != 200) throw StateError(_opError(response));
+      if (response.statusCode != 200) throw workflowResponseError(response);
       final data = Map<String, dynamic>.from(
         jsonDecode(utf8.decode(response.bodyBytes)) as Map,
       );
@@ -1079,9 +1070,15 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
   }
 
   Future<void> _decide(String status) async {
-    if (actionBusy || _linked || !AppSession.instance.authenticated) return;
+    final archivingLinked = _linked && status == 'arquivado';
+    if (actionBusy ||
+        (_linked && !archivingLinked) ||
+        !AppSession.instance.authenticated) {
+      return;
+    }
+    if (archivingLinked && item?['status'] == 'arquivado') return;
     if (status == 'aprovado_pauta' && !AppSession.instance.canReview) return;
-    if (!(_form.currentState?.validate() ?? false)) return;
+    if (!archivingLinked && !(_form.currentState?.validate() ?? false)) return;
     final session = AppSession.instance;
     final epoch = session.identityEpoch;
     final token = session.token;
@@ -1092,14 +1089,19 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
         headers: session.authHeaders,
         body: jsonEncode({
           'status': status,
-          'note': note.text.trim().isEmpty ? null : note.text.trim(),
-          'category': category,
-          'deadline_at': deadline.text.trim(),
-          'fit_tags': fitTags.toList(),
+          // Archiving preserves the saved curation and existing portal link.
+          'note': archivingLinked
+              ? (item?['decision_note'])
+              : (note.text.trim().isEmpty ? null : note.text.trim()),
+          if (!archivingLinked) ...{
+            'category': category,
+            'deadline_at': deadline.text.trim(),
+            'fit_tags': fitTags.toList(),
+          },
         }),
       );
       if (!_sameSession(epoch, token)) return;
-      if (response.statusCode != 200) throw StateError(_opError(response));
+      if (response.statusCode != 200) throw workflowResponseError(response);
       _message('Curadoria salva: ${_statusLabel(status)}.');
       await _load(replaceEdits: true);
     } catch (error) {
@@ -1152,7 +1154,7 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
       );
       if (!_sameSession(epoch, token)) return;
       if (response.statusCode != 200 && response.statusCode != 201) {
-        throw StateError(_opError(response));
+        throw workflowResponseError(response);
       }
       final created = Map<String, dynamic>.from(
         jsonDecode(utf8.decode(response.bodyBytes)) as Map,
@@ -1439,6 +1441,22 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
                 'Alterações ainda não salvas. Registre a decisão para continuar.',
               ),
             ],
+          ],
+          if (_linked && status != 'arquivado') ...[
+            const SizedBox(height: 18),
+            const Text(
+              'Arquivar encerra o acompanhamento desta oportunidade. '
+              'A ficha no portal e o histórico da curadoria são preservados.',
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: actionBusy ? null : () => _decide('arquivado'),
+                icon: const Icon(Icons.archive_outlined),
+                label: const Text('Arquivar oportunidade'),
+              ),
+            ),
           ],
           if (!_linked &&
               status == 'aprovado_pauta' &&

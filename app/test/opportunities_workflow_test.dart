@@ -9,6 +9,7 @@ import 'package:neruds_control_center/app_session.dart';
 import 'package:neruds_control_center/bridge_http.dart' as http;
 import 'package:neruds_control_center/opportunities_page.dart';
 import 'package:neruds_control_center/unsaved_work.dart';
+import 'package:neruds_control_center/workflow_widgets.dart';
 
 upstream.Response _json(Object value, [int status = 200]) => upstream.Response(
   jsonEncode(value),
@@ -94,6 +95,140 @@ void main() {
     );
     expect(mutations, 0);
   });
+
+  testWidgets(
+    'arquivar pauta vinculada preserva nota e ficha sem liberar recriação',
+    (tester) async {
+      AppSession.instance.setSession(
+        tokenValue: 'test-session',
+        usernameValue: 'curator.test',
+        canReviewValue: false,
+      );
+      var current = _item(linked: true);
+      final decisions = <Map<String, dynamic>>[];
+      var creates = 0;
+      http.setClientForTesting(
+        MockClient((request) async {
+          if (request.method == 'POST') creates++;
+          if (request.method == 'PATCH') {
+            expect(request.url.path, '/opportunities/items/9/decision');
+            final decision = Map<String, dynamic>.from(
+              jsonDecode(request.body) as Map,
+            );
+            decisions.add(decision);
+            current = {...current, 'status': decision['status']};
+          }
+          return _json(current);
+        }),
+      );
+      await _mount(tester, const OpportunityDialog(itemId: 9), width: 400);
+      await tester.scrollUntilVisible(
+        find.text('Arquivar oportunidade'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await _tap(tester, 'Arquivar oportunidade');
+      expect(decisions.single, {
+        'status': 'arquivado',
+        'note': 'Fonte consultada.',
+      });
+      expect(creates, 0);
+      expect(find.text('Arquivar oportunidade'), findsNothing);
+      expect(find.text('Preparar rascunho de notícia'), findsNothing);
+      expect(find.text('Salvar em triagem'), findsNothing);
+      expect(find.text('Aprovar como pauta'), findsNothing);
+      expect(find.text('Descartar pauta'), findsNothing);
+
+      await tester.scrollUntilVisible(
+        find.text('Abrir ficha para revisão'),
+        -300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      final links = tester.widgetList<PortalLinkButton>(
+        find.byType(PortalLinkButton),
+      );
+      expect(
+        links.any(
+          (link) =>
+              link.editing &&
+              link.url == 'https://portal.example.test/node/321/edit',
+        ),
+        isTrue,
+      );
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('op-note')),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      final note = tester.widget<TextFormField>(
+        find.byKey(const Key('op-note')),
+      );
+      expect(note.controller!.text, 'Fonte consultada.');
+      expect(note.enabled, isFalse);
+      expect(UnsavedWork.instance.hasChanges, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('falha ao arquivar mantém vínculo e permite repetir só arquivo', (
+    tester,
+  ) async {
+    var decisions = 0;
+    var creates = 0;
+    http.setClientForTesting(
+      MockClient((request) async {
+        if (request.method == 'POST') creates++;
+        if (request.method == 'PATCH') {
+          decisions++;
+          expect(jsonDecode(request.body)['status'], 'arquivado');
+          return _json({'detail': 'Serviço indisponível'}, 503);
+        }
+        return _json(_item(linked: true));
+      }),
+    );
+    await _mount(tester, const OpportunityDialog(itemId: 9));
+    await _tap(tester, 'Arquivar oportunidade');
+    expect(decisions, 1);
+    expect(creates, 0);
+    expect(find.text('Arquivar oportunidade'), findsOneWidget);
+    expect(find.text('Abrir ficha para revisão'), findsOneWidget);
+    expect(find.text('Preparar rascunho de notícia'), findsNothing);
+    expect(find.text('Salvar em triagem'), findsNothing);
+    expect(
+      find.textContaining('As alterações foram mantidas.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'conflito de rascunho conduz ao vínculo existente sem repetir POST',
+    (tester) async {
+      const detail =
+          'Esta oportunidade já possui um rascunho Drupal. '
+          'Abra o registro existente no portal.';
+      var linked = false;
+      var creates = 0;
+      http.setClientForTesting(
+        MockClient((request) async {
+          if (request.method == 'POST') {
+            creates++;
+            linked = true;
+            return _json({'detail': detail}, 409);
+          }
+          return _json({..._item(linked: linked), 'status': 'aprovado_pauta'});
+        }),
+      );
+      await _mount(tester, const OpportunityDialog(itemId: 9));
+      await _tap(tester, 'Preparar rascunho de notícia');
+      await _tap(tester, 'Criar rascunho vinculado');
+      expect(creates, 1);
+      expect(find.text(detail), findsOneWidget);
+      expect(find.text('Abrir ficha para revisão'), findsOneWidget);
+      expect(find.text('Preparar rascunho de notícia'), findsNothing);
+      expect(find.text('Salvar em triagem'), findsNothing);
+      expect(find.text('Arquivar oportunidade'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'limpar prazo envia remoção explícita e só save limpa alterações',

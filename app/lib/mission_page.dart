@@ -1085,6 +1085,74 @@ class MissionEvidenceSelection {
 
 typedef MissionEvidencePicker = Future<MissionEvidenceSelection?> Function();
 
+// A fullscreen route owns its opening identity; renewed sessions may resume
+// local fields, but older requests must not replace them.
+mixin _MissionDialogSession<T extends StatefulWidget> on State<T> {
+  late final int _dialogIdentityEpoch;
+  int _sessionRevision = 0;
+
+  bool get _identityChanged =>
+      AppSession.instance.identityEpoch != _dialogIdentityEpoch;
+  bool get _sessionReady =>
+      !_identityChanged && AppSession.instance.authenticated;
+
+  int? _beginSessionRequest() => _sessionReady ? _sessionRevision : null;
+  bool _currentSessionRequest(int revision) =>
+      mounted && _sessionReady && revision == _sessionRevision;
+
+  @override
+  void initState() {
+    super.initState();
+    _dialogIdentityEpoch = AppSession.instance.identityEpoch;
+    AppSession.instance.addListener(_dialogSessionChanged);
+  }
+
+  void _dialogSessionChanged() {
+    if (!mounted) return;
+    _sessionRevision++;
+    setState(() => _resetSessionView(_identityChanged));
+    if (_sessionReady) _resumeSessionView();
+  }
+
+  // Never navigate in this listener: sign-in may still own the top route when
+  // setSession notifies listeners.
+  void _resetSessionView(bool changedIdentity);
+  void _resumeSessionView();
+
+  @override
+  void dispose() {
+    AppSession.instance.removeListener(_dialogSessionChanged);
+    super.dispose();
+  }
+}
+
+class _MissionSessionNotice extends StatelessWidget {
+  const _MissionSessionNotice({required this.identityChanged});
+  final bool identityChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!identityChanged) {
+      return const SessionPrompt(
+        title: 'Entre para retomar este preenchimento',
+        message:
+            'Os campos ainda não salvos continuam nesta janela. '
+            'Entre com a mesma conta para continuar e salvar.',
+      );
+    }
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Text(
+          'Esta ficha pertence à sessão anterior. '
+          'Feche esta janela e abra a tarefa com a conta atual.',
+          key: ValueKey('mission-session-ended'),
+        ),
+      ),
+    );
+  }
+}
+
 class MissionTaskDialog extends StatefulWidget {
   const MissionTaskDialog({
     super.key,
@@ -1101,7 +1169,8 @@ class MissionTaskDialog extends StatefulWidget {
   State<MissionTaskDialog> createState() => _MissionTaskDialogState();
 }
 
-class _MissionTaskDialogState extends State<MissionTaskDialog> {
+class _MissionTaskDialogState extends State<MissionTaskDialog>
+    with _MissionDialogSession<MissionTaskDialog> {
   Map<String, dynamic>? task;
   Map<String, dynamic> _original = {};
   List<Map<String, dynamic>>? _duplicates;
@@ -1169,6 +1238,33 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
     super.dispose();
   }
 
+  @override
+  void _resetSessionView(bool changedIdentity) {
+    loading = false;
+    saving = false;
+    checkingDuplicates = false;
+    if (!changedIdentity) return;
+    _applying = true;
+    task = null;
+    _original = {};
+    _duplicates = null;
+    _loadError = null;
+    _duplicateError = null;
+    stage = null;
+    publicCheck = false;
+    _didChange = false;
+    for (final controller in _fields.values) {
+      controller.clear();
+    }
+    _applying = false;
+    UnsavedWork.instance.remove(this);
+  }
+
+  @override
+  void _resumeSessionView() {
+    if (task == null) _load();
+  }
+
   void _changeStep(int value) {
     setState(() => _step = value);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1183,7 +1279,7 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
   }
 
   void _message(String text) {
-    if (!mounted) return;
+    if (!mounted || !_sessionReady) return;
     ScaffoldMessenger.of(context)
       ..removeCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(text)));
@@ -1208,28 +1304,36 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
   }
 
   Future<void> _load({bool preserveEdits = false}) async {
+    final revision = _beginSessionRequest();
+    if (revision == null) return;
+    setState(() => loading = true);
     try {
       final response = await http.get(
         _uri('/mission-tasks/${widget.taskId}'),
         headers: AppSession.instance.authHeaders,
       );
+      if (!_currentSessionRequest(revision)) return;
       if (response.statusCode != 200) throw Exception(_error(response));
       final data = Map<String, dynamic>.from(
         jsonDecode(utf8.decode(response.bodyBytes)),
       );
-      if (!mounted) return;
+      if (!_currentSessionRequest(revision)) return;
       setState(() {
         _applyTask(data, preserveEdits: preserveEdits);
         _loadError = null;
       });
     } catch (error) {
-      if (mounted) setState(() => _loadError = workflowError(error));
+      if (_currentSessionRequest(revision)) {
+        setState(() => _loadError = workflowError(error));
+      }
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (_currentSessionRequest(revision)) setState(() => loading = false);
     }
   }
 
   Future<void> _save() async {
+    final revision = _beginSessionRequest();
+    if (revision == null) return;
     if (saving || task == null || !_dirty) return;
     final changes = <String, dynamic>{};
     for (final entry in _values.entries) {
@@ -1261,11 +1365,12 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
         headers: AppSession.instance.authHeaders,
         body: jsonEncode(changes),
       );
+      if (!_currentSessionRequest(revision)) return;
       if (response.statusCode != 200) throw Exception(_error(response));
       final data = Map<String, dynamic>.from(
         jsonDecode(utf8.decode(response.bodyBytes)),
       );
-      if (!mounted) return;
+      if (!_currentSessionRequest(revision)) return;
       setState(() {
         _applyTask(data);
         _didChange = true;
@@ -1274,9 +1379,9 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
         'Registro da tarefa salvo. O conteúdo do portal não foi alterado.',
       );
     } catch (error) {
-      _message(workflowError(error));
+      if (_currentSessionRequest(revision)) _message(workflowError(error));
     } finally {
-      if (mounted) setState(() => saving = false);
+      if (_currentSessionRequest(revision)) setState(() => saving = false);
     }
   }
 
@@ -1314,6 +1419,8 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
   }
 
   Future<void> _uploadEvidence() async {
+    final revision = _beginSessionRequest();
+    if (revision == null) return;
     if (saving) return;
     try {
       MissionEvidenceSelection? selected;
@@ -1328,7 +1435,7 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
           );
         }
       }
-      if (selected == null || !mounted) return;
+      if (selected == null || !_currentSessionRequest(revision)) return;
       if (selected.bytes.isEmpty) {
         _message('O arquivo está vazio. Escolha a evidência novamente.');
         return;
@@ -1353,20 +1460,24 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
         ),
       );
       final response = await http.Response.fromStream(await http.send(request));
+      if (!_currentSessionRequest(revision)) return;
       if (response.statusCode != 201) throw Exception(_error(response));
       _didChange = true;
       await _load(preserveEdits: true);
+      if (!_currentSessionRequest(revision)) return;
       _message(
         'Arquivo anexado à tarefa. Seu preenchimento ainda não salvo foi preservado.',
       );
     } catch (error) {
-      _message(workflowError(error));
+      if (_currentSessionRequest(revision)) _message(workflowError(error));
     } finally {
-      if (mounted) setState(() => saving = false);
+      if (_currentSessionRequest(revision)) setState(() => saving = false);
     }
   }
 
   Future<void> _check(String kind, int order, bool completed) async {
+    final revision = _beginSessionRequest();
+    if (revision == null) return;
     if (saving) return;
     setState(() => saving = true);
     try {
@@ -1375,24 +1486,27 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
         headers: AppSession.instance.authHeaders,
         body: jsonEncode({'completed': completed}),
       );
+      if (!_currentSessionRequest(revision)) return;
       if (response.statusCode != 200) throw Exception(_error(response));
       final data = Map<String, dynamic>.from(
         jsonDecode(utf8.decode(response.bodyBytes)),
       );
-      if (!mounted) return;
+      if (!_currentSessionRequest(revision)) return;
       setState(() {
         _applyTask(data, preserveEdits: true);
         _didChange = true;
       });
       _message('Checklist registrado. Seu preenchimento foi preservado.');
     } catch (error) {
-      _message(workflowError(error));
+      if (_currentSessionRequest(revision)) _message(workflowError(error));
     } finally {
-      if (mounted) setState(() => saving = false);
+      if (_currentSessionRequest(revision)) setState(() => saving = false);
     }
   }
 
   Future<void> _findDuplicates() async {
+    final revision = _beginSessionRequest();
+    if (revision == null) return;
     if (checkingDuplicates) return;
     setState(() {
       checkingDuplicates = true;
@@ -1403,9 +1517,10 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
         _uri('/mission-tasks/${widget.taskId}/drupal-duplicates'),
         headers: AppSession.instance.authHeaders,
       );
+      if (!_currentSessionRequest(revision)) return;
       if (response.statusCode != 200) throw Exception(_error(response));
       final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
-      if (mounted) {
+      if (_currentSessionRequest(revision)) {
         setState(() {
           _duplicates = (data['matches'] as List? ?? const [])
               .map((e) => Map<String, dynamic>.from(e as Map))
@@ -1413,9 +1528,13 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
         });
       }
     } catch (error) {
-      if (mounted) setState(() => _duplicateError = workflowError(error));
+      if (_currentSessionRequest(revision)) {
+        setState(() => _duplicateError = workflowError(error));
+      }
     } finally {
-      if (mounted) setState(() => checkingDuplicates = false);
+      if (_currentSessionRequest(revision)) {
+        setState(() => checkingDuplicates = false);
+      }
     }
   }
 
@@ -1435,21 +1554,26 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
   }
 
   Future<void> _downloadEvidence(Map<String, dynamic> file) async {
+    final revision = _beginSessionRequest();
+    if (revision == null) return;
     try {
       final response = await http.get(
         _uri('/mission-evidence/${file['id']}'),
         headers: AppSession.instance.authHeaders,
       );
+      if (!_currentSessionRequest(revision)) return;
       if (response.statusCode != 200) throw Exception(_error(response));
-      if (!mounted) return;
+      if (!_currentSessionRequest(revision)) return;
       final location = await FilePicker.saveFile(
         dialogTitle: 'Salvar evidência',
         fileName: file['filename']?.toString() ?? 'evidence.bin',
         bytes: response.bodyBytes,
       );
-      if (location != null) _message('Evidência salva no local escolhido.');
+      if (location != null && _currentSessionRequest(revision)) {
+        _message('Evidência salva no local escolhido.');
+      }
     } catch (error) {
-      _message(workflowError(error));
+      if (_currentSessionRequest(revision)) _message(workflowError(error));
     }
   }
 
@@ -1473,7 +1597,9 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
             actions: [
               FilledButton.icon(
                 key: const ValueKey('mission-task-save'),
-                onPressed: loading || saving || !_dirty ? null : _save,
+                onPressed: !_sessionReady || loading || saving || !_dirty
+                    ? null
+                    : _save,
                 icon: saving
                     ? const SizedBox(
                         width: 16,
@@ -1486,7 +1612,9 @@ class _MissionTaskDialogState extends State<MissionTaskDialog> {
               const SizedBox(width: 12),
             ],
           ),
-          body: loading
+          body: !_sessionReady
+              ? _MissionSessionNotice(identityChanged: _identityChanged)
+              : loading
               ? const Center(child: CircularProgressIndicator())
               : task == null
               ? Center(
@@ -2037,7 +2165,8 @@ class MissionWorkItemDialog extends StatefulWidget {
   State<MissionWorkItemDialog> createState() => _MissionWorkItemDialogState();
 }
 
-class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
+class _MissionWorkItemDialogState extends State<MissionWorkItemDialog>
+    with _MissionDialogSession<MissionWorkItemDialog> {
   Map<String, dynamic>? item;
   bool loading = true;
   bool saving = false;
@@ -2070,7 +2199,7 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
   }
 
   void _message(String text) {
-    if (mounted) {
+    if (mounted && _sessionReady) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     }
   }
@@ -2096,6 +2225,28 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
     super.dispose();
   }
 
+  @override
+  void _resetSessionView(bool changedIdentity) {
+    loading = false;
+    saving = false;
+    if (!changedIdentity) return;
+    _applying = true;
+    item = null;
+    _original = {};
+    completed = false;
+    _didChange = false;
+    for (final controller in [status, evidence, note]) {
+      controller.clear();
+    }
+    _applying = false;
+    UnsavedWork.instance.remove(this);
+  }
+
+  @override
+  void _resumeSessionView() {
+    if (item == null) _load();
+  }
+
   void _applyItem(Map<String, dynamic> data) {
     _applying = true;
     item = data;
@@ -2109,24 +2260,30 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
   }
 
   Future<void> _load() async {
+    final revision = _beginSessionRequest();
+    if (revision == null) return;
+    setState(() => loading = true);
     try {
       final response = await http.get(
         _uri('/mission-work-items/${widget.workItemId}'),
         headers: AppSession.instance.authHeaders,
       );
+      if (!_currentSessionRequest(revision)) return;
       if (response.statusCode != 200) throw Exception(_error(response));
       final data = Map<String, dynamic>.from(
         jsonDecode(utf8.decode(response.bodyBytes)),
       );
-      if (mounted) setState(() => _applyItem(data));
+      if (_currentSessionRequest(revision)) setState(() => _applyItem(data));
     } catch (error) {
-      _message(workflowError(error));
+      if (_currentSessionRequest(revision)) _message(workflowError(error));
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (_currentSessionRequest(revision)) setState(() => loading = false);
     }
   }
 
   Future<void> _save() async {
+    final revision = _beginSessionRequest();
+    if (revision == null) return;
     if (!_dirty || saving) return;
     final changes = <String, dynamic>{
       for (final entry in _values.entries)
@@ -2142,20 +2299,21 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
         headers: AppSession.instance.authHeaders,
         body: jsonEncode(changes),
       );
+      if (!_currentSessionRequest(revision)) return;
       if (response.statusCode != 200) throw Exception(_error(response));
       final data = Map<String, dynamic>.from(
         jsonDecode(utf8.decode(response.bodyBytes)),
       );
-      if (!mounted) return;
+      if (!_currentSessionRequest(revision)) return;
       setState(() {
         _applyItem(data);
         _didChange = true;
       });
       _message('Atividade registrada. O conteúdo do portal não foi alterado.');
     } catch (error) {
-      _message(workflowError(error));
+      if (_currentSessionRequest(revision)) _message(workflowError(error));
     } finally {
-      if (mounted) setState(() => saving = false);
+      if (_currentSessionRequest(revision)) setState(() => saving = false);
     }
   }
 
@@ -2202,19 +2360,25 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
           appBar: AppBar(
             title: const Text('Atividade complementar'),
             leading: IconButton(
+              key: const ValueKey('mission-work-item-close'),
               onPressed: saving ? null : _requestClose,
               icon: const Icon(Icons.close),
             ),
             actions: [
               FilledButton.icon(
-                onPressed: loading || saving || !_dirty ? null : _save,
+                key: const ValueKey('mission-work-item-save'),
+                onPressed: !_sessionReady || loading || saving || !_dirty
+                    ? null
+                    : _save,
                 icon: const Icon(Icons.save_outlined),
                 label: const Text('Salvar'),
               ),
               const SizedBox(width: 12),
             ],
           ),
-          body: loading
+          body: !_sessionReady
+              ? _MissionSessionNotice(identityChanged: _identityChanged)
+              : loading
               ? const Center(child: CircularProgressIndicator())
               : item == null
               ? const Center(child: Text('Atividade não encontrada.'))
@@ -2321,6 +2485,7 @@ class _MissionWorkItemDialogState extends State<MissionWorkItemDialog> {
         ),
         const SizedBox(height: 12),
         TextField(
+          key: const ValueKey('mission-work-item-note'),
           controller: note,
           enabled: !saving,
           minLines: 3,

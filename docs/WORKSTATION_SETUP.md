@@ -19,6 +19,10 @@ O endereço é fornecido pela equipe técnica no ambiente de compilação:
 | NERUDS_BRIDGE_URL | Endereço HTTPS do serviço central acessível pela rede autorizada |
 | NERUDS_PORTAL_URL | Opcional; endereço público do portal para consulta direta ou fixação da origem |
 
+O cliente exige HTTPS para o bridge remoto. HTTP é aceito somente em localhost,
+127.0.0.1 ou [::1], para desenvolvimento/QA na própria máquina; nomes semelhantes
+e outros endereços de rede não recebem essa exceção.
+
 O cliente aprende o endereço público do portal na resposta do bridge quando o
 segundo parâmetro não é fornecido. Não há endereço de infraestrutura embutido no
 código do cliente. Uma versão sem configuração mostra uma orientação de

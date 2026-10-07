@@ -113,6 +113,94 @@ void main() {
   );
 
   test(
+    'remote bridge requires TLS while explicit loopback supports local QA',
+    () {
+      for (final address in const [
+        'http://bridge.example.test',
+        'http://192.0.2.10:8787',
+        'http://localhost.example.test:8787',
+        'http://127.0.0.1.example.test:8787',
+      ]) {
+        AppConfig.configureForTesting(bridgeUrl: address);
+        expect(AppConfig.isConfigured, isFalse, reason: address);
+        expect(
+          () => AppConfig.endpoint('/auth/login'),
+          throwsA(isA<AppConfigurationException>()),
+          reason: address,
+        );
+      }
+      for (final address in const [
+        'https://bridge.example.test/service',
+        'http://localhost:8787',
+        'http://127.0.0.1:8787',
+        'http://[::1]:8787',
+      ]) {
+        AppConfig.configureForTesting(bridgeUrl: address);
+        expect(AppConfig.isConfigured, isTrue, reason: address);
+        expect(AppConfig.endpoint('/auth/login').path, endsWith('/auth/login'));
+      }
+      expect(AppConfig.webUri('http://portal.example.test'), isNotNull);
+    },
+  );
+
+  testWidgets('an unsafe bridge cannot receive sign-in credentials', (
+    tester,
+  ) async {
+    AppConfig.configureForTesting(bridgeUrl: 'http://bridge.example.test');
+    var calls = 0;
+    http.setClientForTesting(
+      MockClient((request) async {
+        calls++;
+        return _json({'token': 'unexpected-token', 'username': 'qa.editor'});
+      }),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showSignInDialog(context),
+              child: const Text('Abrir entrada'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Abrir entrada'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextFormField).at(0), 'qa.editor');
+    await tester.enterText(
+      find.byType(TextFormField).at(1),
+      'synthetic-password',
+    );
+    await tester.tap(find.text('Entrar'));
+    await tester.pumpAndSettle();
+    expect(calls, 0);
+    expect(AppSession.instance.authenticated, isFalse);
+    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.textContaining('configurada'), findsOneWidget);
+  });
+
+  test(
+    'snapshot also rejects a plaintext remote bridge before a request',
+    () async {
+      var calls = 0;
+      http.setClientForTesting(
+        MockClient((request) async {
+          calls++;
+          return _json({'online': true});
+        }),
+      );
+      final snapshot = await DrupalApi(
+        bridgeUrl: 'http://bridge.example.test',
+      ).loadSnapshot();
+      expect(calls, 0);
+      expect(snapshot.online, isFalse);
+      expect(snapshot.error, isNotNull);
+    },
+  );
+
+  test(
     'snapshot catches asynchronous failures without exposing an endpoint',
     () async {
       http.setClientForTesting(

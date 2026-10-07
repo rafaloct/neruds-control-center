@@ -1,13 +1,62 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' show ClientException;
+import 'package:http/http.dart' show ClientException, Response;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app_config.dart';
 
+// Only these bridge contract messages are safe to display verbatim. Never pass
+// arbitrary response bodies, HTML, or exception details through to the UI.
+const _safeResponseMessages = <int, Set<String>>{
+  502: {
+    'Drupal retornou sem confirmar o identificador numérico da notícia. '
+        'Confira o registro no portal antes de repetir.',
+    'Drupal salvou sem confirmar o identificador. '
+        'Confira a notícia no portal antes de repetir.',
+  },
+  409: {
+    'Esta oportunidade já possui um rascunho Drupal. '
+        'Abra o registro existente no portal.',
+    'Esta oportunidade já possui um rascunho no portal. '
+        'Continue no registro existente ou arquive a oportunidade.',
+    'Esta oportunidade já está vinculada a outro rascunho Drupal.',
+    'A oportunidade precisa ser aprovada como pauta antes de virar rascunho.',
+    'Uma oportunidade duplicada não pode virar rascunho. '
+        'Use o item de referência para preservar a auditoria.',
+  },
+};
+
+class _WorkflowResponseException implements Exception {
+  const _WorkflowResponseException([this.message]);
+
+  final String? message;
+}
+
+/// Retains actionable, known contract messages without exposing server output.
+Exception workflowResponseError(Response response) {
+  try {
+    final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+    final detail = decoded is Map ? decoded['detail'] : null;
+    final message = detail is Map ? detail['message'] : detail;
+    for (final safeMessage
+        in _safeResponseMessages[response.statusCode] ?? const <String>{}) {
+      if (message == safeMessage) {
+        return _WorkflowResponseException(safeMessage);
+      }
+    }
+  } on FormatException {
+    // Non-JSON responses are intentionally hidden from the user.
+  }
+  return const _WorkflowResponseException();
+}
+
 String workflowError(Object error) {
+  if (error is _WorkflowResponseException && error.message != null) {
+    return error.message!;
+  }
   if (error is AppConfigurationException) {
     return 'Este computador ainda precisa do endereço do serviço NERUDS. '
         'Peça à equipe técnica a versão configurada do aplicativo.';

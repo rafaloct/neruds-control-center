@@ -9,6 +9,7 @@ import 'package:neruds_control_center/app_session.dart';
 import 'package:neruds_control_center/bridge_http.dart' as http;
 import 'package:neruds_control_center/editorial_page.dart';
 import 'package:neruds_control_center/unsaved_work.dart';
+import 'package:neruds_control_center/workflow_widgets.dart';
 
 void _signIn({
   String username = 'editor.test',
@@ -188,6 +189,104 @@ void main() {
             .text,
         isEmpty,
       );
+    },
+  );
+
+  test('somente avisos contratuais conhecidos sobrevivem ao erro HTTP', () {
+    const ambiguous =
+        'Drupal retornou sem confirmar o identificador numérico da notícia. '
+        'Confira o registro no portal antes de repetir.';
+    const existing =
+        'Esta oportunidade já possui um rascunho Drupal. '
+        'Abra o registro existente no portal.';
+    expect(
+      workflowError(workflowResponseError(_json({'detail': ambiguous}, 502))),
+      ambiguous,
+    );
+    expect(
+      workflowError(
+        workflowResponseError(
+          _json({
+            'detail': {'message': existing},
+          }, 409),
+        ),
+      ),
+      existing,
+    );
+
+    const privateOutput = '<html>Bearer synthetic-private-token</html>';
+    final unknownResponses = [
+      _json({'detail': privateOutput}, 502),
+      upstream.Response(privateOutput, 502),
+      _json({
+        'detail': {'message': privateOutput},
+      }, 409),
+      _json({'detail': '$ambiguous $privateOutput'}, 502),
+      _json({'detail': ambiguous}, 503),
+      _json(['unexpected', privateOutput], 502),
+    ];
+    for (final response in unknownResponses) {
+      final message = workflowError(workflowResponseError(response));
+      expect(message, contains('Não foi possível concluir esta ação.'));
+      expect(message, isNot(contains(privateOutput)));
+      expect(message, isNot(contains('synthetic-private-token')));
+    }
+    expect(
+      workflowError(StateError(privateOutput)),
+      isNot(contains(privateOutput)),
+    );
+  });
+
+  testWidgets(
+    'criação ambígua orienta conferir portal e preserva texto sem repetir envio',
+    (tester) async {
+      const detail =
+          'Drupal retornou sem confirmar o identificador numérico da notícia. '
+          'Confira o registro no portal antes de repetir.';
+      var creates = 0;
+      http.setClientForTesting(
+        MockClient((request) async {
+          if (request.method == 'POST') {
+            creates++;
+            return _json({'detail': detail}, 502);
+          }
+          return _json({'items': []});
+        }),
+      );
+      _signIn();
+      await _mount(tester, width: 400);
+      await _compose(tester);
+      await _next(tester);
+      await _next(tester);
+      await _next(tester);
+
+      expect(creates, 1);
+      expect(find.text('Seu texto foi mantido. $detail'), findsOneWidget);
+      expect(find.textContaining('tente novamente'), findsNothing);
+      expect(UnsavedWork.instance.hasChanges, isTrue);
+      await tester.pump(const Duration(seconds: 5));
+      expect(creates, 1);
+      await tester.ensureVisible(find.text('Voltar ao texto'));
+      await tester.tap(find.text('Voltar ao texto'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Voltar ao texto'));
+      await tester.tap(find.text('Voltar ao texto'));
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextFormField>(find.byKey(const Key('news-title')))
+            .controller!
+            .text,
+        'Chamada de pesquisa',
+      );
+      expect(
+        tester
+            .widget<TextFormField>(find.byKey(const Key('news-body')))
+            .controller!
+            .text,
+        contains('Fonte: https://example.org/chamada'),
+      );
+      expect(tester.takeException(), isNull);
     },
   );
 

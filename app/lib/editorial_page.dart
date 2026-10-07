@@ -105,18 +105,6 @@ class _EditorialPageState extends State<EditorialPage>
       AppSession.instance.identityEpoch == epoch &&
       AppSession.instance.token == token;
 
-  String _errorMessage(http.Response response) {
-    try {
-      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-      final detail = decoded['detail'];
-      if (detail is String) return detail;
-      if (detail is Map && detail['message'] != null) {
-        return detail['message'].toString();
-      }
-    } catch (_) {}
-    return 'A operação não foi concluída (HTTP ${response.statusCode}). Tente novamente.';
-  }
-
   void _message(String value) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -147,7 +135,7 @@ class _EditorialPageState extends State<EditorialPage>
       );
       if (!_sameSession(epoch, token) || request != _requestVersion) return;
       if (response.statusCode != 200) {
-        throw StateError(_errorMessage(response));
+        throw workflowResponseError(response);
       }
       final data = jsonDecode(utf8.decode(response.bodyBytes));
       setState(() {
@@ -209,7 +197,7 @@ class _EditorialPageState extends State<EditorialPage>
       );
       if (!_sameSession(epoch, token)) return;
       if (response.statusCode != 200 && response.statusCode != 201) {
-        throw StateError(_errorMessage(response));
+        throw workflowResponseError(response);
       }
       final data = Map<String, dynamic>.from(
         jsonDecode(utf8.decode(response.bodyBytes)) as Map,
@@ -258,7 +246,7 @@ class _EditorialPageState extends State<EditorialPage>
       );
       if (!_sameSession(epoch, token)) return;
       if (response.statusCode != 200) {
-        throw StateError(_errorMessage(response));
+        throw workflowResponseError(response);
       }
       _message(
         status == 'approved'
@@ -321,7 +309,7 @@ class _EditorialPageState extends State<EditorialPage>
       );
       if (!_sameSession(epoch, token)) return;
       if (response.statusCode != 200) {
-        throw StateError(_errorMessage(response));
+        throw workflowResponseError(response);
       }
       setState(() => _reviewStatus = 'published');
       _message('Notícia publicada. Abra a página para conferir o resultado.');

@@ -15,9 +15,21 @@ class AppConfig {
       (_testPortal ?? (_portal.isNotEmpty ? _portal : _discoveredPortal) ?? '')
           .trim();
 
-  static bool get isConfigured {
-    final uri = webUri(bridgeUrl);
-    return uri != null && !uri.hasQuery && !uri.hasFragment;
+  static bool get isConfigured => bridgeUri(bridgeUrl) != null;
+
+  /// Credentials and bearer tokens require TLS outside explicit local QA hosts.
+  static Uri? bridgeUri(String? value) {
+    final uri = webUri(value);
+    if (uri == null || uri.hasQuery || uri.hasFragment) return null;
+    if (uri.scheme == 'https') return uri;
+    return const {
+          'localhost',
+          '127.0.0.1',
+          '::1',
+          '[::1]',
+        }.contains(uri.host.toLowerCase())
+        ? uri
+        : null;
   }
 
   static Uri? webUri(String? value) {
@@ -33,8 +45,8 @@ class AppConfig {
   }
 
   static Uri endpoint(String path) {
-    final base = webUri(bridgeUrl);
-    if (base == null || base.hasQuery || base.hasFragment) {
+    final base = bridgeUri(bridgeUrl);
+    if (base == null) {
       throw const AppConfigurationException();
     }
     if (!path.startsWith('/') || path.startsWith('//')) {

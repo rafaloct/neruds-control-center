@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -129,6 +130,104 @@ Future<void> openTask(
   );
   await tester.tap(find.byKey(const ValueKey('open-task')));
   await tester.pumpAndSettle();
+}
+
+Map<String, dynamic> workItemFixture() => {
+  'id': 71,
+  'title': 'Organizar fontes da atividade',
+  'section': 'diario_extensao',
+  'responsible': 'extensionista.1',
+  'spreadsheet_row': 3,
+  'completed': false,
+  'status': 'Em andamento',
+  'evidence': '',
+  'note': '',
+  'payload': <String, dynamic>{},
+  'events': <Map<String, dynamic>>[],
+};
+
+String detailPath(bool workItem) =>
+    workItem ? '/mission-work-items/71' : '/mission-tasks/41';
+Key saveKey(bool workItem) =>
+    ValueKey(workItem ? 'mission-work-item-save' : 'mission-task-save');
+Key fieldKey(bool workItem) =>
+    ValueKey(workItem ? 'mission-work-item-note' : 'mission-evidence-text');
+Key closeKey(bool workItem) =>
+    ValueKey(workItem ? 'mission-work-item-close' : 'mission-task-close');
+Finder dialogFinder(bool workItem) =>
+    find.byType(workItem ? MissionWorkItemDialog : MissionTaskDialog);
+
+Future<void> openSessionDialog(
+  WidgetTester tester,
+  bool workItem, {
+  bool settle = true,
+}) async {
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: Builder(
+          builder: (context) => FilledButton(
+            key: const ValueKey('open-session-dialog'),
+            onPressed: () => showDialog<bool>(
+              context: context,
+              builder: (_) => workItem
+                  ? const MissionWorkItemDialog(workItemId: 71)
+                  : const MissionTaskDialog(taskId: 41),
+            ),
+            child: const Text('Abrir registro'),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.tap(find.byKey(const ValueKey('open-session-dialog')));
+  if (settle) {
+    await tester.pumpAndSettle();
+  } else {
+    await tester.pump();
+  }
+}
+
+Future<TextEditingController> enterSessionDraft(
+  WidgetTester tester,
+  bool workItem,
+) async {
+  if (!workItem) {
+    await tester.tap(find.byKey(const ValueKey('mission-task-step-1')));
+    await tester.pumpAndSettle();
+    await reveal(tester, fieldKey(false));
+  } else {
+    await tester.ensureVisible(find.byKey(fieldKey(true)));
+  }
+  await tester.enterText(
+    find.byKey(fieldKey(workItem)),
+    'Texto reservado da primeira pessoa.',
+  );
+  await tester.pumpAndSettle();
+  return tester.widget<TextField>(find.byKey(fieldKey(workItem))).controller!;
+}
+
+Future<void> signInWithinDialog(
+  WidgetTester tester, {
+  String username = 'extensionista.1',
+  bool discard = false,
+}) async {
+  await tester.tap(find.text('Entrar com minha conta'));
+  await tester.pumpAndSettle();
+  await tester.enterText(
+    find.widgetWithText(TextFormField, 'Usuário'),
+    username,
+  );
+  await tester.enterText(
+    find.widgetWithText(TextFormField, 'Senha'),
+    'synthetic-only',
+  );
+  await tester.tap(find.widgetWithText(FilledButton, 'Entrar'));
+  await tester.pumpAndSettle();
+  if (discard) {
+    await tester.tap(find.text('Descartar e continuar'));
+    await tester.pumpAndSettle();
+  }
 }
 
 void main() {
@@ -401,4 +500,229 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   });
+
+  for (final workItem in [false, true]) {
+    final label = workItem ? 'atividade' : 'tarefa';
+
+    testWidgets('$label: 401 permite renovar a mesma conta sem perder texto', (
+      tester,
+    ) async {
+      wideSurface(tester);
+      final data = workItem ? workItemFixture() : taskFixture();
+      final changes = <Map<String, dynamic>>[];
+      final tokens = <String?>[];
+      bridge.setClientForTesting(
+        MockClient((request) async {
+          if (request.url.path == '/auth/login') {
+            return jsonResponse({
+              'token': 'renewed-token',
+              'username': 'extensionista.1',
+              'roles': ['extensionista'],
+            });
+          }
+          expect(request.url.path, detailPath(workItem));
+          if (request.method == 'PATCH') {
+            changes.add(Map<String, dynamic>.from(jsonDecode(request.body)));
+            tokens.add(request.headers['Authorization']);
+            if (changes.length == 1) {
+              return jsonResponse({'detail': 'Sessão expirada'}, 401);
+            }
+            data.addAll(changes.last);
+          }
+          return jsonResponse(data);
+        }),
+      );
+      await openSessionDialog(tester, workItem);
+      final controller = await enterSessionDraft(tester, workItem);
+      await tester.tap(find.byKey(saveKey(workItem)));
+      await tester.pumpAndSettle();
+      expect(AppSession.instance.authenticated, isFalse);
+      expect(controller.text, 'Texto reservado da primeira pessoa.');
+      expect(UnsavedWork.instance.hasChanges, isTrue);
+      expect(
+        find.text('Entre para retomar este preenchimento'),
+        findsOneWidget,
+      );
+
+      await signInWithinDialog(tester);
+      expect(dialogFinder(workItem), findsOneWidget);
+      expect(find.text('Entrar no NERUDS'), findsNothing);
+      expect(controller.text, 'Texto reservado da primeira pessoa.');
+      expect(UnsavedWork.instance.hasChanges, isTrue);
+      await tester.tap(find.byKey(saveKey(workItem)));
+      await tester.pumpAndSettle();
+      expect(changes, hasLength(2));
+      expect(changes.last, changes.first);
+      expect(tokens, ['Bearer fixture-token', 'Bearer renewed-token']);
+      expect(UnsavedWork.instance.hasChanges, isFalse);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+
+    testWidgets(
+      '$label: outra conta encerra a ficha sem fechar o login errado',
+      (tester) async {
+        wideSurface(tester);
+        var writes = 0;
+        bridge.setClientForTesting(
+          MockClient((request) async {
+            if (request.url.path == '/auth/login') {
+              return jsonResponse({
+                'token': 'colleague-token',
+                'username': 'colleague.test',
+                'roles': ['extensionista'],
+              });
+            }
+            if (request.method == 'PATCH') {
+              writes++;
+              return jsonResponse({'detail': 'Sessão expirada'}, 401);
+            }
+            return jsonResponse(workItem ? workItemFixture() : taskFixture());
+          }),
+        );
+        await openSessionDialog(tester, workItem);
+        final controller = await enterSessionDraft(tester, workItem);
+        await tester.tap(find.byKey(saveKey(workItem)));
+        await tester.pumpAndSettle();
+        await signInWithinDialog(
+          tester,
+          username: 'colleague.test',
+          discard: true,
+        );
+        expect(AppSession.instance.username, 'colleague.test');
+        expect(find.text('Entrar no NERUDS'), findsNothing);
+        expect(dialogFinder(workItem), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('mission-session-ended')),
+          findsOneWidget,
+        );
+        expect(controller.text, isEmpty);
+        expect(find.byKey(fieldKey(workItem)), findsNothing);
+        expect(UnsavedWork.instance.hasChanges, isFalse);
+        expect(
+          tester.widget<FilledButton>(find.byKey(saveKey(workItem))).onPressed,
+          isNull,
+        );
+        expect(writes, 1);
+
+        await tester.tap(find.byKey(closeKey(workItem)));
+        await tester.pumpAndSettle();
+        expect(dialogFinder(workItem), findsNothing);
+        expect(
+          find.byKey(const ValueKey('open-session-dialog')),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    for (final scenario in ['load-other', 'save-other', 'save-renewed']) {
+      testWidgets('$label: ignora resposta atrasada em $scenario', (
+        tester,
+      ) async {
+        wideSurface(tester);
+        final pending = Completer<transport.Response>();
+        final loading = scenario == 'load-other';
+        final data = workItem ? workItemFixture() : taskFixture();
+        bridge.setClientForTesting(
+          MockClient((request) async {
+            if (loading || request.method == 'PATCH') return pending.future;
+            return jsonResponse(data);
+          }),
+        );
+        await openSessionDialog(tester, workItem, settle: !loading);
+        TextEditingController? controller;
+        if (!loading) {
+          controller = await enterSessionDraft(tester, workItem);
+          await tester.tap(find.byKey(saveKey(workItem)));
+          await tester.pump();
+        }
+        final samePerson = scenario == 'save-renewed';
+        AppSession.instance.expire();
+        AppSession.instance.setSession(
+          tokenValue: 'next-session-token',
+          usernameValue: samePerson ? 'extensionista.1' : 'colleague.test',
+          rolesValue: const ['extensionista'],
+        );
+        await tester.pump();
+        pending.complete(
+          jsonResponse({
+            ...data,
+            'title': 'Resposta privada antiga',
+            'evidence': 'Resposta privada antiga',
+            'note': 'Resposta privada antiga',
+          }),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Resposta privada antiga'), findsNothing);
+        expect(dialogFinder(workItem), findsOneWidget);
+        if (samePerson) {
+          expect(controller!.text, 'Texto reservado da primeira pessoa.');
+          expect(UnsavedWork.instance.hasChanges, isTrue);
+          expect(
+            tester
+                .widget<FilledButton>(find.byKey(saveKey(workItem)))
+                .onPressed,
+            isNotNull,
+          );
+        } else {
+          expect(
+            find.byKey(const ValueKey('mission-session-ended')),
+            findsOneWidget,
+          );
+          if (controller != null) expect(controller.text, isEmpty);
+          expect(UnsavedWork.instance.hasChanges, isFalse);
+          expect(
+            tester
+                .widget<FilledButton>(find.byKey(saveKey(workItem)))
+                .onPressed,
+            isNull,
+          );
+        }
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox.shrink());
+      });
+    }
+  }
+
+  testWidgets(
+    'troca de conta durante seletor não envia arquivo da sessão anterior',
+    (tester) async {
+      wideSurface(tester);
+      final selection = Completer<MissionEvidenceSelection?>();
+      var uploads = 0;
+      bridge.setClientForTesting(
+        MockClient((request) async {
+          if (request.method == 'POST') uploads++;
+          return jsonResponse(taskFixture());
+        }),
+      );
+      await openTask(tester, picker: () => selection.future);
+      final controller = await enterSessionDraft(tester, false);
+      await reveal(tester, const ValueKey('mission-upload-evidence'));
+      await tester.tap(find.byKey(const ValueKey('mission-upload-evidence')));
+      await tester.pump();
+      AppSession.instance.setSession(
+        tokenValue: 'colleague-token',
+        usernameValue: 'colleague.test',
+      );
+      selection.complete(
+        MissionEvidenceSelection(
+          name: 'private-fixture.txt',
+          bytes: Uint8List.fromList([1, 2, 3]),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(uploads, 0);
+      expect(controller.text, isEmpty);
+      expect(
+        find.byKey(const ValueKey('mission-session-ended')),
+        findsOneWidget,
+      );
+      expect(UnsavedWork.instance.hasChanges, isFalse);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 }

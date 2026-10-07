@@ -62,6 +62,9 @@ class DrupalApi {
   }
 
   Future<PortalSnapshot> _loadFromBridge() async {
+    if (AppConfig.bridgeUri(bridgeUrl) == null) {
+      throw const AppConfigurationException();
+    }
     final response = await http.get(_endpoint(bridgeUrl, '/portal/snapshot'));
     if (response.statusCode != 200) {
       throw http.ClientException('Portal consultation unavailable');
