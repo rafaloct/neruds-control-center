@@ -464,6 +464,13 @@ async def test_mission_task_portal_link_via_api(
     )
     assert not_a_node.status_code == 422
 
+    edit_as_public = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={"public_url": f"{main.PORTAL_URL}/node/555/edit"},
+        headers=headers,
+    )
+    assert edit_as_public.status_code == 422
+
 
 async def test_mission_sla_filters_reports_exports_and_saved_filters(
     async_client, extensionista_session, seeded_mission

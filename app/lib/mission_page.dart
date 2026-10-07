@@ -1611,9 +1611,12 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       if (!_currentSessionRequest(revision)) return;
       setState(() {
         _applyTask(data, preserveEdits: true);
-        // preserveEdits skips the checkbox, but a relink resets the
-        // server-side verification — reflect that immediately.
+        // preserveEdits skips the checkbox and its baseline, but a relink
+        // resets the server-side verification — reflect both immediately so
+        // the already-persisted change is not treated as unsaved work.
         publicCheck = data['public_check_ok'] == true;
+        _original['public_check_ok'] = publicCheck;
+        UnsavedWork.instance.setDirty(this, _dirty);
         _didChange = true;
       });
       _message('Ficha $nid vinculada a esta tarefa.');

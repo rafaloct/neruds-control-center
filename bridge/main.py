@@ -61,7 +61,9 @@ def _portal_node_link(url: str, *, require_edit: bool = False) -> bool:
     match = _PORTAL_NODE_PATH.match(path)
     if not match:
         return False
-    if require_edit and match.group(2) != "/edit":
+    # The /edit suffix must be present exactly for edit_url and absent for
+    # public_url — a "view" link must never point at a form.
+    if (match.group(2) == "/edit") != require_edit:
         return False
     return True
 
