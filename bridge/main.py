@@ -86,22 +86,32 @@ class HiddenInputParser(HTMLParser):
         self._format_select_disabled = False
         self._format_group_disabled = False
         self._format_options: list[tuple[str, bool]] = []
+        self._guideline_format_ids: set[str] = set()
 
     @property
     def body_format(self) -> str | None:
-        if not self._format_select_seen:
+        if (
+            self._format_select_seen
+            and not self._format_select_disabled
+            and self._format_options
+        ):
+            return next(
+                (value for value, selected in self._format_options if selected),
+                self._format_options[0][0],
+            )
+        if self._hidden_body_format is not None:
             return self._hidden_body_format
-        if self._format_select_disabled or not self._format_options:
-            return None
-        return next(
-            (value for value, selected in self._format_options if selected),
-            self._format_options[0][0],
-        )
+        if len(self._guideline_format_ids) == 1:
+            return next(iter(self._guideline_format_ids))
+        return None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         data = dict(attrs)
         name = data.get("name")
+        guideline_format = data.get("data-drupal-format-id")
+        if guideline_format:
+            self._guideline_format_ids.add(guideline_format)
         if tag == "select" and name == "body[0][format]":
             self._format_select_seen = True
             self._in_format_select = True
