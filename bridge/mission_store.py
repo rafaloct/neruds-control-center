@@ -180,6 +180,18 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
+_NODE_LINK = re.compile(r"/node/(\d+)(?:/edit)?/?$")
+
+
+def _link_nid(url: Any) -> str | None:
+    """Extract the node id from a persisted portal link, or None for
+    aliases/foreign URLs that carry no /node/{nid} path."""
+    if not url:
+        return None
+    match = _NODE_LINK.search(str(url).split("?")[0])
+    return match.group(1) if match else None
+
+
 def _nonempty_rows(rows: list[list[Any]]) -> list[list[Any]]:
     return [row for row in rows if any(v is not None and str(v).strip() for v in row)]
 
@@ -845,7 +857,17 @@ def update_task(
 
         if "public_url" in actual_changes:
             # Relinked fichas must not inherit verification results recorded
-            # for the previous URL.
+            # for the previous node. Compare node identity, not the URL
+            # string: a persisted alias (e.g. /pub/2) canonicalizing to
+            # /node/2 is the same ficha and keeps its checks.
+            old_nid = _link_nid(before["public_url"]) or _link_nid(
+                before["edit_url"]
+            )
+            new_nid = _link_nid(allowed["public_url"])
+            relinked = new_nid != old_nid
+        else:
+            relinked = False
+        if relinked:
             if before["public_check_ok"] and "public_check_ok" not in allowed:
                 assignments.append("public_check_ok=?")
                 args.append(0)

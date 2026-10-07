@@ -179,6 +179,47 @@ def test_task_relink_resets_stale_verifications(seeded_mission):
     assert reverified["public_check_ok"] is True
 
 
+def test_task_relink_same_node_keeps_verification(seeded_mission):
+    """Alias -> canonical /node/N for the same ficha is not a relink."""
+    tasks = mission_store.list_tasks(1, limit=5)
+    task_id = tasks["items"][0]["id"]
+
+    mission_store.update_task(
+        task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": "https://portal.example.org/pub/alias",
+            "edit_url": "https://portal.example.org/node/555/edit",
+            "public_check_ok": True,
+        },
+    )
+    import mission_automation
+
+    mission_automation.init_automation_db()
+    with mission_store.connect() as conn:
+        conn.execute(
+            "INSERT INTO task_url_check "
+            "(task_id,mission_id,url,ok,http_code,error,checked_at) "
+            "VALUES (?,1,'https://portal.example.org/node/555',1,200,NULL,'now')",
+            (task_id,),
+        )
+        conn.commit()
+
+    canonical = mission_store.update_task(
+        task_id,
+        actor="extensionista.test",
+        changes={"public_url": "https://portal.example.org/node/555"},
+    )
+    assert canonical["public_url"] == "https://portal.example.org/node/555"
+    assert canonical["public_check_ok"] is True
+    with mission_store.connect() as conn:
+        row = conn.execute(
+            "SELECT task_id FROM task_url_check WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+    assert row is not None
+
+
 def test_task_detail_not_found(temp_db):
     with pytest.raises(KeyError, match="task_not_found"):
         mission_store.task_detail(99999)
