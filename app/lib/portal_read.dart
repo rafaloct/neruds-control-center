@@ -77,6 +77,7 @@ class PortalEvent {
     this.date,
     this.daysUntil,
     this.past = false,
+    this.published = true,
     this.local,
     this.signupUrl,
     this.submissionUrl,
@@ -90,6 +91,10 @@ class PortalEvent {
   final String? date;
   final int? daysUntil;
   final bool past;
+
+  /// False when the node is an unpublished draft (monitoring surfaces
+  /// it so "in preparation" events stay visible).
+  final bool published;
   final String? local;
   final String? signupUrl;
   final String? submissionUrl;
@@ -308,6 +313,7 @@ class PortalReadApi {
               date: e['date']?.toString(),
               daysUntil: e['days_until'] as int?,
               past: e['past'] == true,
+              published: e['published'] != false,
               local: e['local']?.toString(),
               signupUrl: e['signup_url']?.toString(),
               submissionUrl: e['submission_url']?.toString(),

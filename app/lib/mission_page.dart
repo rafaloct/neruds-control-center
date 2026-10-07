@@ -1578,9 +1578,16 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       nid = input;
     } else {
       final parsed = AppConfig.webUri(input);
-      final match = parsed == null
+      // A configured portal may live under a path prefix (/neruds/node/1).
+      final basePath = portalUri.path.replaceAll(RegExp(r'/+$'), '');
+      final path = parsed != null && basePath.isNotEmpty
+          ? (parsed.path.startsWith('$basePath/')
+              ? parsed.path.substring(basePath.length)
+              : parsed.path)
+          : parsed?.path;
+      final match = path == null
           ? null
-          : RegExp(r'^/node/(\d+)(?:/edit)?/?$').firstMatch(parsed.path);
+          : RegExp(r'^/node/(\d+)(?:/edit)?/?$').firstMatch(path);
       if (parsed == null || match == null) {
         _message('Informe o endereço (/node/123) ou o número da ficha.');
         return;

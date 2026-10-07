@@ -97,7 +97,44 @@ class _MonitoringPageState extends State<MonitoringPage> {
     setState(() {
       _data = data;
       _loading = false;
+      _reconcileFilters(data);
     });
+  }
+
+  /// Drops saved filters whose terms vanished from the refreshed board —
+  /// otherwise a stale selection would silently hide every row.
+  void _reconcileFilters(MonitoringData data) {
+    final board = data.projetos.data;
+    if (board == null) return;
+    String? keep(Set<String> terms, String? value) =>
+        terms.contains(value) ? value : null;
+    _statusFilter = keep(
+      {for (final p in board.projects) ...p.status},
+      _statusFilter,
+    );
+    _kindFilter = keep(
+      {
+        for (final p in board.projects) ...p.kind,
+        for (final a in board.actions) ...a.kind,
+      },
+      _kindFilter,
+    );
+    _municipalityFilter = keep(
+      {for (final a in board.actions) ...a.municipality},
+      _municipalityFilter,
+    );
+    _eixoFilter = keep(
+      {for (final p in board.projects) ...p.eixos},
+      _eixoFilter,
+    );
+    _linhaFilter = keep(
+      {for (final p in board.projects) ...p.linhas},
+      _linhaFilter,
+    );
+    _odsFilter = keep(
+      {for (final p in board.projects) ...p.ods},
+      _odsFilter,
+    );
   }
 
   String _stamp(String? iso) {
@@ -556,6 +593,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
           Text(
             [
               _when(event),
+              if (!event.published) 'rascunho',
               if ((event.local ?? '').isNotEmpty) event.local!,
               if (event.callOpen == true) 'chamada aberta',
             ].join(' · '),

@@ -45,12 +45,21 @@ def _portal_node_parts(url: str) -> tuple[str, bool] | None:
     try:
         parsed = urlparse(str(url))
         portal = urlparse(PORTAL_URL)
+        default_port = {"https": 443, "http": 80}
         if (
             parsed.scheme not in ("http", "https")
             or parsed.username
             or parsed.password
-            or (parsed.scheme, parsed.hostname, parsed.port)
-            != (portal.scheme, portal.hostname, portal.port)
+            or (
+                parsed.scheme,
+                parsed.hostname,
+                parsed.port or default_port.get(parsed.scheme),
+            )
+            != (
+                portal.scheme,
+                portal.hostname,
+                portal.port or default_port.get(portal.scheme),
+            )
         ):
             return None
     except ValueError:
@@ -1033,6 +1042,9 @@ async def portal_eventos(
     if cached is not None:
         return cached
     async with drupal_client(session) as client:
+        # Monitoring needs drafts too — the portal currently has zero
+        # published events. JSON:API already restricts unpublished content
+        # to sessions whose role allows viewing it.
         fetched = await _jsonapi_items(
             client,
             "evento_cientifico",
@@ -1047,6 +1059,7 @@ async def portal_eventos(
                 "field_chamada_trabalhos",
                 "field_link_submissao",
             ],
+            published_only=False,
         )
     today = datetime.now(timezone.utc).date()
     events = []
@@ -1065,6 +1078,7 @@ async def portal_eventos(
         events.append(
             {
                 **ref,
+                "published": attrs.get("status", True) is not False,
                 "date": raw_date,
                 "days_until": (event_date.date() - today).days if event_date else None,
                 "past": bool(event_date and event_date.date() < today),

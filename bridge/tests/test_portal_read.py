@@ -235,6 +235,7 @@ async def test_eventos_sorted_with_days_until(async_client, extensionista_sessio
             "attributes": {
                 "drupal_internal__nid": 11,
                 "title": "Evento futuro",
+                "status": False,
                 "field_data_evento": "2999-01-01T09:00:00+00:00",
                 "field_local_evento": "Online",
                 "field_link_inscricao": None,
@@ -252,6 +253,7 @@ async def test_eventos_sorted_with_days_until(async_client, extensionista_sessio
     assert [e["title"] for e in body["events"]] == ["Evento futuro", "Evento passado"]
     futuro, passado = body["events"]
     assert futuro["past"] is False and futuro["days_until"] > 0
+    assert futuro["published"] is False and passado["published"] is True
     assert passado["past"] is True and passado["signup_url"] == "https://ex.org/insc"
     assert passado["call_open"] is True
     assert passado["submission_url"] == "https://ex.org/submissao"
