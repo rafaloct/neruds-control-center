@@ -75,6 +75,8 @@ FIELD_MAP = {
     "cross_reviewer": "cross_reviewer",
     "public_check_ok": "public_check_ok",
     "internal_deadline": "internal_deadline",
+    "public_url": "public_url",
+    "edit_url": "edit_url",
 }
 
 WORK_SPECS = {

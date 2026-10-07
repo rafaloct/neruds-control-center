@@ -1538,6 +1538,77 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     }
   }
 
+  Future<void> _linkPortalNode() async {
+    final controller = TextEditingController();
+    final input = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Vincular ficha do portal'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Endereço ou número da ficha',
+            hintText: 'https://portal/node/123 ou 123',
+          ),
+          onSubmitted: (value) => Navigator.pop(context, value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Vincular'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || input == null || input.isEmpty) return;
+    final nid =
+        RegExp(r'node/(\d+)').firstMatch(input)?.group(1) ??
+        (RegExp(r'^\d+$').hasMatch(input) ? input : null);
+    if (nid == null) {
+      _message('Informe o endereço (/node/123) ou o número da ficha.');
+      return;
+    }
+    final portal = AppConfig.portalUrl;
+    if (portal.isEmpty) {
+      _message('O endereço do portal não está configurado nesta estação.');
+      return;
+    }
+    final revision = _beginSessionRequest();
+    if (revision == null || saving) return;
+    setState(() => saving = true);
+    try {
+      final response = await http.patch(
+        _uri('/mission-tasks/${widget.taskId}'),
+        headers: AppSession.instance.authHeaders,
+        body: jsonEncode({
+          'public_url': '$portal/node/$nid',
+          'edit_url': '$portal/node/$nid/edit',
+        }),
+      );
+      if (!_currentSessionRequest(revision)) return;
+      if (response.statusCode != 200) throw Exception(_error(response));
+      final data = Map<String, dynamic>.from(
+        jsonDecode(utf8.decode(response.bodyBytes)),
+      );
+      if (!_currentSessionRequest(revision)) return;
+      setState(() {
+        _applyTask(data, preserveEdits: true);
+        _didChange = true;
+      });
+      _message('Ficha $nid vinculada a esta tarefa.');
+    } catch (error) {
+      if (_currentSessionRequest(revision)) _message(workflowError(error));
+    } finally {
+      if (_currentSessionRequest(revision)) setState(() => saving = false);
+    }
+  }
+
   String? _portalTarget(Map<String, dynamic> match) {
     final reference = task?['public_url'] ?? task?['edit_url'];
     final base = Uri.tryParse(reference?.toString() ?? '');
@@ -1773,7 +1844,19 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
         'A edição utiliza sua conta e as permissões do Drupal. '
         'O registro desta missão permanece disponível para reunir a evidência.',
       ),
-      const SizedBox(height: 20),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(
+        key: const ValueKey('mission-link-node'),
+        onPressed: saving ? null : _linkPortalNode,
+        icon: const Icon(Icons.link, size: 18),
+        label: const Text('Vincular ficha do portal'),
+      ),
+      const SizedBox(height: 6),
+      const Text(
+        'Quando a ficha for criada pelo formulário do portal, informe o '
+        'endereço ou o número para ligar esta tarefa a ela.',
+      ),
+      const SizedBox(height: 12),
       _Info('Onde pesquisar', data['where_to_search']),
       _Info('Fontes de partida', data['sources']),
       _Info('Consulta sugerida', data['suggested_query']),

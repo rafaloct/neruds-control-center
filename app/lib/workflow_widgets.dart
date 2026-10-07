@@ -77,6 +77,29 @@ String workflowError(Object error) {
       'Confira a conexão e tente novamente.';
 }
 
+/// Launches [uri] in the external browser, offering to copy the address
+/// when the browser cannot be opened.
+Future<void> launchExternalUri(BuildContext context, Uri uri) async {
+  var launched = false;
+  try {
+    launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+  } catch (_) {
+    launched = false;
+  }
+  if (launched || !context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: const Text(
+        'O navegador não abriu. Você pode copiar o endereço.',
+      ),
+      action: SnackBarAction(
+        label: 'Copiar link',
+        onPressed: () => Clipboard.setData(ClipboardData(text: uri.toString())),
+      ),
+    ),
+  );
+}
+
 /// Opens existing portal pages in the browser without passing app credentials.
 class PortalLinkButton extends StatelessWidget {
   const PortalLinkButton({
@@ -126,25 +149,7 @@ class PortalLinkButton extends StatelessWidget {
       );
       if (confirmed != true || !context.mounted) return;
     }
-    var launched = false;
-    try {
-      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (_) {
-      launched = false;
-    }
-    if (launched || !context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text(
-          'O navegador não abriu. Você pode copiar o endereço.',
-        ),
-        action: SnackBarAction(
-          label: 'Copiar link',
-          onPressed: () =>
-              Clipboard.setData(ClipboardData(text: uri.toString())),
-        ),
-      ),
-    );
+    await launchExternalUri(context, uri);
   }
 
   @override

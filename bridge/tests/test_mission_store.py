@@ -103,6 +103,24 @@ def test_task_detail_and_update(seeded_mission):
     assert latest_event["evidence_url"] == "https://example.org/evidence1"
 
 
+def test_task_portal_link_is_updatable(seeded_mission):
+    tasks = mission_store.list_tasks(1, limit=5)
+    first_task_id = tasks["items"][0]["id"]
+
+    updated = mission_store.update_task(
+        first_task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": "https://portal.example.org/node/555",
+            "edit_url": "https://portal.example.org/node/555/edit",
+        },
+    )
+    assert updated["public_url"] == "https://portal.example.org/node/555"
+    assert updated["edit_url"] == "https://portal.example.org/node/555/edit"
+    change = updated["events"][0]["changes_json"]
+    assert "public_url" in change and "edit_url" in change
+
+
 def test_task_detail_not_found(temp_db):
     with pytest.raises(KeyError, match="task_not_found"):
         mission_store.task_detail(99999)

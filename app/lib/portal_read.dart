@@ -53,6 +53,23 @@ class GapType {
   final List<GapField> fields;
 }
 
+/// One node aggregated across the monitored fields it is missing.
+class GapNode {
+  const GapNode({
+    required this.title,
+    this.nid,
+    this.viewUrl,
+    this.editUrl,
+    required this.missing,
+  });
+
+  final int? nid;
+  final String title;
+  final String? viewUrl;
+  final String? editUrl;
+  final List<String> missing;
+}
+
 class PortalEvent {
   const PortalEvent({
     required this.title,
@@ -84,11 +101,19 @@ class PortalEvent {
 }
 
 class FeedItem {
-  const FeedItem({required this.title, required this.link, this.published});
+  const FeedItem({
+    required this.title,
+    required this.link,
+    this.published,
+    this.section,
+  });
 
   final String title;
   final String link;
   final String? published;
+
+  /// Feed section this item came from (`noticias`, `eventos`, ...).
+  final String? section;
 }
 
 /// Latest portal items plus the feed sections that failed to answer.
@@ -106,6 +131,68 @@ class ReviewCount {
 
   final int count;
   final bool truncated;
+}
+
+class PortalProject {
+  const PortalProject({
+    required this.title,
+    this.nid,
+    this.coordinator,
+    this.start,
+    this.end,
+    this.summary,
+    this.status = const [],
+    this.kind = const [],
+    this.viewUrl,
+    this.editUrl,
+  });
+
+  final int? nid;
+  final String title;
+  final String? coordinator;
+  final String? start;
+  final String? end;
+  final String? summary;
+  final List<String> status;
+  final List<String> kind;
+  final String? viewUrl;
+  final String? editUrl;
+}
+
+class PortalAction {
+  const PortalAction({
+    required this.title,
+    this.nid,
+    this.local,
+    this.participants,
+    this.municipality = const [],
+    this.kind = const [],
+    this.viewUrl,
+    this.editUrl,
+  });
+
+  final int? nid;
+  final String title;
+  final String? local;
+  final int? participants;
+  final List<String> municipality;
+  final List<String> kind;
+  final String? viewUrl;
+  final String? editUrl;
+}
+
+class ProjectBoard {
+  const ProjectBoard({
+    required this.projects,
+    required this.actions,
+    this.listingUrl,
+    this.mapUrl,
+  });
+
+  final List<PortalProject> projects;
+  final List<PortalAction> actions;
+  final String? listingUrl;
+  final String? mapUrl;
 }
 
 /// One panel section: either real data or an explained failure.
@@ -141,132 +228,239 @@ class AttentionData {
   final String? eventsListingUrl;
 }
 
+class MonitoringData {
+  MonitoringData({
+    this.fetchedAt,
+    required this.projetos,
+    required this.eventos,
+    required this.publicacoes,
+    required this.noticias,
+    required this.feeds,
+    this.eventsListingUrl,
+    this.projetosListingUrl,
+    this.projetosMapUrl,
+    this.publicacoesListingUrl,
+    this.noticiasListingUrl,
+  });
+
+  final String? fetchedAt;
+  final SectionResult<ProjectBoard> projetos;
+  final SectionResult<List<PortalEvent>> eventos;
+  final SectionResult<List<GapNode>> publicacoes;
+  final SectionResult<List<GapNode>> noticias;
+  final SectionResult<FeedList> feeds;
+  final String? eventsListingUrl;
+  final String? projetosListingUrl;
+  final String? projetosMapUrl;
+  final String? publicacoesListingUrl;
+  final String? noticiasListingUrl;
+}
+
 class PortalReadApi {
   PortalReadApi();
 
+  Future<Map<String, dynamic>> _get(
+    String path, [
+    Map<String, String>? q,
+  ]) async {
+    final uri = AppConfig.endpoint(path);
+    final response = await http.get(
+      q == null ? uri : uri.replace(queryParameters: q),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw http.ClientException('HTTP ${response.statusCode}');
+    }
+    return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+  }
+
+  Future<SectionResult<T>> _section<T>(
+    List<String> stamps,
+    FutureOr<T> Function(Map<String, dynamic> body) parse,
+    String path, [
+    Map<String, String>? q,
+    void Function(Map<String, dynamic> body)? inspect,
+  ]) async {
+    try {
+      final body = await _get(path, q);
+      final stamp = body['fetched_at']?.toString();
+      if (stamp != null && stamp.isNotEmpty) stamps.add(stamp);
+      inspect?.call(body);
+      return SectionResult.ok(await parse(body));
+    } catch (error) {
+      return SectionResult.failure(workflowError(error));
+    }
+  }
+
+  static List<PortalEvent> _parseEvents(Map<String, dynamic> body) =>
+      (body['events'] as List? ?? const [])
+          .whereType<Map>()
+          .map(
+            (e) => PortalEvent(
+              nid: e['nid'] as int?,
+              title: (e['title'] ?? 'Sem título').toString(),
+              date: e['date']?.toString(),
+              daysUntil: e['days_until'] as int?,
+              past: e['past'] == true,
+              local: e['local']?.toString(),
+              signupUrl: e['signup_url']?.toString(),
+              submissionUrl: e['submission_url']?.toString(),
+              callOpen: e['call_open'] as bool?,
+              viewUrl: e['view_url']?.toString(),
+              editUrl: e['edit_url']?.toString(),
+            ),
+          )
+          .toList();
+
+  static List<GapType> _parseGapTypes(Map<String, dynamic> body) =>
+      (body['types'] as List? ?? const [])
+          .whereType<Map>()
+          .map(
+            (t) => GapType(
+              type: (t['type'] ?? '').toString(),
+              label: (t['label'] ?? t['type'] ?? '').toString(),
+              published: (t['published'] as int?) ?? 0,
+              listingUrl: t['listing_url']?.toString(),
+              fields: (t['fields'] as List? ?? const [])
+                  .whereType<Map>()
+                  .map(
+                    (f) => GapField(
+                      field: (f['field'] ?? '').toString(),
+                      label: (f['label'] ?? f['field'] ?? '').toString(),
+                      missing: (f['missing'] as int?) ?? 0,
+                      nodes: (f['nodes'] as List? ?? const [])
+                          .whereType<Map>()
+                          .map(
+                            (n) => GapNodeRef(
+                              nid: n['nid'] as int?,
+                              title: (n['title'] ?? 'Sem título').toString(),
+                              viewUrl: n['view_url']?.toString(),
+                              editUrl: n['edit_url']?.toString(),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  )
+                  .toList(),
+            ),
+          )
+          .toList();
+
+  /// Aggregate a bundle's gap report into one row per node with the labels
+  /// of every monitored field it is missing.
+  static List<GapNode> _gapNodes(Map<String, dynamic> body) {
+    final byNid = <String, GapNode>{};
+    for (final type in _parseGapTypes(body)) {
+      for (final field in type.fields) {
+        for (final node in field.nodes) {
+          final key = (node.nid ?? node.title).toString();
+          final existing = byNid[key];
+          if (existing == null) {
+            byNid[key] = GapNode(
+              nid: node.nid,
+              title: node.title,
+              viewUrl: node.viewUrl,
+              editUrl: node.editUrl,
+              missing: [field.label],
+            );
+          } else if (!existing.missing.contains(field.label)) {
+            existing.missing.add(field.label);
+          }
+        }
+      }
+    }
+    final nodes = byNid.values.toList()
+      ..sort((a, b) => b.missing.length.compareTo(a.missing.length));
+    return nodes;
+  }
+
+  static FeedList _parseFeeds(Map<String, dynamic> body) {
+    final items = <FeedItem>[];
+    final failed = <String>[];
+    final sections = body['sections'] as Map? ?? const {};
+    for (final entry in sections.entries) {
+      final value = entry.value;
+      if (value is! Map) continue;
+      if (value['ok'] != true) {
+        failed.add(entry.key.toString());
+        continue;
+      }
+      for (final item in (value['items'] as List? ?? const [])) {
+        if (item is! Map) continue;
+        items.add(
+          FeedItem(
+            title: (item['title'] ?? '').toString(),
+            link: (item['link'] ?? '').toString(),
+            published: item['published']?.toString(),
+            section: entry.key.toString(),
+          ),
+        );
+      }
+    }
+    items.sort((a, b) => (b.published ?? '').compareTo(a.published ?? ''));
+    return FeedList(items: items, failedSections: failed);
+  }
+
+  static ProjectBoard _parseProjects(Map<String, dynamic> body) => ProjectBoard(
+    projects: (body['projetos'] as List? ?? const [])
+        .whereType<Map>()
+        .map(
+          (p) => PortalProject(
+            nid: p['nid'] as int?,
+            title: (p['title'] ?? 'Sem título').toString(),
+            coordinator: p['coordinator']?.toString(),
+            start: p['start']?.toString(),
+            end: p['end']?.toString(),
+            summary: p['summary']?.toString(),
+            status:
+                (p['status'] as List? ?? const [])
+                    .map((s) => s.toString())
+                    .toList(),
+            kind:
+                (p['kind'] as List? ?? const []).map((s) => s.toString()).toList(),
+            viewUrl: p['view_url']?.toString(),
+            editUrl: p['edit_url']?.toString(),
+          ),
+        )
+        .toList(),
+    actions: (body['acoes'] as List? ?? const [])
+        .whereType<Map>()
+        .map(
+          (a) => PortalAction(
+            nid: a['nid'] as int?,
+            title: (a['title'] ?? 'Sem título').toString(),
+            local: a['local']?.toString(),
+            participants: a['participants'] as int?,
+            municipality:
+                (a['municipality'] as List? ?? const [])
+                    .map((s) => s.toString())
+                    .toList(),
+            kind:
+                (a['kind'] as List? ?? const []).map((s) => s.toString()).toList(),
+            viewUrl: a['view_url']?.toString(),
+            editUrl: a['edit_url']?.toString(),
+          ),
+        )
+        .toList(),
+    listingUrl: body['listing_url']?.toString(),
+    mapUrl: body['map_url']?.toString(),
+  );
+
   Future<AttentionData> loadAttention() async {
-    final session = AppSession.instance;
-    final headers = session.authHeaders;
-
-    Future<Map<String, dynamic>> get(String path, [Map<String, String>? q]) async {
-      final uri = AppConfig.endpoint(path);
-      final response = await http.get(
-        q == null ? uri : uri.replace(queryParameters: q),
-        headers: headers,
-      );
-      if (response.statusCode != 200) {
-        throw http.ClientException('HTTP ${response.statusCode}');
-      }
-      return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-    }
-
     final stamps = <String>[];
-    Future<SectionResult<T>> section<T>(
-      FutureOr<T> Function(Map<String, dynamic> body) parse,
-      String path, [
-      Map<String, String>? q,
-      void Function(Map<String, dynamic> body)? inspect,
-    ]) async {
-      try {
-        final body = await get(path, q);
-        final stamp = body['fetched_at']?.toString();
-        if (stamp != null && stamp.isNotEmpty) stamps.add(stamp);
-        inspect?.call(body);
-        return SectionResult.ok(await parse(body));
-      } catch (error) {
-        return SectionResult.failure(workflowError(error));
-      }
-    }
-
     String? eventsListingUrl;
 
     final results = await Future.wait([
-      section<List<PortalEvent>>(
-        (body) => (body['events'] as List? ?? const [])
-            .whereType<Map>()
-            .map(
-              (e) => PortalEvent(
-                nid: e['nid'] as int?,
-                title: (e['title'] ?? 'Sem título').toString(),
-                date: e['date']?.toString(),
-                daysUntil: e['days_until'] as int?,
-                past: e['past'] == true,
-                local: e['local']?.toString(),
-                signupUrl: e['signup_url']?.toString(),
-                submissionUrl: e['submission_url']?.toString(),
-                callOpen: e['call_open'] as bool?,
-                viewUrl: e['view_url']?.toString(),
-                editUrl: e['edit_url']?.toString(),
-              ),
-            )
-            .toList(),
+      _section<List<PortalEvent>>(
+        stamps,
+        _parseEvents,
         '/portal/eventos',
         null,
         (body) => eventsListingUrl = body['listing_url']?.toString(),
       ),
-      section<List<GapType>>(
-        (body) => (body['types'] as List? ?? const [])
-            .whereType<Map>()
-            .map(
-              (t) => GapType(
-                type: (t['type'] ?? '').toString(),
-                label: (t['label'] ?? t['type'] ?? '').toString(),
-                published: (t['published'] as int?) ?? 0,
-                listingUrl: t['listing_url']?.toString(),
-                fields: (t['fields'] as List? ?? const [])
-                    .whereType<Map>()
-                    .map(
-                      (f) => GapField(
-                        field: (f['field'] ?? '').toString(),
-                        label: (f['label'] ?? f['field'] ?? '').toString(),
-                        missing: (f['missing'] as int?) ?? 0,
-                        nodes: (f['nodes'] as List? ?? const [])
-                            .whereType<Map>()
-                            .map(
-                              (n) => GapNodeRef(
-                                nid: n['nid'] as int?,
-                                title: (n['title'] ?? 'Sem título').toString(),
-                                viewUrl: n['view_url']?.toString(),
-                                editUrl: n['edit_url']?.toString(),
-                              ),
-                            )
-                            .toList(),
-                      ),
-                    )
-                    .toList(),
-              ),
-            )
-            .toList(),
-        '/portal/lacunas',
-      ),
-      section<FeedList>((body) {
-        final items = <FeedItem>[];
-        final failed = <String>[];
-        final sections = body['sections'] as Map? ?? const {};
-        for (final entry in sections.entries) {
-          final value = entry.value;
-          if (value is! Map) continue;
-          if (value['ok'] != true) {
-            failed.add(entry.key.toString());
-            continue;
-          }
-          for (final item in (value['items'] as List? ?? const [])) {
-            if (item is! Map) continue;
-            items.add(
-              FeedItem(
-                title: (item['title'] ?? '').toString(),
-                link: (item['link'] ?? '').toString(),
-                published: item['published']?.toString(),
-              ),
-            );
-          }
-        }
-        items.sort(
-          (a, b) => (b.published ?? '').compareTo(a.published ?? ''),
-        );
-        return FeedList(items: items, failedSections: failed);
-      }, '/portal/feeds'),
-      section<ReviewCount>((body) {
+      _section<List<GapType>>(stamps, _parseGapTypes, '/portal/lacunas'),
+      _section<FeedList>(stamps, _parseFeeds, '/portal/feeds'),
+      _section<ReviewCount>(stamps, (body) {
         final items = body['items'] as List? ?? const [];
         // Bridges older than the `truncated` flag cap the upstream page at
         // 50 — a full page without the flag can still hide more drafts.
@@ -289,6 +483,74 @@ class PortalReadApi {
       feeds: results[2] as SectionResult<FeedList>,
       pendingReview: results[3] as SectionResult<ReviewCount>,
       eventsListingUrl: eventsListingUrl,
+    );
+  }
+
+  /// All four real monitoring axes in one parallel load.
+  Future<MonitoringData> loadMonitoring() async {
+    final stamps = <String>[];
+    String? eventsListingUrl;
+    String? projetosListingUrl;
+    String? projetosMapUrl;
+    String? publicacoesListingUrl;
+    String? noticiasListingUrl;
+
+    String? typeListingUrl(Map<String, dynamic> body, String tipo) {
+      for (final type in _parseGapTypes(body)) {
+        if (type.type == tipo) return type.listingUrl;
+      }
+      return null;
+    }
+
+    final results = await Future.wait([
+      _section<ProjectBoard>(
+        stamps,
+        _parseProjects,
+        '/portal/projetos',
+        null,
+        (body) {
+          projetosListingUrl = body['listing_url']?.toString();
+          projetosMapUrl = body['map_url']?.toString();
+        },
+      ),
+      _section<List<PortalEvent>>(
+        stamps,
+        _parseEvents,
+        '/portal/eventos',
+        null,
+        (body) => eventsListingUrl = body['listing_url']?.toString(),
+      ),
+      _section<List<GapNode>>(
+        stamps,
+        _gapNodes,
+        '/portal/lacunas',
+        {'tipo': 'publicacao_cientifica'},
+        (body) =>
+            publicacoesListingUrl = typeListingUrl(body, 'publicacao_cientifica'),
+      ),
+      _section<List<GapNode>>(
+        stamps,
+        _gapNodes,
+        '/portal/lacunas',
+        {'tipo': 'noticia'},
+        (body) => noticiasListingUrl = typeListingUrl(body, 'noticia'),
+      ),
+      _section<FeedList>(stamps, _parseFeeds, '/portal/feeds'),
+    ]);
+
+    stamps.sort();
+    return MonitoringData(
+      fetchedAt: stamps.isEmpty ? null : stamps.first,
+      projetos: results[0] as SectionResult<ProjectBoard>,
+      eventos: results[1] as SectionResult<List<PortalEvent>>,
+      publicacoes: results[2] as SectionResult<List<GapNode>>,
+      noticias: results[3] as SectionResult<List<GapNode>>,
+      feeds: results[4] as SectionResult<FeedList>,
+      eventsListingUrl: eventsListingUrl,
+      projetosListingUrl: projetosListingUrl,
+      projetosMapUrl: projetosMapUrl,
+      publicacoesListingUrl: publicacoesListingUrl,
+      noticiasListingUrl: noticiasListingUrl,
     );
   }
 }
