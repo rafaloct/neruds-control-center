@@ -1108,8 +1108,15 @@ async def portal_projetos(
                 "field_resumo",
                 "field_status_projeto",
                 "field_tipo_projeto",
+                "field_eixos_tematicos",
+                "field_linhas_pesquisa",
+                "field_ods_interesse",
             ],
-            include="field_status_projeto,field_tipo_projeto",
+            include=(
+                "field_status_projeto,field_tipo_projeto,"
+                "field_eixos_tematicos,field_linhas_pesquisa,"
+                "field_ods_interesse"
+            ),
         )
         acoes = await _jsonapi_items(
             client,
@@ -1135,6 +1142,11 @@ async def portal_projetos(
                 "summary": _readable_field(attrs.get("field_resumo")),
                 "status": _rel_term_names(item, "field_status_projeto", names),
                 "kind": _rel_term_names(item, "field_tipo_projeto", names),
+                "eixos": _rel_term_names(item, "field_eixos_tematicos", names),
+                "linhas_pesquisa": _rel_term_names(
+                    item, "field_linhas_pesquisa", names
+                ),
+                "ods": _rel_term_names(item, "field_ods_interesse", names),
             }
         )
     out_acoes = []

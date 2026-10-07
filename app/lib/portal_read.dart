@@ -143,6 +143,9 @@ class PortalProject {
     this.summary,
     this.status = const [],
     this.kind = const [],
+    this.eixos = const [],
+    this.linhas = const [],
+    this.ods = const [],
     this.viewUrl,
     this.editUrl,
   });
@@ -155,6 +158,9 @@ class PortalProject {
   final String? summary;
   final List<String> status;
   final List<String> kind;
+  final List<String> eixos;
+  final List<String> linhas;
+  final List<String> ods;
   final String? viewUrl;
   final String? editUrl;
 }
@@ -418,6 +424,16 @@ class PortalReadApi {
                     .toList(),
             kind:
                 (p['kind'] as List? ?? const []).map((s) => s.toString()).toList(),
+            eixos:
+                (p['eixos'] as List? ?? const [])
+                    .map((s) => s.toString())
+                    .toList(),
+            linhas:
+                (p['linhas_pesquisa'] as List? ?? const [])
+                    .map((s) => s.toString())
+                    .toList(),
+            ods:
+                (p['ods'] as List? ?? const []).map((s) => s.toString()).toList(),
             viewUrl: p['view_url']?.toString(),
             editUrl: p['edit_url']?.toString(),
           ),

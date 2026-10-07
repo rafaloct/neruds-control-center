@@ -277,6 +277,9 @@ async def test_projetos_resolve_term_names(async_client, extensionista_session):
         "relationships": {
             "field_status_projeto": {"data": [{"id": "term-1"}]},
             "field_tipo_projeto": {"data": [{"id": "term-2"}]},
+            "field_eixos_tematicos": {"data": [{"id": "term-5"}]},
+            "field_linhas_pesquisa": {"data": [{"id": "term-6"}]},
+            "field_ods_interesse": {"data": [{"id": "term-7"}]},
         },
     }
     acao = {
@@ -302,6 +305,12 @@ async def test_projetos_resolve_term_names(async_client, extensionista_session):
          "attributes": {"name": "Araguaína"}},
         {"id": "term-4", "type": "taxonomy_term--tipo_acao",
          "attributes": {"name": "Curso"}},
+        {"id": "term-5", "type": "taxonomy_term--eixos_tematicos",
+         "attributes": {"name": "Eixo 1"}},
+        {"id": "term-6", "type": "taxonomy_term--linhas_pesquisa",
+         "attributes": {"name": "Linha A"}},
+        {"id": "term-7", "type": "taxonomy_term--ods",
+         "attributes": {"name": "ODS 4"}},
     ]
     respx.get(f"{PORTAL}/jsonapi/node/projeto_pesquisa_extensao").mock(
         return_value=Response(
@@ -319,6 +328,9 @@ async def test_projetos_resolve_term_names(async_client, extensionista_session):
     p = body["projetos"][0]
     assert p["status"] == ["Em andamento"]
     assert p["kind"] == ["Extensão"]
+    assert p["eixos"] == ["Eixo 1"]
+    assert p["linhas_pesquisa"] == ["Linha A"]
+    assert p["ods"] == ["ODS 4"]
     assert p["coordinator"] == "Maria"
     assert p["summary"] == "Resumo do projeto"
     a = body["acoes"][0]

@@ -26,6 +26,9 @@ class _MonitoringPageState extends State<MonitoringPage> {
   String? _statusFilter;
   String? _kindFilter;
   String? _municipalityFilter;
+  String? _eixoFilter;
+  String? _linhaFilter;
+  String? _odsFilter;
 
   /// Bundles each role may create — the real permission matrix observed on
   /// the portal: extensionista/pesquisador create noticia+relatorio,
@@ -274,12 +277,26 @@ class _MonitoringPageState extends State<MonitoringPage> {
     final municipalityTerms = <String>{
       for (final a in board.actions) ...a.municipality,
     };
+    final eixoTerms = <String>{
+      for (final p in board.projects) ...p.eixos,
+    };
+    final linhaTerms = <String>{
+      for (final p in board.projects) ...p.linhas,
+    };
+    final odsTerms = <String>{
+      for (final p in board.projects) ...p.ods,
+    };
 
     final projects = board.projects.where((p) {
       if (_statusFilter != null && !p.status.contains(_statusFilter)) {
         return false;
       }
       if (_kindFilter != null && !p.kind.contains(_kindFilter)) return false;
+      if (_eixoFilter != null && !p.eixos.contains(_eixoFilter)) return false;
+      if (_linhaFilter != null && !p.linhas.contains(_linhaFilter)) {
+        return false;
+      }
+      if (_odsFilter != null && !p.ods.contains(_odsFilter)) return false;
       return true;
     }).toList();
     final actions = board.actions.where((a) {
@@ -301,7 +318,10 @@ class _MonitoringPageState extends State<MonitoringPage> {
         ]),
         if (statusTerms.isNotEmpty ||
             kindTerms.isNotEmpty ||
-            municipalityTerms.isNotEmpty)
+            municipalityTerms.isNotEmpty ||
+            eixoTerms.isNotEmpty ||
+            linhaTerms.isNotEmpty ||
+            odsTerms.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 8),
             child: Wrap(
@@ -329,6 +349,27 @@ class _MonitoringPageState extends State<MonitoringPage> {
                     value: _municipalityFilter,
                     onChanged: (v) =>
                         setState(() => _municipalityFilter = v),
+                  ),
+                if (eixoTerms.isNotEmpty)
+                  _filterMenu(
+                    label: 'Eixo temático',
+                    options: eixoTerms.toList()..sort(),
+                    value: _eixoFilter,
+                    onChanged: (v) => setState(() => _eixoFilter = v),
+                  ),
+                if (linhaTerms.isNotEmpty)
+                  _filterMenu(
+                    label: 'Linha de pesquisa',
+                    options: linhaTerms.toList()..sort(),
+                    value: _linhaFilter,
+                    onChanged: (v) => setState(() => _linhaFilter = v),
+                  ),
+                if (odsTerms.isNotEmpty)
+                  _filterMenu(
+                    label: 'ODS',
+                    options: odsTerms.toList()..sort(),
+                    value: _odsFilter,
+                    onChanged: (v) => setState(() => _odsFilter = v),
                   ),
               ],
             ),
