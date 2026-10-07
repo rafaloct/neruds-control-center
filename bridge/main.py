@@ -1167,6 +1167,13 @@ async def portal_node_lookup(
             status_code=response.status_code,
             detail="O portal não respondeu a esta ficha.",
         )
+    if _portal_url_path(str(response.url)) is None:
+        # Redirect left the configured portal — the body is not ours and
+        # relative shortlinks inside it must not be rebased onto PORTAL_URL.
+        raise HTTPException(
+            status_code=422,
+            detail="O endereço redireciona para fora do portal configurado.",
+        )
     candidates = [str(response.url)]
     candidates.extend(
         _SHORTLINK.findall(response.text) + _SHORTLINK_ALT.findall(response.text)
@@ -1753,36 +1760,9 @@ def mission_task_update(
             if link_field in changes:
                 nid = _portal_node_nid(changes[link_field])
                 changes[link_field] = f"{PORTAL_URL}/node/{nid}{suffix}"
-        # Both links must reference the same node — including the persisted
-        # counterpart when a partial PATCH supplies only one side.
-        try:
-            current_task = mission_store.task_detail(task_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
-        linked_nids: set[str] = set()
-        for link_field in ("public_url", "edit_url"):
-            if link_field in changes:
-                linked_nids.add(_portal_node_nid(changes[link_field]))
-                continue
-            persisted = current_task.get(link_field)
-            if not persisted:
-                continue
-            persisted_nid = _portal_node_nid(persisted)
-            if persisted_nid is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        "O endereço salvo usa um alias sem nid. Envie os "
-                        "dois endereços da nova ficha para revincular."
-                    ),
-                )
-            linked_nids.add(persisted_nid)
-        if len(linked_nids) > 1:
-            raise HTTPException(
-                status_code=422,
-                detail="Os endereços público e de edição devem apontar "
-                "para a mesma ficha.",
-            )
+        # Both links must reference the same node — the pair check itself
+        # runs inside update_task's transaction so a concurrent PATCH cannot
+        # interleave between this validation and the write.
     if payload.current_stage and payload.current_stage not in mission_store.WORKFLOW:
         raise HTTPException(status_code=422, detail="Etapa da missão inválida.")
     try:
@@ -1795,6 +1775,15 @@ def mission_task_update(
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+    except ValueError as exc:
+        detail = (
+            "O endereço salvo usa um alias sem nid. Envie os "
+            "dois endereços da nova ficha para revincular."
+            if str(exc) == "link_alias_unresolvable"
+            else "Os endereços público e de edição devem apontar "
+            "para a mesma ficha."
+        )
+        raise HTTPException(status_code=422, detail=detail)
 
 
 @app.patch("/mission-tasks/{task_id}/checklists/{kind}/{item_order}")

@@ -656,13 +656,14 @@ class _MonitoringPageState extends State<MonitoringPage> {
 
   Widget _gapsTab(
     MonitoringData data, {
-    required SectionResult<List<GapNode>> result,
+    required SectionResult<GapReport> result,
     required String? listingUrl,
     required String listingLabel,
     required String feedSection,
     Widget? extraAction,
   }) {
-    final nodes = result.data ?? const <GapNode>[];
+    final report = result.data;
+    final nodes = report?.nodes ?? const <GapNode>[];
     final feed = data.feeds;
     final latest = (feed.data?.items ?? const <FeedItem>[])
         .where((i) => i.section == feedSection)
@@ -680,7 +681,8 @@ class _MonitoringPageState extends State<MonitoringPage> {
         const SizedBox(height: 12),
         Text(
           result.ok
-              ? 'Fichas com lacunas (${nodes.length})'
+              ? 'Fichas com lacunas (${nodes.length}'
+                  '${report!.truncated ? ' ou mais' : ''})'
               : 'Fichas com lacunas',
           style: Theme.of(context).textTheme.titleMedium,
         ),

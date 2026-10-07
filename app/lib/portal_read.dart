@@ -53,6 +53,15 @@ class GapType {
   final List<GapField> fields;
 }
 
+/// Aggregated gap rows plus whether the bridge truncated the sample
+/// (a field's `missing` count exceeded the returned node list).
+class GapReport {
+  const GapReport({required this.nodes, this.truncated = false});
+
+  final List<GapNode> nodes;
+  final bool truncated;
+}
+
 /// One node aggregated across the monitored fields it is missing.
 class GapNode {
   const GapNode({
@@ -260,14 +269,14 @@ class MonitoringData {
   final String? fetchedAt;
   final SectionResult<ProjectBoard> projetos;
   final SectionResult<List<PortalEvent>> eventos;
-  final SectionResult<List<GapNode>> publicacoes;
-  final SectionResult<List<GapNode>> noticias;
+  final SectionResult<GapReport> publicacoes;
+  final SectionResult<GapReport> noticias;
   final SectionResult<FeedList> feeds;
 
   /// Per-node field gaps for the project/action and event axes.
-  final SectionResult<List<GapNode>> projetoGaps;
-  final SectionResult<List<GapNode>> acaoGaps;
-  final SectionResult<List<GapNode>> eventoGaps;
+  final SectionResult<GapReport> projetoGaps;
+  final SectionResult<GapReport> acaoGaps;
+  final SectionResult<GapReport> eventoGaps;
   final String? eventsListingUrl;
   final String? projetosListingUrl;
   final String? projetosMapUrl;
@@ -278,7 +287,7 @@ class MonitoringData {
   Map<int, List<String>> gapsByNode() {
     final map = <int, List<String>>{};
     for (final section in [projetoGaps, acaoGaps, eventoGaps]) {
-      for (final gap in section.data ?? const <GapNode>[]) {
+      for (final gap in section.data?.nodes ?? const <GapNode>[]) {
         final nid = gap.nid;
         if (nid != null) map[nid] = gap.missing;
       }
@@ -380,10 +389,12 @@ class PortalReadApi {
 
   /// Aggregate a bundle's gap report into one row per node with the labels
   /// of every monitored field it is missing.
-  static List<GapNode> _gapNodes(Map<String, dynamic> body) {
+  static GapReport _gapNodes(Map<String, dynamic> body) {
     final byNid = <String, GapNode>{};
+    var truncated = false;
     for (final type in _parseGapTypes(body)) {
       for (final field in type.fields) {
+        if (field.missing > field.nodes.length) truncated = true;
         for (final node in field.nodes) {
           final key = (node.nid ?? node.title).toString();
           final existing = byNid[key];
@@ -403,7 +414,7 @@ class PortalReadApi {
     }
     final nodes = byNid.values.toList()
       ..sort((a, b) => b.missing.length.compareTo(a.missing.length));
-    return nodes;
+    return GapReport(nodes: nodes, truncated: truncated);
   }
 
   static FeedList _parseFeeds(Map<String, dynamic> body) {
@@ -562,7 +573,7 @@ class PortalReadApi {
         null,
         (body) => eventsListingUrl = body['listing_url']?.toString(),
       ),
-      _section<List<GapNode>>(
+      _section<GapReport>(
         stamps,
         _gapNodes,
         '/portal/lacunas',
@@ -570,7 +581,7 @@ class PortalReadApi {
         (body) =>
             publicacoesListingUrl = typeListingUrl(body, 'publicacao_cientifica'),
       ),
-      _section<List<GapNode>>(
+      _section<GapReport>(
         stamps,
         _gapNodes,
         '/portal/lacunas',
@@ -579,19 +590,19 @@ class PortalReadApi {
       ),
       _section<FeedList>(stamps, _parseFeeds, '/portal/feeds'),
       // Per-node gaps for the remaining monitored bundles (plan §axes).
-      _section<List<GapNode>>(
+      _section<GapReport>(
         stamps,
         _gapNodes,
         '/portal/lacunas',
         {'tipo': 'projeto_pesquisa_extensao', 'limite_nodes': '200'},
       ),
-      _section<List<GapNode>>(
+      _section<GapReport>(
         stamps,
         _gapNodes,
         '/portal/lacunas',
         {'tipo': 'acao_extensionista', 'limite_nodes': '200'},
       ),
-      _section<List<GapNode>>(
+      _section<GapReport>(
         stamps,
         _gapNodes,
         '/portal/lacunas',
@@ -610,12 +621,12 @@ class PortalReadApi {
       fetchedAt: stamps.isEmpty ? null : stamps.first,
       projetos: results[0] as SectionResult<ProjectBoard>,
       eventos: results[1] as SectionResult<List<PortalEvent>>,
-      publicacoes: results[2] as SectionResult<List<GapNode>>,
-      noticias: results[3] as SectionResult<List<GapNode>>,
+      publicacoes: results[2] as SectionResult<GapReport>,
+      noticias: results[3] as SectionResult<GapReport>,
       feeds: results[4] as SectionResult<FeedList>,
-      projetoGaps: results[5] as SectionResult<List<GapNode>>,
-      acaoGaps: results[6] as SectionResult<List<GapNode>>,
-      eventoGaps: results[7] as SectionResult<List<GapNode>>,
+      projetoGaps: results[5] as SectionResult<GapReport>,
+      acaoGaps: results[6] as SectionResult<GapReport>,
+      eventoGaps: results[7] as SectionResult<GapReport>,
       eventsListingUrl: eventsListingUrl,
       projetosListingUrl: projetosListingUrl,
       projetosMapUrl: projetosMapUrl,

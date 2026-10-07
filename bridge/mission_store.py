@@ -842,6 +842,28 @@ def update_task(
         if not before:
             raise KeyError("task_not_found")
 
+        if "public_url" in allowed or "edit_url" in allowed:
+            # Pair check inside the transaction: the links being written
+            # must reference the same node as each other and as any
+            # persisted counterpart — verified against the row we hold,
+            # not a snapshot another PATCH could have already replaced.
+            linked_nids: set[str] = set()
+            for link_field in ("public_url", "edit_url"):
+                if link_field in allowed:
+                    nid = _link_nid(allowed[link_field])
+                    if nid:
+                        linked_nids.add(nid)
+                    continue
+                persisted = before[link_field]
+                if not persisted:
+                    continue
+                persisted_nid = _link_nid(persisted)
+                if persisted_nid is None:
+                    raise ValueError("link_alias_unresolvable")
+                linked_nids.add(persisted_nid)
+            if len(linked_nids) > 1:
+                raise ValueError("link_node_mismatch")
+
         actual_changes: dict[str, Any] = {}
         assignments = []
         args: list[Any] = []

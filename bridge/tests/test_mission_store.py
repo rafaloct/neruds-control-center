@@ -130,6 +130,7 @@ def test_task_relink_resets_stale_verifications(seeded_mission):
         actor="extensionista.test",
         changes={
             "public_url": "https://portal.example.org/node/555",
+            "edit_url": "https://portal.example.org/node/555/edit",
             "public_check_ok": True,
         },
     )
@@ -148,7 +149,10 @@ def test_task_relink_resets_stale_verifications(seeded_mission):
     relinked = mission_store.update_task(
         first_task_id,
         actor="extensionista.test",
-        changes={"public_url": "https://portal.example.org/node/777"},
+        changes={
+            "public_url": "https://portal.example.org/node/777",
+            "edit_url": "https://portal.example.org/node/777/edit",
+        },
     )
     assert relinked["public_url"] == "https://portal.example.org/node/777"
     assert relinked["public_check_ok"] is False
@@ -172,6 +176,7 @@ def test_task_relink_resets_stale_verifications(seeded_mission):
         actor="extensionista.test",
         changes={
             "public_url": "https://portal.example.org/node/888",
+            "edit_url": "https://portal.example.org/node/888/edit",
             "public_check_ok": True,
         },
     )
