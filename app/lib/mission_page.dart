@@ -1599,8 +1599,10 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
         _uri('/mission-tasks/${widget.taskId}'),
         headers: AppSession.instance.authHeaders,
         body: jsonEncode({
-          'public_url': '$portal/node/$nid',
-          'edit_url': '$portal/node/$nid/edit',
+          'public_url':
+              '${portal.replaceAll(RegExp(r'/+$'), '')}/node/$nid',
+          'edit_url':
+              '${portal.replaceAll(RegExp(r'/+$'), '')}/node/$nid/edit',
         }),
       );
       if (!_currentSessionRequest(revision)) return;

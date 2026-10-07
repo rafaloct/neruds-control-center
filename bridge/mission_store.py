@@ -846,7 +846,7 @@ def update_task(
         if "public_url" in actual_changes:
             # Relinked fichas must not inherit verification results recorded
             # for the previous URL.
-            if before["public_check_ok"] and "public_check_ok" not in actual_changes:
+            if before["public_check_ok"] and "public_check_ok" not in allowed:
                 assignments.append("public_check_ok=?")
                 args.append(0)
                 actual_changes["public_check_ok"] = {"from": 1, "to": 0}

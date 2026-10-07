@@ -471,6 +471,31 @@ async def test_mission_task_portal_link_via_api(
     )
     assert edit_as_public.status_code == 422
 
+    mismatched_pair = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={
+            "public_url": f"{main.PORTAL_URL}/node/555",
+            "edit_url": f"{main.PORTAL_URL}/node/999/edit",
+        },
+        headers=headers,
+    )
+    assert mismatched_pair.status_code == 422
+
+    # Partial PATCH must also match the persisted counterpart (still /555).
+    partial_mismatch = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={"edit_url": f"{main.PORTAL_URL}/node/999/edit"},
+        headers=headers,
+    )
+    assert partial_mismatch.status_code == 422
+
+    bad_port = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={"public_url": "https://neruds.org:abc/node/1"},
+        headers=headers,
+    )
+    assert bad_port.status_code == 422
+
 
 async def test_mission_sla_filters_reports_exports_and_saved_filters(
     async_client, extensionista_session, seeded_mission

@@ -159,6 +159,25 @@ def test_task_relink_resets_stale_verifications(seeded_mission):
         ).fetchone()
     assert row is None
 
+    # An explicitly resubmitted verification survives the relink even when
+    # the boolean itself does not change relative to the stored row.
+    verified = mission_store.update_task(
+        first_task_id,
+        actor="extensionista.test",
+        changes={"public_check_ok": True},
+    )
+    assert verified["public_check_ok"] is True
+    reverified = mission_store.update_task(
+        first_task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": "https://portal.example.org/node/888",
+            "public_check_ok": True,
+        },
+    )
+    assert reverified["public_url"] == "https://portal.example.org/node/888"
+    assert reverified["public_check_ok"] is True
+
 
 def test_task_detail_not_found(temp_db):
     with pytest.raises(KeyError, match="task_not_found"):

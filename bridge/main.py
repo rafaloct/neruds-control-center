@@ -40,32 +40,43 @@ VPS_TAILSCALE_HOST = os.getenv("NERUDS_VPS_TAILSCALE_HOST", "100.111.132.36")
 _PORTAL_NODE_PATH = re.compile(r"^/node/(\d+)(/edit)?/?$")
 
 
-def _portal_node_link(url: str, *, require_edit: bool = False) -> bool:
-    """True when *url* points at a /node/{nid} page on the configured portal."""
-    parsed = urlparse(str(url))
-    portal = urlparse(PORTAL_URL)
-    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
-        return False
-    if (parsed.scheme, parsed.hostname, parsed.port) != (
-        portal.scheme,
-        portal.hostname,
-        portal.port,
-    ):
-        return False
+def _portal_node_parts(url: str) -> tuple[str, bool] | None:
+    """Return (nid, is_edit) when *url* is a /node/{nid}[/edit] portal page."""
+    try:
+        parsed = urlparse(str(url))
+        portal = urlparse(PORTAL_URL)
+        if (
+            parsed.scheme not in ("http", "https")
+            or parsed.username
+            or parsed.password
+            or (parsed.scheme, parsed.hostname, parsed.port)
+            != (portal.scheme, portal.hostname, portal.port)
+        ):
+            return None
+    except ValueError:
+        return None
     base_path = portal.path.rstrip("/")
     path = parsed.path
     if base_path:
         if not path.startswith(base_path + "/"):
-            return False
+            return None
         path = path[len(base_path):]
     match = _PORTAL_NODE_PATH.match(path)
     if not match:
-        return False
-    # The /edit suffix must be present exactly for edit_url and absent for
-    # public_url — a "view" link must never point at a form.
-    if (match.group(2) == "/edit") != require_edit:
-        return False
-    return True
+        return None
+    return match.group(1), match.group(2) == "/edit"
+
+
+def _portal_node_nid(url: str) -> str | None:
+    parts = _portal_node_parts(url)
+    return parts[0] if parts else None
+
+
+def _portal_node_link(url: str, *, require_edit: bool) -> bool:
+    """True when *url* is a portal /node link of exactly the expected kind —
+    the /edit suffix must be present for edit_url and absent for public_url."""
+    parts = _portal_node_parts(url)
+    return parts is not None and parts[1] == require_edit
 
 
 ALLOWED_ORIGINS = [
@@ -1625,6 +1636,29 @@ def mission_task_update(
                     "O endereço precisa apontar para uma ficha /node "
                     "do portal configurado."
                 ),
+            )
+    if "public_url" in changes or "edit_url" in changes:
+        # Both links must reference the same node — including the persisted
+        # counterpart when a partial PATCH supplies only one side.
+        try:
+            current_task = mission_store.task_detail(task_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+        linked_nids = {
+            nid
+            for field in ("public_url", "edit_url")
+            for nid in [
+                _portal_node_nid(
+                    changes.get(field) or current_task.get(field) or ""
+                )
+            ]
+            if nid is not None
+        }
+        if len(linked_nids) > 1:
+            raise HTTPException(
+                status_code=422,
+                detail="Os endereços público e de edição devem apontar "
+                "para a mesma ficha.",
             )
     if payload.current_stage and payload.current_stage not in mission_store.WORKFLOW:
         raise HTTPException(status_code=422, detail="Etapa da missão inválida.")
