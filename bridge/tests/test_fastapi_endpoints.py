@@ -75,7 +75,7 @@ async def test_create_news_draft_born_as_draft(async_client, extensionista_sessi
     respx_mock.get("https://neruds.org/node/add/noticia").mock(
         return_value=Response(
             200,
-            text='<form><input type="hidden" name="form_build_id" value="build-123"/><input type="hidden" name="form_id" value="node_noticia_form"/></form>',
+            text='<form><input type="hidden" name="form_build_id" value="build-123"/><input type="hidden" name="form_id" value="node_noticia_form"/><input type="hidden" name="body[0][format]" value="plain_text"/></form>',
         )
     )
 
@@ -137,10 +137,23 @@ async def test_negative_extensionista_permissions(async_client, extensionista_se
     assert "publicar" in res_pub.json()["detail"]
 
 
-async def test_author_can_resubmit_own_draft(async_client, extensionista_session):
+async def test_author_can_resubmit_own_draft(async_client, extensionista_session, respx_mock):
     token, _ = extensionista_session
     headers = {"Authorization": f"Bearer {token}"}
     review_store.register_draft("357", title="Notícia 357", author="extensionista.test")
+    respx_mock.get(f"{main.PORTAL_URL}/jsonapi/node/noticia").mock(
+        return_value=Response(
+            200,
+            json={"data": [{
+                "id": "uuid-357",
+                "attributes": {"drupal_internal__nid": 357, "title": "Notícia 357", "status": False},
+                "relationships": {"uid": {"data": {
+                    "type": "user--user", "id": "user-101",
+                    "meta": {"drupal_internal__target_id": 101},
+                }}},
+            }]},
+        )
+    )
     review_store.decide(
         "357",
         actor="revisor.test",
@@ -298,7 +311,7 @@ async def test_opportunity_to_draft_workflow(async_client, extensionista_session
 
     # Mock Drupal form GET & POST for draft creation
     respx_mock.get("https://neruds.org/node/add/noticia").mock(
-        return_value=Response(200, text='<form><input type="hidden" name="form_id" value="node_noticia_form"/></form>')
+        return_value=Response(200, text='<form><input type="hidden" name="form_id" value="node_noticia_form"/><input type="hidden" name="body[0][format]" value="plain_text"/></form>')
     )
     respx_mock.post("https://neruds.org/node/add/noticia").mock(
         return_value=Response(302, headers={"location": "https://neruds.org/node/789"})

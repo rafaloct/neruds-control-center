@@ -12,9 +12,10 @@ import ssl
 import subprocess
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from html import escape
+from html import escape, unescape
 from html.parser import HTMLParser
 from typing import Any
+from weakref import WeakValueDictionary
 
 import httpx
 import identity_store
@@ -54,6 +55,8 @@ SMTP_STARTTLS = os.getenv("NERUDS_SMTP_STARTTLS", "true").lower() == "true"
 # Passwords are never stored. Drupal remains the source of truth for identity/permissions.
 SESSION_IDLE_TTL = timedelta(hours=int(os.getenv("NERUDS_SESSION_IDLE_HOURS", "8")))
 SESSIONS: dict[str, dict[str, Any]] = {}
+# Serialize requests for the same opportunity in this bridge process.
+_OPPORTUNITY_DRAFT_LOCKS: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
 app = FastAPI(
     title="NERUDS Control Bridge",
@@ -77,19 +80,56 @@ class HiddenInputParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.fields: dict[str, str] = {}
+        self._hidden_body_format: str | None = None
+        self._format_select_seen = False
+        self._in_format_select = False
+        self._format_select_disabled = False
+        self._format_group_disabled = False
+        self._format_options: list[tuple[str, bool]] = []
+
+    @property
+    def body_format(self) -> str | None:
+        if not self._format_select_seen:
+            return self._hidden_body_format
+        if self._format_select_disabled or not self._format_options:
+            return None
+        return next(
+            (value for value, selected in self._format_options if selected),
+            self._format_options[0][0],
+        )
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() != "input":
-            return
+        tag = tag.lower()
         data = dict(attrs)
         name = data.get("name")
-        if not name:
+        if tag == "select" and name == "body[0][format]":
+            self._format_select_seen = True
+            self._in_format_select = True
+            self._format_select_disabled = "disabled" in data
+            self._format_group_disabled = False
+            self._format_options = []
+        elif tag == "optgroup" and self._in_format_select:
+            self._format_group_disabled = "disabled" in data
+        elif tag == "option" and self._in_format_select:
+            value = data.get("value") or ""
+            if value and "disabled" not in data and not self._format_group_disabled:
+                self._format_options.append((value, "selected" in data))
+
+        if tag != "input" or not name:
             return
-        input_type = data.get("type", "").lower()
+        input_type = (data.get("type") or "").lower()
         if input_type == "hidden":
             self.fields[name] = data.get("value") or ""
+            if name == "body[0][format]" and "disabled" not in data:
+                self._hidden_body_format = data.get("value") or None
         elif input_type == "submit" and name == "op" and name not in self.fields:
             self.fields[name] = data.get("value") or ""
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "select":
+            self._in_format_select = False
+        elif tag.lower() == "optgroup":
+            self._format_group_disabled = False
 
 
 class LoginRequest(BaseModel):
@@ -281,6 +321,121 @@ async def notify_review(title: str, author: str) -> dict[str, Any]:
         return {"sent": False, "reason": exc.__class__.__name__}
 
 
+def _node_urls(nid: Any, alias: Any = None) -> dict[str, str | None]:
+    node_id = str(nid or "").strip()
+    public_url = f"{PORTAL_URL}/node/{node_id}" if node_id.isdecimal() else None
+    if isinstance(alias, str) and alias.startswith("/") and not alias.startswith("//"):
+        public_url = f"{PORTAL_URL}{alias}"
+    return {
+        "public_url": public_url,
+        "edit_url": f"{PORTAL_URL}/node/{node_id}/edit" if node_id.isdecimal() else None,
+    }
+
+
+def _readable_field(value: Any) -> str:
+    if isinstance(value, dict):
+        if value.get("format") == "plain_text":
+            raw = value.get("value")
+            return raw if isinstance(raw, str) else ""
+        value = value.get("value") or value.get("processed") or ""
+    if not isinstance(value, str):
+        return ""
+    value = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", "", value, flags=re.I | re.S)
+    value = re.sub(r"<br\s*/?>|</(?:p|div|li|h[1-6])>", "\n", value, flags=re.I)
+    value = unescape(re.sub(r"<[^>]+>", "", value))
+    return "\n".join(
+        re.sub(r"[ \t]+", " ", line).strip()
+        for line in value.splitlines()
+        if line.strip()
+    )
+
+
+def _news_owner_uid(item: dict[str, Any]) -> str | None:
+    relationship = (item.get("relationships") or {}).get("uid") or {}
+    owner = relationship.get("data") or {}
+    if not isinstance(owner, dict):
+        return None
+    raw = (owner.get("meta") or {}).get("drupal_internal__target_id")
+    uid = str(raw) if raw is not None else ""
+    return uid if uid.isdecimal() else None
+
+
+def _owns_review(
+    session: dict[str, Any],
+    review: dict[str, Any] | None,
+    owner_uid: str | None = None,
+) -> bool:
+    known_uid = owner_uid or (review or {}).get("owner_uid")
+    if known_uid is not None:
+        return str(known_uid) == str(session.get("uid") or "")
+    # Preserve ownership of bridge drafts predating UID storage. A native
+    # placeholder never proves that the person currently reading is the author.
+    author = (review or {}).get("author")
+    return bool(author and author != "Drupal" and author == session["username"])
+
+
+def _news_queue_item(item: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
+    attrs = item.get("attributes") or {}
+    nid = attrs.get("drupal_internal__nid")
+    owner_uid = _news_owner_uid(item)
+    published = attrs.get("status") in (True, 1, "1")
+    review = None
+    if nid is not None:
+        author = (
+            session["username"]
+            if owner_uid is not None and owner_uid == str(session.get("uid") or "")
+            else None
+        )
+        review = review_store.reconcile_draft(
+            str(nid),
+            attrs.get("title") or "Sem título",
+            owner_uid=owner_uid,
+            author=author,
+            published=published,
+        )
+    body = attrs.get("body") or {}
+    body_summary = (
+        {"value": body.get("summary"), "format": body.get("format")}
+        if isinstance(body, dict)
+        else ""
+    )
+    path = attrs.get("path") or {}
+    return {
+        "id": item.get("id"),
+        "nid": nid,
+        "title": attrs.get("title") or "Sem título",
+        "changed": attrs.get("changed", ""),
+        "created": attrs.get("created", ""),
+        "moderation_state": attrs.get("moderation_state", ""),
+        "status": "published" if published else (review or {}).get("review_status", "pending"),
+        "published": published,
+        "body": _readable_field(body),
+        "summary": _readable_field(attrs.get("field_resumo_noticia"))
+        or _readable_field(body_summary),
+        "owner_uid": owner_uid or (review or {}).get("owner_uid"),
+        "is_owner": _owns_review(session, review, owner_uid),
+        **_node_urls(nid, path.get("alias") if isinstance(path, dict) else None),
+        "review": review,
+    }
+
+
+async def _authorized_news_item(nid: int, session: dict[str, Any]) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        response = await client.get(
+            "/jsonapi/node/noticia",
+            params={"filter[drupal_internal__nid]": str(nid), "page[limit]": "1"},
+        )
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail="Drupal não autorizou a leitura deste rascunho.",
+            )
+        for item in response.json().get("data", []):
+            if str((item.get("attributes") or {}).get("drupal_internal__nid")) == str(nid):
+                return _news_queue_item(item, session)
+    raise HTTPException(status_code=404, detail="Rascunho não encontrado no portal.")
+
+
 async def _create_news_draft_internal(
     *,
     title: str,
@@ -301,13 +456,26 @@ async def _create_news_draft_internal(
 
         parser = HiddenInputParser()
         parser.feed(form.text)
+        text_format = parser.body_format
+        if text_format is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Drupal não ofereceu um formato de texto para esta conta. Confira o formulário no portal.",
+            )
         fields = parser.fields
         fields.update(
             {
                 "title[0][value]": title,
-                "body[0][summary]": summary,
-                "body[0][value]": plain_to_basic_html(body),
-                "body[0][format]": "basic_html",
+                "body[0][summary]": summary
+                if text_format == "plain_text"
+                else plain_to_basic_html(summary),
+                "body[0][value]": body
+                if text_format == "plain_text"
+                else plain_to_basic_html(body),
+                "body[0][format]": text_format,
+                "status[value]": "0",
+                "field_data_noticia[0][value][date]": publication_date
+                or datetime.now().date().isoformat(),
                 "form_id": fields.get("form_id", "node_noticia_form"),
                 "op": fields.get("op", "Salvar"),
             }
@@ -322,7 +490,7 @@ async def _create_news_draft_internal(
         )
         if response.status_code not in (302, 303):
             raise HTTPException(
-                status_code=response.status_code,
+                status_code=response.status_code if response.status_code >= 400 else 422,
                 detail={
                     "message": "Drupal não salvou o rascunho pelo formulário nativo.",
                     "response": response.text[:1200],
@@ -330,7 +498,7 @@ async def _create_news_draft_internal(
             )
 
         location = response.headers.get("location", "")
-        match = re.search(r"/node/(\d+)", location)
+        match = re.search(r"/node/([1-9][0-9]*)(?:[/?#]|$)", location)
         node_id = match.group(1) if match else None
         jsonapi_id = None
 
@@ -348,18 +516,29 @@ async def _create_news_draft_internal(
                     attrs = item.get("attributes", {})
                     if attrs.get("title") != title:
                         continue
-                    internal_nid = attrs.get("drupal_internal__nid")
-                    if internal_nid is not None:
-                        node_id = str(internal_nid)
+                    if _news_owner_uid(item) != str(session.get("uid") or ""):
+                        continue
+                    if attrs.get("status") in (True, 1, "1"):
+                        continue
+                    internal_nid = str(attrs.get("drupal_internal__nid") or "")
+                    if internal_nid.isascii() and internal_nid.isdecimal() and int(internal_nid) > 0:
+                        node_id = internal_nid
                     jsonapi_id = item.get("id")
                     break
 
-        draft_id = node_id or jsonapi_id
+        if node_id is None:
+            raise HTTPException(
+                status_code=502,
+                detail="Drupal retornou sem confirmar o identificador numérico da notícia. "
+                "Confira o registro no portal antes de repetir.",
+            )
+        draft_id = node_id
         if draft_id:
             review_store.register_draft(
                 str(draft_id),
                 title,
                 session["username"],
+                owner_uid=str(session["uid"]) if session.get("uid") is not None else None,
                 opportunity_item_id=opportunity_item_id,
                 mission_task_id=mission_task_id,
             )
@@ -370,6 +549,9 @@ async def _create_news_draft_internal(
             "jsonapi_id": jsonapi_id,
             "type": "node--noticia",
             "location": location,
+            **_node_urls(node_id),
+            "owner_uid": str(session["uid"]) if session.get("uid") is not None else None,
+            "is_owner": True,
         }
 
 
@@ -530,7 +712,7 @@ async def portal_snapshot() -> dict[str, Any]:
         content_types = sorted(
             key.removeprefix("node--")
             for key in root_json.get("links", {})
-            if key.startswith("node--") and key != "node--page"
+            if key.startswith("node--")
         )
 
         node_types = await client.get(
@@ -566,6 +748,10 @@ async def portal_snapshot() -> dict[str, Any]:
                         "created": attrs.get("created", ""),
                         "state": attrs.get("moderation_state", ""),
                         "published": attrs.get("status", False),
+                        "public_url": _node_urls(
+                            attrs.get("drupal_internal__nid"),
+                            (attrs.get("path") or {}).get("alias"),
+                        )["public_url"],
                     }
                 )
 
@@ -587,11 +773,11 @@ async def news_drafts(
     query: str | None = Query(default=None),
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
-    params = {
-        "filter[status]": "0",
-        "sort": "-changed",
-        "page[limit]": "50",
-    }
+    if status and status not in review_store.REVIEW_STATUSES:
+        raise HTTPException(status_code=422, detail="Status de revisão inválido.")
+    params = {"sort": "-changed", "page[limit]": "50"}
+    if status:
+        params["filter[status]"] = "1" if status == "published" else "0"
     async with drupal_client(session) as client:
         response = await client.get("/jsonapi/node/noticia", params=params)
         if response.status_code >= 400:
@@ -601,36 +787,18 @@ async def news_drafts(
             )
         drafts = []
         for item in response.json().get("data", []):
-            attrs = item.get("attributes", {})
-            nid = attrs.get("drupal_internal__nid")
-            review = None
-            if nid is not None:
-                review = review_store.ensure_draft(
-                    str(nid),
-                    attrs.get("title", "Sem título"),
-                    "Drupal",
-                )
-            if status and (not review or review.get("review_status") != status):
+            draft = _news_queue_item(item, session)
+            if status and draft["status"] != status:
                 continue
-            if mine_only and (not review or review.get("author") != session["username"]):
+            if mine_only and not draft["is_owner"]:
                 continue
             if query and query.strip():
-                needle = query.strip().lower()
-                title = (attrs.get("title") or "").lower()
-                author = (review or {}).get("author", "").lower()
+                needle = query.strip().casefold()
+                title = draft["title"].casefold()
+                author = (draft["review"] or {}).get("author", "").casefold()
                 if needle not in title and needle not in author:
                     continue
-            drafts.append(
-                {
-                    "id": item.get("id"),
-                    "nid": nid,
-                    "title": attrs.get("title", "Sem título"),
-                    "changed": attrs.get("changed", ""),
-                    "created": attrs.get("created", ""),
-                    "moderation_state": attrs.get("moderation_state", ""),
-                    "review": review,
-                }
-            )
+            drafts.append(draft)
         return {
             "items": drafts,
             "can_review": bool(session.get("can_review", False)),
@@ -660,6 +828,10 @@ async def create_news_draft(
         "title": payload.title,
         "published": False,
         "notification": notification,
+        "public_url": created.get("public_url"),
+        "edit_url": created.get("edit_url"),
+        "owner_uid": created.get("owner_uid"),
+        "is_owner": created.get("is_owner", False),
     }
 
 
@@ -680,11 +852,13 @@ async def review_news_draft(
                 detail="Sua conta não tem permissão para revisar notícias.",
             )
     elif payload.status == "pending":
-        if not session.get("can_review", False) and current["author"] != session["username"]:
-            raise HTTPException(
-                status_code=403,
-                detail="Sua conta não tem permissão para reenviar o rascunho de terceiros.",
-            )
+        if not session.get("can_review", False):
+            observed = await _authorized_news_item(nid, session)
+            if not observed["is_owner"]:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Sua conta não tem permissão para reenviar o rascunho de terceiros.",
+                )
     else:
         raise HTTPException(status_code=422, detail="Status de revisão inválido.")
 
@@ -1553,6 +1727,10 @@ async def opportunities_refresh(
     return await asyncio.to_thread(rss_store.refresh_all)
 
 
+def _opportunity_with_urls(item: dict[str, Any]) -> dict[str, Any]:
+    return {**item, **_node_urls(item.get("drupal_draft_id"))}
+
+
 @app.get("/opportunities/items")
 def opportunity_items(
     status: str | None = None,
@@ -1565,7 +1743,7 @@ def opportunity_items(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     try:
-        return rss_store.list_items(
+        result = rss_store.list_items(
             status=status,
             category=category,
             source_id=source_id,
@@ -1574,6 +1752,8 @@ def opportunity_items(
             limit=limit,
             offset=offset,
         )
+        result["items"] = [_opportunity_with_urls(item) for item in result["items"]]
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -1602,7 +1782,7 @@ def opportunity_item_detail(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     try:
-        return rss_store.item_detail(item_id)
+        return _opportunity_with_urls(rss_store.item_detail(item_id))
     except KeyError:
         raise HTTPException(status_code=404, detail="Oportunidade não encontrada.")
 
@@ -1619,7 +1799,7 @@ def opportunity_decision(
             detail="Somente perfis de revisão/coordenação podem aprovar uma pauta.",
         )
     try:
-        return rss_store.decide(
+        item = rss_store.decide(
             item_id,
             actor=session["username"],
             status=payload.status,
@@ -1628,8 +1808,11 @@ def opportunity_decision(
             deadline_at=payload.deadline_at,
             fit_tags=payload.fit_tags,
         )
+        return _opportunity_with_urls(item)
     except KeyError:
         raise HTTPException(status_code=404, detail="Oportunidade não encontrada.")
+    except rss_store.DraftConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -1639,11 +1822,28 @@ async def opportunity_create_draft(
     item_id: int,
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
+    lock = _OPPORTUNITY_DRAFT_LOCKS.get(item_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _OPPORTUNITY_DRAFT_LOCKS[item_id] = lock
+    async with lock:
+        return await _opportunity_create_draft_locked(item_id, session)
+
+
+async def _opportunity_create_draft_locked(
+    item_id: int,
+    session: dict[str, Any],
+) -> dict[str, Any]:
     try:
         item = rss_store.item_detail(item_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Oportunidade não encontrada.")
 
+    if item.get("drupal_draft_id"):
+        raise HTTPException(
+            status_code=409,
+            detail="Esta oportunidade já possui um rascunho Drupal. Abra o registro existente no portal.",
+        )
     if item["status"] != "aprovado_pauta":
         raise HTTPException(
             status_code=409,
@@ -1672,7 +1872,15 @@ async def opportunity_create_draft(
         opportunity_item_id=item_id,
     )
     drupal_id = str(created.get("id") or "")
-    rss_store.mark_draft(item_id, session["username"], drupal_id)
+    if not drupal_id:
+        raise HTTPException(
+            status_code=502,
+            detail="Drupal salvou sem confirmar o identificador. Confira a notícia no portal antes de repetir.",
+        )
+    try:
+        rss_store.mark_draft(item_id, session["username"], drupal_id)
+    except rss_store.DraftConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     notification = await notify_review(item["title"], session["username"])
 
     return {
@@ -1681,6 +1889,7 @@ async def opportunity_create_draft(
         "drupal_draft_id": drupal_id,
         "published": False,
         "notification": notification,
+        **_node_urls(drupal_id),
     }
 
 

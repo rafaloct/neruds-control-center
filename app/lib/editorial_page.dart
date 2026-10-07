@@ -1,9 +1,13 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
+import 'app_config.dart';
 import 'app_session.dart';
+import 'bridge_http.dart' as http;
+import 'session_widgets.dart';
+import 'unsaved_work.dart';
+import 'workflow_widgets.dart';
 
 class EditorialPage extends StatefulWidget {
   const EditorialPage({super.key});
@@ -12,67 +16,94 @@ class EditorialPage extends StatefulWidget {
   State<EditorialPage> createState() => _EditorialPageState();
 }
 
-class _EditorialPageState extends State<EditorialPage> {
-  static const _bridgeUrl = String.fromEnvironment(
-    'NERUDS_BRIDGE_URL',
-    defaultValue: 'https://largeo.tail2faed0.ts.net:8443',
-  );
-
-  final _loginFormKey = GlobalKey<FormState>();
-  final _username = TextEditingController();
-  final _password = TextEditingController();
+class _EditorialPageState extends State<EditorialPage>
+    with SingleTickerProviderStateMixin {
+  final _formKey = GlobalKey<FormState>();
   final _title = TextEditingController();
   final _summary = TextEditingController();
   final _body = TextEditingController();
   final _opportunityItemId = TextEditingController();
   final _missionTaskId = TextEditingController();
-
-  String? _token;
-  String? _loggedUser;
+  late final TabController _tabs;
+  late int _identityEpoch;
+  int _step = 0;
+  int _requestVersion = 0;
   bool _busy = false;
-  bool _showPassword = false;
   bool _loadingDrafts = false;
+  String? _loadError;
   String? _reviewStatus = 'pending';
   bool _mineOnly = false;
   List<Map<String, dynamic>> _drafts = const [];
+  Map<String, dynamic>? _createdDraft;
 
-  Map<String, String> get _authHeaders => {
-    'Authorization': 'Bearer $_token',
-    'Content-Type': 'application/json',
-  };
+  List<TextEditingController> get _controllers => [
+    _title,
+    _summary,
+    _body,
+    _opportunityItemId,
+    _missionTaskId,
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _tabs = TabController(length: 2, vsync: this);
+    _identityEpoch = AppSession.instance.identityEpoch;
+    for (final controller in _controllers) {
+      controller.addListener(_trackChanges);
+    }
+    AppSession.instance.addListener(_sessionChanged);
+    if (AppSession.instance.authenticated) _loadDrafts();
+  }
 
   @override
   void dispose() {
-    _username.dispose();
-    _password.dispose();
-    _title.dispose();
-    _summary.dispose();
-    _body.dispose();
-    _opportunityItemId.dispose();
-    _missionTaskId.dispose();
+    AppSession.instance.removeListener(_sessionChanged);
+    UnsavedWork.instance.remove(this);
+    _tabs.dispose();
+    for (final controller in _controllers) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
-  String _endpoint(String path) {
-    final base = _bridgeUrl.endsWith('/')
-        ? _bridgeUrl.substring(0, _bridgeUrl.length - 1)
-        : _bridgeUrl;
-    return '$base$path';
+  void _trackChanges() {
+    UnsavedWork.instance.setDirty(
+      this,
+      _controllers.any((controller) => controller.text.isNotEmpty),
+    );
   }
 
-  String _errorMessage(http.Response response) {
-    try {
-      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
-      final detail = decoded['detail'];
-      if (detail is String) return detail;
-      if (detail is Map && detail['message'] != null) {
-        return detail['message'].toString();
-      }
-      return detail?.toString() ?? 'Erro HTTP ${response.statusCode}';
-    } catch (_) {
-      return 'Erro HTTP ${response.statusCode}';
+  void _clearComposition() {
+    for (final controller in _controllers) {
+      controller.clear();
     }
+    _step = 0;
+    UnsavedWork.instance.setDirty(this, false);
   }
+
+  void _sessionChanged() {
+    if (!mounted) return;
+    final session = AppSession.instance;
+    _requestVersion++;
+    if (_identityEpoch != session.identityEpoch) {
+      _identityEpoch = session.identityEpoch;
+      _clearComposition();
+      _createdDraft = null;
+    }
+    setState(() {
+      _drafts = const [];
+      _loadError = null;
+      _loadingDrafts = false;
+    });
+    if (session.authenticated) _loadDrafts();
+  }
+
+  bool _sameSession(int epoch, String? token) =>
+      mounted &&
+      AppSession.instance.authenticated &&
+      AppSession.instance.identityEpoch == epoch &&
+      AppSession.instance.token == token;
 
   void _message(String value) {
     if (!mounted) return;
@@ -81,298 +112,210 @@ class _EditorialPageState extends State<EditorialPage> {
       ..showSnackBar(SnackBar(content: Text(value)));
   }
 
-  Future<void> _login() async {
-    if (!(_loginFormKey.currentState?.validate() ?? false)) {
-      return;
-    }
-
-    setState(() => _busy = true);
-    try {
-      final response = await http
-          .post(
-            Uri.parse(_endpoint('/auth/login')),
-            headers: const {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'username': _username.text.trim(),
-              'password': _password.text,
-            }),
-          )
-          .timeout(const Duration(seconds: 20));
-
-      if (response.statusCode != 200) {
-        _message(_errorMessage(response));
-        return;
-      }
-
-      final data = jsonDecode(utf8.decode(response.bodyBytes));
-      final token = data['token']?.toString() ?? '';
-      final username = data['username']?.toString() ?? _username.text.trim();
-      final roles = (data['roles'] as List<dynamic>? ?? const [])
-          .map((role) => role.toString())
-          .toList();
-      AppSession.instance.setSession(
-        tokenValue: token,
-        usernameValue: username,
-        rolesValue: roles,
-        canReviewValue: data['can_review'] == true,
-        canPublishValue: data['can_publish'] == true,
-        canAdminUsersValue: data['can_admin_users'] == true,
-      );
-      setState(() {
-        _token = token;
-        _loggedUser = username;
-        _password.clear();
-      });
-      _message('Sessão iniciada com as permissões do Drupal.');
-      await _loadDrafts();
-    } catch (error) {
-      _message('Não foi possível acessar o bridge: $error');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _logout() async {
-    final token = _token;
-    if (token != null) {
-      try {
-        await http
-            .post(Uri.parse(_endpoint('/auth/logout')), headers: _authHeaders)
-            .timeout(const Duration(seconds: 10));
-      } catch (_) {}
-    }
-    AppSession.instance.clear();
-    if (!mounted) return;
-    setState(() {
-      _token = null;
-      _loggedUser = null;
-      _drafts = const [];
-    });
-  }
-
   Future<void> _loadDrafts() async {
-    if (_token == null) return;
-    setState(() => _loadingDrafts = true);
+    final session = AppSession.instance;
+    if (!session.authenticated) return;
+    final epoch = session.identityEpoch;
+    final token = session.token;
+    final request = ++_requestVersion;
+    setState(() {
+      _loadingDrafts = true;
+      _loadError = null;
+    });
     try {
-      final query = <String, String>{};
-      if (_reviewStatus != null) query['status'] = _reviewStatus!;
-      if (_mineOnly) query['mine_only'] = 'true';
-      final response = await http
-          .get(
-            Uri.parse(
-              _endpoint('/content/news/drafts'),
-            ).replace(queryParameters: query),
-            headers: _authHeaders,
-          )
-          .timeout(const Duration(seconds: 15));
-
-      if (response.statusCode == 401) {
-        await _logout();
-        _message('Sua sessão expirou. Entre novamente.');
-        return;
-      }
+      final query = <String, String>{
+        'status': ?_reviewStatus,
+        if (_mineOnly) 'mine_only': 'true',
+      };
+      final response = await http.get(
+        AppConfig.endpoint(
+          '/content/news/drafts',
+        ).replace(queryParameters: query),
+        headers: session.authHeaders,
+      );
+      if (!_sameSession(epoch, token) || request != _requestVersion) return;
       if (response.statusCode != 200) {
-        _message(_errorMessage(response));
-        return;
+        throw workflowResponseError(response);
       }
       final data = jsonDecode(utf8.decode(response.bodyBytes));
-      final items = (data['items'] as List<dynamic>? ?? const [])
-          .map((item) => Map<String, dynamic>.from(item as Map))
-          .toList();
-      if (mounted) setState(() => _drafts = items);
+      setState(() {
+        _drafts = (data['items'] as List<dynamic>? ?? const [])
+            .whereType<Map>()
+            .map((item) => Map<String, dynamic>.from(item))
+            .toList();
+      });
     } catch (error) {
-      _message('Não foi possível carregar os rascunhos: $error');
+      if (_sameSession(epoch, token) && request == _requestVersion) {
+        setState(() => _loadError = workflowError(error));
+      }
     } finally {
-      if (mounted) setState(() => _loadingDrafts = false);
+      if (mounted && request == _requestVersion) {
+        setState(() => _loadingDrafts = false);
+      }
     }
+  }
+
+  bool _validateComposition() {
+    final fieldsValid = _formKey.currentState?.validate() ?? true;
+    final textValid =
+        _title.text.trim().length >= 3 && _body.text.trim().isNotEmpty;
+    final linksValid = [_opportunityItemId, _missionTaskId].every((controller) {
+      final value = controller.text.trim();
+      return value.isEmpty || (int.tryParse(value) ?? 0) > 0;
+    });
+    if (!linksValid) {
+      _message(
+        'Confira os identificadores em Vínculos com trabalho existente.',
+      );
+    }
+    return fieldsValid && textValid && linksValid;
   }
 
   Future<void> _createDraft() async {
-    if (_title.text.trim().length < 3 || _body.text.trim().isEmpty) {
-      _message('Preencha pelo menos título e texto.');
+    if (_busy || !AppSession.instance.authenticated) return;
+    if (!_validateComposition()) {
+      setState(() => _step = 0);
       return;
     }
-    if (_opportunityItemId.text.trim().isNotEmpty &&
-        int.tryParse(_opportunityItemId.text.trim()) == null) {
-      _message('O ID da oportunidade deve ser um número inteiro.');
-      return;
-    }
-    if (_missionTaskId.text.trim().isNotEmpty &&
-        int.tryParse(_missionTaskId.text.trim()) == null) {
-      _message('O ID da tarefa da missão deve ser um número inteiro.');
-      return;
-    }
-
+    final session = AppSession.instance;
+    final epoch = session.identityEpoch;
+    final token = session.token;
     setState(() => _busy = true);
     try {
-      final response = await http
-          .post(
-            Uri.parse(_endpoint('/content/news/draft')),
-            headers: _authHeaders,
-            body: jsonEncode({
-              'title': _title.text.trim(),
-              'summary': _summary.text.trim(),
-              'body': _body.text.trim(),
-              if (int.tryParse(_opportunityItemId.text.trim()) != null)
-                'opportunity_item_id': int.parse(
-                  _opportunityItemId.text.trim(),
-                ),
-              if (int.tryParse(_missionTaskId.text.trim()) != null)
-                'mission_task_id': int.parse(_missionTaskId.text.trim()),
-            }),
-          )
-          .timeout(const Duration(seconds: 25));
-
-      if (response.statusCode == 401) {
-        await _logout();
-        _message('Sua sessão expirou. Entre novamente.');
-        return;
-      }
-
+      final response = await http.post(
+        AppConfig.endpoint('/content/news/draft'),
+        headers: session.authHeaders,
+        body: jsonEncode({
+          'title': _title.text.trim(),
+          'summary': _summary.text.trim(),
+          'body': _body.text.trim(),
+          if (int.tryParse(_opportunityItemId.text.trim()) != null)
+            'opportunity_item_id': int.parse(_opportunityItemId.text.trim()),
+          if (int.tryParse(_missionTaskId.text.trim()) != null)
+            'mission_task_id': int.parse(_missionTaskId.text.trim()),
+        }),
+      );
+      if (!_sameSession(epoch, token)) return;
       if (response.statusCode != 200 && response.statusCode != 201) {
-        _message(_errorMessage(response));
-        return;
+        throw workflowResponseError(response);
       }
-
-      final data = jsonDecode(utf8.decode(response.bodyBytes));
-      final notification = data['notification'] as Map<String, dynamic>?;
-      final emailSent = notification?['sent'] == true;
-      _title.clear();
-      _summary.clear();
-      _body.clear();
-      _opportunityItemId.clear();
-      _missionTaskId.clear();
+      final data = Map<String, dynamic>.from(
+        jsonDecode(utf8.decode(response.bodyBytes)) as Map,
+      );
+      setState(() {
+        _createdDraft = {...data, 'title': _title.text.trim()};
+        _clearComposition();
+        _reviewStatus = 'pending';
+      });
+      _tabs.animateTo(1);
       _message(
-        emailSent
-            ? 'Rascunho criado e revisão avisada por e-mail.'
-            : 'Rascunho criado no Drupal. A notificação por e-mail ainda não está configurada.',
+        data['notification'] is Map &&
+                (data['notification'] as Map)['sent'] == true
+            ? 'Rascunho salvo. A equipe de revisão foi avisada por e-mail.'
+            : 'Rascunho salvo. Acompanhe o próximo passo na fila de revisão.',
       );
       await _loadDrafts();
     } catch (error) {
-      _message('Não foi possível criar o rascunho: $error');
+      if (_sameSession(epoch, token)) {
+        _message('Seu texto foi mantido. ${workflowError(error)}');
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
   Future<void> _reviewDraft(Map<String, dynamic> item, String status) async {
-    final nid = item['nid'];
-    if (nid == null) {
-      _message('O rascunho não possui identificador do Drupal.');
-      return;
-    }
-
-    final noteController = TextEditingController();
-    final needsNote = status == 'changes_requested';
+    final session = AppSession.instance;
+    if (_busy || !session.authenticated) return;
+    if (status != 'pending' && !session.canReview) return;
+    final nid = item['nid'] ?? item['id'];
+    if (nid == null) return;
+    final epoch = session.identityEpoch;
+    final token = session.token;
     final note = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          status == 'approved'
-              ? 'Aprovar rascunho'
-              : status == 'pending'
-              ? 'Reenviar para revisão'
-              : 'Devolver para ajuste',
-        ),
-        content: TextField(
-          controller: noteController,
-          autofocus: true,
-          minLines: 3,
-          maxLines: 6,
-          decoration: InputDecoration(
-            labelText: needsNote ? 'Orientações para ajuste *' : 'Comentário',
-            border: const OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, noteController.text.trim()),
-            child: Text(
-              status == 'approved'
-                  ? 'Aprovar'
-                  : status == 'pending'
-                  ? 'Reenviar'
-                  : 'Devolver',
-            ),
-          ),
-        ],
-      ),
+      builder: (_) => _ReviewDecisionDialog(item: item, status: status),
     );
-    noteController.dispose();
-    if (note == null) return;
-    if (needsNote && note.isEmpty) {
-      _message('Informe o que precisa ser ajustado.');
-      return;
-    }
-
+    if (note == null || !_sameSession(epoch, token)) return;
     setState(() => _busy = true);
     try {
-      final response = await http
-          .patch(
-            Uri.parse(_endpoint('/content/news/drafts/$nid/review')),
-            headers: _authHeaders,
-            body: jsonEncode({
-              'status': status,
-              if (note.isNotEmpty) 'note': note,
-            }),
-          )
-          .timeout(const Duration(seconds: 20));
-      if (response.statusCode == 401) {
-        await _logout();
-        _message('Sua sessão expirou. Entre novamente.');
-        return;
-      }
+      final response = await http.patch(
+        AppConfig.endpoint('/content/news/drafts/$nid/review'),
+        headers: session.authHeaders,
+        body: jsonEncode({'status': status, if (note.isNotEmpty) 'note': note}),
+      );
+      if (!_sameSession(epoch, token)) return;
       if (response.statusCode != 200) {
-        _message(_errorMessage(response));
-        return;
+        throw workflowResponseError(response);
       }
       _message(
         status == 'approved'
-            ? 'Rascunho aprovado.'
+            ? 'Revisão aprovada. A publicação é o próximo passo.'
             : status == 'pending'
             ? 'Rascunho reenviado para revisão.'
-            : 'Rascunho devolvido para ajuste.',
+            : 'Orientações de ajuste registradas.',
       );
       await _loadDrafts();
     } catch (error) {
-      _message('Não foi possível atualizar a revisão: $error');
+      if (_sameSession(epoch, token)) _message(workflowError(error));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
   Future<void> _publishDraft(Map<String, dynamic> item) async {
-    final nid = item['nid'];
-    if (nid == null) {
-      _message('O rascunho não possui identificador do Drupal.');
-      return;
-    }
-
+    final session = AppSession.instance;
+    if (_busy || !session.authenticated || !session.canPublish) return;
+    final nid = item['nid'] ?? item['id'];
+    if (nid == null || _reviewState(item) != 'approved') return;
+    final epoch = session.identityEpoch;
+    final token = session.token;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Publicar esta notícia?'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(item['title']?.toString() ?? 'Notícia'),
+              const SizedBox(height: 12),
+              const Text(
+                'O texto ficará disponível ao público no portal NERUDS. '
+                'Depois, confira a página, os links e a apresentação.',
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Voltar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Publicar no portal'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !_sameSession(epoch, token)) return;
     setState(() => _busy = true);
     try {
-      final response = await http
-          .post(
-            Uri.parse(_endpoint('/content/news/drafts/$nid/publish')),
-            headers: _authHeaders,
-          )
-          .timeout(const Duration(seconds: 20));
-      if (response.statusCode == 401) {
-        await _logout();
-        _message('Sua sessão expirou. Entre novamente.');
-        return;
-      }
+      final response = await http.post(
+        AppConfig.endpoint('/content/news/drafts/$nid/publish'),
+        headers: session.authHeaders,
+      );
+      if (!_sameSession(epoch, token)) return;
       if (response.statusCode != 200) {
-        _message(_errorMessage(response));
-        return;
+        throw workflowResponseError(response);
       }
-      _message('Notícia publicada no Drupal.');
+      setState(() => _reviewStatus = 'published');
+      _message('Notícia publicada. Abra a página para conferir o resultado.');
       await _loadDrafts();
     } catch (error) {
-      _message('Não foi possível publicar a notícia: $error');
+      if (_sameSession(epoch, token)) _message(workflowError(error));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -380,174 +323,30 @@ class _EditorialPageState extends State<EditorialPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_token == null) return _loginView(context);
-
-    return DefaultTabController(
-      length: 2,
-      child: Column(
-        children: [
-          Material(
-            color: Theme.of(context).colorScheme.surface,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 14, 16, 0),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.verified_user_outlined),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Conectado como ${_loggedUser ?? ''}',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                      ),
-                      TextButton.icon(
-                        onPressed: _logout,
-                        icon: const Icon(Icons.logout),
-                        label: const Text('Sair'),
-                      ),
-                    ],
-                  ),
-                  const TabBar(
-                    tabs: [
-                      Tab(
-                        icon: Icon(Icons.edit_note_outlined),
-                        text: 'Nova notícia',
-                      ),
-                      Tab(
-                        icon: Icon(Icons.rate_review_outlined),
-                        text: 'Rascunhos',
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-          Expanded(
-            child: TabBarView(
-              children: [_draftForm(context), _draftQueue(context)],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _loginView(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(24),
+    if (!AppSession.instance.authenticated) {
+      return const SessionPrompt(
+        title: 'Conteúdo do portal',
+        message:
+            'Entre para preparar e revisar notícias, chamadas e vagas. '
+            'Sua redação permanece nesta sessão quando o acesso expira.',
+      );
+    }
+    return Column(
       children: [
-        Text(
-          'Conteúdo do portal',
-          style: Theme.of(context).textTheme.headlineMedium,
-        ),
-        const SizedBox(height: 6),
-        const Text(
-          'Entre com sua conta do neruds.org. O aplicativo usa as mesmas permissões definidas no Drupal e não guarda sua senha.',
-        ),
-        const SizedBox(height: 24),
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 520),
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: AutofillGroup(
-                child: Form(
-                  key: _loginFormKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      TextFormField(
-                        controller: _username,
-                        enabled: !_busy,
-                        autofillHints: const [
-                          AutofillHints.username,
-                          AutofillHints.email,
-                        ],
-                        textInputAction: TextInputAction.next,
-                        validator: (value) {
-                          if (value == null || value.trim().isEmpty) {
-                            return 'Informe seu usuário do portal.';
-                          }
-                          return null;
-                        },
-                        decoration: const InputDecoration(
-                          labelText: 'Usuário do portal *',
-                          helperText:
-                              'Ex.: extensionista.1 ou seu usuário institucional',
-                          prefixIcon: Icon(Icons.person_outline),
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      TextFormField(
-                        controller: _password,
-                        enabled: !_busy,
-                        obscureText: !_showPassword,
-                        autofillHints: const [AutofillHints.password],
-                        textInputAction: TextInputAction.done,
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return 'Informe sua senha.';
-                          }
-                          return null;
-                        },
-                        onFieldSubmitted: (_) => _login(),
-                        decoration: InputDecoration(
-                          labelText: 'Senha *',
-                          helperText:
-                              'Sua senha é validada pelo Drupal e não fica salva no app.',
-                          prefixIcon: const Icon(Icons.lock_outline),
-                          border: const OutlineInputBorder(),
-                          suffixIcon: IconButton(
-                            tooltip: _showPassword
-                                ? 'Ocultar senha'
-                                : 'Mostrar senha',
-                            onPressed: _busy
-                                ? null
-                                : () => setState(
-                                    () => _showPassword = !_showPassword,
-                                  ),
-                            icon: Icon(
-                              _showPassword
-                                  ? Icons.visibility_off_outlined
-                                  : Icons.visibility_outlined,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      Semantics(
-                        button: true,
-                        label: _busy
-                            ? 'Entrando no Portal NERUDS'
-                            : 'Entrar no Portal NERUDS',
-                        child: FilledButton.icon(
-                          onPressed: _busy ? null : _login,
-                          icon: _busy
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.login),
-                          label: Text(_busy ? 'Entrando...' : 'Entrar'),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Bolsistas não precisam de acesso à VPS, SSH ou painel técnico.',
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+        TabBar(
+          controller: _tabs,
+          tabs: const [
+            Tab(icon: Icon(Icons.edit_note_outlined), text: 'Redigir notícia'),
+            Tab(
+              icon: Icon(Icons.rate_review_outlined),
+              text: 'Revisão e publicação',
             ),
+          ],
+        ),
+        Expanded(
+          child: TabBarView(
+            controller: _tabs,
+            children: [_draftForm(context), _draftQueue(context)],
           ),
         ),
       ],
@@ -555,118 +354,261 @@ class _EditorialPageState extends State<EditorialPage> {
   }
 
   Widget _draftForm(BuildContext context) {
+    const steps = ['Conteúdo', 'Conferir texto', 'Enviar rascunho'];
     return ListView(
+      key: const PageStorageKey('editorial-compose-scroll'),
       padding: const EdgeInsets.all(24),
       children: [
-        Text('Criar notícia', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 6),
+        Text(
+          'Preparar uma notícia',
+          style: Theme.of(context).textTheme.headlineSmall,
+        ),
+        const SizedBox(height: 8),
         const Text(
-          'O conteúdo é salvo como rascunho. A publicação continua dependendo das permissões e da revisão editorial.',
+          'Conte uma atividade, divulgue uma chamada ou apresente uma vaga. '
+          'Antes de criar, confira na fila se essa notícia já existe.',
+        ),
+        const SizedBox(height: 16),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: List.generate(
+            steps.length,
+            (index) => Chip(
+              avatar: Icon(
+                index < _step ? Icons.check : Icons.circle_outlined,
+                size: 18,
+              ),
+              label: Text('${index + 1}. ${steps[index]}'),
+              backgroundColor: index == _step
+                  ? Theme.of(context).colorScheme.secondaryContainer
+                  : null,
+            ),
+          ),
         ),
         const SizedBox(height: 20),
-        TextField(
-          controller: _title,
-          enabled: !_busy,
-          maxLength: 255,
-          decoration: const InputDecoration(
-            labelText: 'Título',
-            hintText: 'Ex.: NERUDS participa de atividade no Jalapão',
-            border: OutlineInputBorder(),
+        if (_step == 0)
+          Form(
+            key: _formKey,
+            child: Column(
+              children: [
+                TextFormField(
+                  key: const Key('news-title'),
+                  controller: _title,
+                  enabled: !_busy,
+                  maxLength: 255,
+                  textInputAction: TextInputAction.next,
+                  validator: (value) => (value?.trim().length ?? 0) < 3
+                      ? 'Escreva um título com pelo menos 3 caracteres.'
+                      : null,
+                  decoration: const InputDecoration(
+                    labelText: 'Título da notícia',
+                    hintText: 'Apresente o fato ou a oportunidade com clareza',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  key: const Key('news-summary'),
+                  controller: _summary,
+                  enabled: !_busy,
+                  minLines: 2,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                    labelText: 'Resumo',
+                    helperText:
+                        'Uma apresentação curta para quem consulta o portal.',
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  key: const Key('news-body'),
+                  controller: _body,
+                  enabled: !_busy,
+                  minLines: 8,
+                  maxLines: 18,
+                  validator: (value) => (value?.trim().isEmpty ?? true)
+                      ? 'Inclua o texto que será revisado.'
+                      : null,
+                  decoration: const InputDecoration(
+                    labelText: 'Texto da notícia',
+                    alignLabelWithHint: true,
+                    helperText:
+                        'Inclua fonte, data do fato e autoria confirmadas. '
+                        'Para chamadas e vagas, confira prazo e link de inscrição.',
+                    helperMaxLines: 3,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ExpansionTile(
+                  key: const PageStorageKey('editorial-composition-links'),
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('Vínculos com trabalho existente'),
+                  subtitle: const Text(
+                    'Opcional. Use a tarefa ou oportunidade já cadastrada.',
+                  ),
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        'Oportunidades aprovadas já oferecem a ação de criar rascunho. '
+                        'Use estes identificadores apenas para associar uma redação manual.',
+                      ),
+                    ),
+                    _identifierField(
+                      _opportunityItemId,
+                      'Identificador da oportunidade',
+                    ),
+                    const SizedBox(height: 12),
+                    _identifierField(_missionTaskId, 'Identificador da tarefa'),
+                    const SizedBox(height: 12),
+                  ],
+                ),
+              ],
+            ),
+          )
+        else if (_step == 1)
+          _NewsPreview(
+            title: _title.text.trim(),
+            summary: _summary.text.trim(),
+            body: _body.text.trim(),
+          )
+        else
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Destino: Notícias do portal NERUDS',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(_title.text.trim()),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Será criado um rascunho para revisão. '
+                    'Você poderá acompanhar ajustes e publicação na fila.',
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'A redação só será limpa depois da confirmação de salvamento.',
+                  ),
+                ],
+              ),
+            ),
           ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _summary,
-          enabled: !_busy,
-          minLines: 2,
-          maxLines: 4,
-          decoration: const InputDecoration(
-            labelText: 'Resumo curto',
-            hintText:
-                'Explique em poucas linhas o que aconteceu e por que é relevante.',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _body,
-          enabled: !_busy,
-          minLines: 8,
-          maxLines: 18,
-          decoration: const InputDecoration(
-            labelText: 'Texto',
-            hintText:
-                'Escreva normalmente. Separe parágrafos com uma linha em branco; o sistema formata para o Drupal.',
-            alignLabelWithHint: true,
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _opportunityItemId,
-          enabled: !_busy,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            labelText: 'ID da oportunidade (opcional)',
-            helperText:
-                'Use ao transformar uma oportunidade em pauta editorial.',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _missionTaskId,
-          enabled: !_busy,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            labelText: 'ID da tarefa da missão (opcional)',
-            helperText: 'Mantém o rascunho ligado ao acompanhamento da missão.',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 18),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: FilledButton.icon(
-            onPressed: _busy ? null : _createDraft,
-            icon: const Icon(Icons.save_outlined),
-            label: const Text('Salvar como rascunho'),
-          ),
+        const SizedBox(height: 20),
+        Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            if (_step > 0)
+              OutlinedButton(
+                onPressed: _busy ? null : () => setState(() => _step--),
+                child: const Text('Voltar ao texto'),
+              ),
+            FilledButton.icon(
+              key: const Key('news-next'),
+              onPressed: _busy
+                  ? null
+                  : () {
+                      if (_step == 2) {
+                        _createDraft();
+                      } else if (_step != 0 || _validateComposition()) {
+                        setState(() => _step++);
+                      }
+                    },
+              icon: _busy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(
+                      _step == 2 ? Icons.send_outlined : Icons.arrow_forward,
+                    ),
+              label: Text(
+                _busy
+                    ? 'Salvando...'
+                    : _step == 0
+                    ? 'Conferir texto'
+                    : _step == 1
+                    ? 'Confirmar destino'
+                    : 'Enviar rascunho',
+              ),
+            ),
+          ],
         ),
       ],
     );
   }
 
-  Widget _draftQueue(BuildContext context) {
-    if (_loadingDrafts) {
-      return const Center(child: CircularProgressIndicator());
-    }
+  Widget _identifierField(TextEditingController controller, String label) =>
+      TextFormField(
+        controller: controller,
+        enabled: !_busy,
+        keyboardType: TextInputType.number,
+        validator: (value) =>
+            value != null &&
+                value.trim().isNotEmpty &&
+                (int.tryParse(value.trim()) == null ||
+                    int.parse(value.trim()) <= 0)
+            ? 'Use o identificador numérico de um registro existente.'
+            : null,
+        decoration: InputDecoration(labelText: label),
+      );
 
-    final colorScheme = Theme.of(context).colorScheme;
+  Widget _draftQueue(BuildContext context) {
     return RefreshIndicator(
       onRefresh: _loadDrafts,
       child: ListView(
+        key: const PageStorageKey('editorial-queue-scroll'),
         padding: const EdgeInsets.all(24),
         children: [
           Row(
             children: [
               Expanded(
                 child: Text(
-                  'Aguardando revisão',
+                  'Revisão e publicação',
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
               ),
               IconButton(
-                tooltip: 'Atualizar',
-                onPressed: _loadDrafts,
+                tooltip: 'Atualizar fila',
+                onPressed: _busy || _loadingDrafts ? null : _loadDrafts,
                 icon: const Icon(Icons.refresh),
               ),
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           const Text(
-            'Ações de revisão e publicação respeitam as permissões do seu perfil Drupal.',
+            'Confira o texto e a fonte antes de decidir. '
+            'Uma aprovação editorial e a conferência da página pública são etapas diferentes.',
           ),
+          if (_createdDraft != null) ...[
+            const SizedBox(height: 16),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Rascunho salvo',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    Text(_createdDraft!['title']?.toString() ?? ''),
+                    PortalLinkButton(
+                      label: 'Abrir rascunho no portal',
+                      url: _createdDraft!['edit_url']?.toString(),
+                      editing: true,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 16),
           Wrap(
             spacing: 8,
@@ -678,7 +620,7 @@ class _EditorialPageState extends State<EditorialPage> {
               _queueFilter('Aprovados', 'approved'),
               _queueFilter('Publicados', 'published'),
               FilterChip(
-                label: const Text('Minhas pendências'),
+                label: const Text('Meu trabalho'),
                 selected: _mineOnly,
                 onSelected: _busy
                     ? null
@@ -690,201 +632,369 @@ class _EditorialPageState extends State<EditorialPage> {
             ],
           ),
           const SizedBox(height: 16),
-          if (_drafts.isEmpty)
+          if (_loadingDrafts)
+            const LinearProgressIndicator()
+          else if (_loadError != null)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(_loadError!),
+                    TextButton.icon(
+                      onPressed: _loadDrafts,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Tentar novamente'),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else if (_drafts.isEmpty)
             const Card(
               child: ListTile(
-                leading: Icon(Icons.check_circle_outline),
-                title: Text('Nenhum rascunho visível para esta conta.'),
+                leading: Icon(Icons.inbox_outlined),
+                title: Text('Nenhuma notícia neste filtro.'),
+                subtitle: Text(
+                  'Mude a situação ou confira apenas o seu trabalho.',
+                ),
               ),
             )
           else
-            ..._drafts.map((item) {
-              final review = item['review'] is Map
-                  ? Map<String, dynamic>.from(item['review'] as Map)
-                  : const <String, dynamic>{};
-              final status = review['review_status']?.toString() ?? 'pending';
-              final isAuthor = review['author'] == _loggedUser;
-              final statusColor = _statusColor(status, colorScheme);
-              final events = review['events'] is List
-                  ? List<dynamic>.from(review['events'] as List)
-                  : const <dynamic>[];
-
-              return Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Padding(
-                            padding: EdgeInsets.only(right: 12),
-                            child: Icon(Icons.article_outlined),
-                          ),
-                          Expanded(
-                            child: Text(
-                              item['title']?.toString() ?? 'Sem título',
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      Chip(
-                        label: Text(_statusLabel(status)),
-                        avatar: Icon(
-                          Icons.circle,
-                          color: statusColor,
-                          size: 12,
-                        ),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      Text(
-                        'Autor: ${review['author'] ?? 'não informado'}'
-                        '${item['nid'] != null ? ' · Drupal #${item['nid']}' : ''}',
-                      ),
-                      if (review['opportunity_item_id'] != null ||
-                          review['mission_task_id'] != null) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          [
-                            if (review['opportunity_item_id'] != null)
-                              'Oportunidade #${review['opportunity_item_id']}',
-                            if (review['mission_task_id'] != null)
-                              'Tarefa #${review['mission_task_id']}',
-                          ].join(' · '),
-                        ),
-                      ],
-                      if ((review['review_note']?.toString() ?? '')
-                          .isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          'Último comentário: ${review['review_note']}',
-                          style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                      ],
-                      if (events.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        ExpansionTile(
-                          tilePadding: EdgeInsets.zero,
-                          title: Text(
-                            'Histórico de decisão (${events.length})',
-                          ),
-                          children: events
-                              .map(
-                                (event) => ListTile(
-                                  dense: true,
-                                  title: Text(
-                                    '${_statusLabel(event['event_type']?.toString() ?? '')} · '
-                                    '${event['actor'] ?? 'Sistema'}',
-                                  ),
-                                  subtitle:
-                                      (event['note']?.toString() ?? '').isEmpty
-                                      ? null
-                                      : Text(event['note'].toString()),
-                                ),
-                              )
-                              .toList(),
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          if (AppSession.instance.canReview &&
-                              status != 'published')
-                            OutlinedButton.icon(
-                              onPressed: _busy
-                                  ? null
-                                  : () =>
-                                        _reviewDraft(item, 'changes_requested'),
-                              icon: const Icon(
-                                Icons.assignment_return_outlined,
-                              ),
-                              label: const Text('Devolver para ajuste'),
-                            ),
-                          if (AppSession.instance.canReview &&
-                              status != 'published')
-                            FilledButton.icon(
-                              onPressed: _busy
-                                  ? null
-                                  : () => _reviewDraft(item, 'approved'),
-                              icon: const Icon(Icons.check_circle_outline),
-                              label: const Text('Aprovar'),
-                            ),
-                          if (isAuthor && status == 'changes_requested')
-                            OutlinedButton.icon(
-                              onPressed: _busy
-                                  ? null
-                                  : () => _reviewDraft(item, 'pending'),
-                              icon: const Icon(Icons.send_outlined),
-                              label: const Text('Reenviar'),
-                            ),
-                          if (AppSession.instance.canPublish &&
-                              status == 'approved')
-                            FilledButton.icon(
-                              onPressed: _busy
-                                  ? null
-                                  : () => _publishDraft(item),
-                              icon: const Icon(Icons.publish_outlined),
-                              label: const Text('Publicar'),
-                            ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }),
+            ..._drafts.map((item) => _draftCard(context, item)),
         ],
       ),
     );
   }
 
-  Widget _queueFilter(String label, String? status) {
-    return ChoiceChip(
-      label: Text(label),
-      selected: _reviewStatus == status,
-      onSelected: _busy
-          ? null
-          : (_) {
-              setState(() => _reviewStatus = status);
-              _loadDrafts();
-            },
+  Widget _draftCard(BuildContext context, Map<String, dynamic> item) {
+    final review = item['review'] is Map
+        ? Map<String, dynamic>.from(item['review'] as Map)
+        : const <String, dynamic>{};
+    final status = _reviewState(item);
+    final isAuthor =
+        item['is_owner'] == true ||
+        (item['is_owner'] == null &&
+            review['author'] == AppSession.instance.username);
+    final body = item['body']?.toString().trim() ?? '';
+    final events = (review['events'] as List<dynamic>? ?? const [])
+        .whereType<Map>();
+    final canReview =
+        AppSession.instance.canReview &&
+        status != 'published' &&
+        body.isNotEmpty;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              item['title']?.toString() ?? 'Sem título',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Chip(label: Text(_statusLabel(status))),
+                Text('Responsável: ${review['author'] ?? 'não informado'}'),
+              ],
+            ),
+            if ((review['review_note']?.toString() ?? '').isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text('Orientações da revisão: ${review['review_note']}'),
+            ],
+            const SizedBox(height: 8),
+            ExpansionTile(
+              key: PageStorageKey('news-preview-${item['nid'] ?? item['id']}'),
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Conferir texto e fontes'),
+              initiallyExpanded: true,
+              children: [
+                if (body.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      'O texto não está disponível nesta consulta. '
+                      'Abra a ficha no portal para conferir o conteúdo.',
+                    ),
+                  )
+                else
+                  _NewsPreview(
+                    title: null,
+                    summary: item['summary']?.toString() ?? '',
+                    body: body,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (status != 'published')
+                  PortalLinkButton(
+                    label: 'Editar a ficha existente',
+                    url: item['edit_url']?.toString(),
+                    editing: true,
+                  ),
+                if (status == 'published')
+                  PortalLinkButton(
+                    label: 'Conferir página pública',
+                    url: item['public_url']?.toString(),
+                  ),
+                if (canReview)
+                  OutlinedButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => _reviewDraft(item, 'changes_requested'),
+                    icon: const Icon(Icons.assignment_return_outlined),
+                    label: const Text('Solicitar ajustes'),
+                  ),
+                if (canReview && status != 'approved')
+                  FilledButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => _reviewDraft(item, 'approved'),
+                    icon: const Icon(Icons.check_circle_outline),
+                    label: const Text('Aprovar revisão'),
+                  ),
+                if (isAuthor && status == 'changes_requested')
+                  OutlinedButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => _reviewDraft(item, 'pending'),
+                    icon: const Icon(Icons.send_outlined),
+                    label: const Text('Reenviar para revisão'),
+                  ),
+                if (AppSession.instance.canPublish &&
+                    status == 'approved' &&
+                    body.isNotEmpty)
+                  FilledButton.icon(
+                    onPressed: _busy ? null : () => _publishDraft(item),
+                    icon: const Icon(Icons.publish_outlined),
+                    label: const Text('Publicar'),
+                  ),
+              ],
+            ),
+            if (events.isNotEmpty)
+              ExpansionTile(
+                key: PageStorageKey(
+                  'news-history-${item['nid'] ?? item['id']}',
+                ),
+                tilePadding: EdgeInsets.zero,
+                title: Text('Histórico de decisões (${events.length})'),
+                children: events
+                    .map(
+                      (event) => ListTile(
+                        dense: true,
+                        title: Text(
+                          '${_statusLabel(event['event_type']?.toString() ?? '')} · '
+                          '${event['actor'] ?? 'Sistema'}',
+                        ),
+                        subtitle: Text(event['note']?.toString() ?? ''),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ExpansionTile(
+              key: PageStorageKey('news-links-${item['nid'] ?? item['id']}'),
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Referência e vínculos'),
+              children: [
+                ListTile(
+                  dense: true,
+                  title: Text(
+                    'Ficha ${item['nid'] ?? item['id'] ?? 'não identificada'}',
+                  ),
+                  subtitle: Text(
+                    [
+                      if (review['opportunity_item_id'] != null)
+                        'Oportunidade ${review['opportunity_item_id']}',
+                      if (review['mission_task_id'] != null)
+                        'Tarefa ${review['mission_task_id']}',
+                    ].join(' · '),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 
-  String _statusLabel(String status) {
-    switch (status) {
-      case 'pending':
-        return 'Aguardando revisão';
-      case 'changes_requested':
-        return 'Ajustes solicitados';
-      case 'approved':
-        return 'Aprovado';
-      case 'published':
-        return 'Publicado';
-      case 'draft_registered':
-        return 'Rascunho criado';
-      default:
-        return status;
-    }
+  Widget _queueFilter(String label, String? status) => ChoiceChip(
+    label: Text(label),
+    selected: _reviewStatus == status,
+    onSelected: _busy
+        ? null
+        : (_) {
+            setState(() => _reviewStatus = status);
+            _loadDrafts();
+          },
+  );
+}
+
+String _reviewState(Map<String, dynamic> item) {
+  if (item['published'] == true || item['status'] == 'published') {
+    return 'published';
+  }
+  if (item['status'] is String) return item['status'] as String;
+  final review = item['review'];
+  return review is Map
+      ? review['review_status']?.toString() ?? 'pending'
+      : 'pending';
+}
+
+String _statusLabel(String status) =>
+    const {
+      'pending': 'Aguardando revisão',
+      'changes_requested': 'Ajustes solicitados',
+      'approved': 'Revisão aprovada',
+      'published': 'Publicado',
+      'draft_registered': 'Rascunho criado',
+    }[status] ??
+    status;
+
+class _NewsPreview extends StatelessWidget {
+  const _NewsPreview({
+    required this.title,
+    required this.summary,
+    required this.body,
+  });
+  final String? title;
+  final String summary;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(18),
+    decoration: BoxDecoration(
+      border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+      borderRadius: BorderRadius.circular(12),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (title != null) ...[
+          SelectableText(
+            title!,
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (summary.isNotEmpty) ...[
+          SelectableText(
+            summary,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const Divider(height: 28),
+        ],
+        SelectableText(body),
+      ],
+    ),
+  );
+}
+
+class _ReviewDecisionDialog extends StatefulWidget {
+  const _ReviewDecisionDialog({required this.item, required this.status});
+  final Map<String, dynamic> item;
+  final String status;
+
+  @override
+  State<_ReviewDecisionDialog> createState() => _ReviewDecisionDialogState();
+}
+
+class _ReviewDecisionDialogState extends State<_ReviewDecisionDialog> {
+  final _note = TextEditingController();
+  String? _error;
+
+  @override
+  void dispose() {
+    _note.dispose();
+    super.dispose();
   }
 
-  Color _statusColor(String status, ColorScheme colorScheme) {
-    switch (status) {
-      case 'pending':
-        return Colors.amber.shade800;
-      case 'changes_requested':
-        return colorScheme.error;
-      case 'approved':
-        return Colors.green.shade700;
-      case 'published':
-        return Colors.blue.shade700;
-      default:
-        return colorScheme.outline;
-    }
+  @override
+  Widget build(BuildContext context) {
+    final changes = widget.status == 'changes_requested';
+    final resend = widget.status == 'pending';
+    return AlertDialog(
+      title: Text(
+        changes
+            ? 'Solicitar ajustes'
+            : resend
+            ? 'Reenviar para revisão'
+            : 'Aprovar esta revisão?',
+      ),
+      content: SizedBox(
+        width: 680,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(widget.item['title']?.toString() ?? 'Notícia'),
+              const SizedBox(height: 12),
+              Text(
+                resend
+                    ? 'Confirme que os ajustes foram salvos na mesma ficha do portal.'
+                    : 'Confira fato, autoria, datas e fontes. A decisão ficará no histórico.',
+              ),
+              const SizedBox(height: 16),
+              if (!changes && !resend) ...[
+                _NewsPreview(
+                  title: null,
+                  summary: widget.item['summary']?.toString() ?? '',
+                  body: widget.item['body']?.toString() ?? '',
+                ),
+                const SizedBox(height: 16),
+              ],
+              TextField(
+                controller: _note,
+                minLines: 3,
+                maxLines: 6,
+                decoration: InputDecoration(
+                  labelText: changes
+                      ? 'O que precisa ser ajustado?'
+                      : 'Comentário da revisão',
+                  errorText: _error,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Voltar'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (changes && _note.text.trim().isEmpty) {
+              setState(
+                () => _error = 'Indique uma próxima ação para quem escreveu.',
+              );
+              return;
+            }
+            Navigator.pop(context, _note.text.trim());
+          },
+          child: Text(
+            changes
+                ? 'Registrar ajustes'
+                : resend
+                ? 'Reenviar'
+                : 'Confirmar aprovação',
+          ),
+        ),
+      ],
+    );
   }
 }

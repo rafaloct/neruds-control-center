@@ -68,6 +68,10 @@ FIT_KEYWORDS = {
 }
 
 
+class DraftConflict(ValueError):
+    """Keep an opportunity linked to its single existing Drupal draft."""
+
+
 def init_rss_db() -> None:
     with connect() as conn:
         conn.executescript(
@@ -722,6 +726,14 @@ def decide(
         if not before:
             raise KeyError("item_not_found")
 
+        if before["drupal_draft_id"] and status not in {"rascunho_criado", "arquivado"}:
+            raise DraftConflict(
+                "Esta oportunidade já possui um rascunho no portal. "
+                "Continue no registro existente ou arquive a oportunidade."
+            )
+        if status == "rascunho_criado" and not before["drupal_draft_id"]:
+            raise ValueError("Crie o rascunho no portal antes de marcar esta etapa.")
+
         changes: dict[str, Any] = {
             "status": {"from": before["status"], "to": status}
         }
@@ -769,10 +781,18 @@ def decide(
 
 
 def mark_draft(item_id: int, actor: str, drupal_draft_id: str) -> dict[str, Any]:
+    drupal_draft_id = str(drupal_draft_id or "").strip()
+    if not drupal_draft_id:
+        raise ValueError("O identificador do rascunho Drupal é obrigatório.")
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         before = conn.execute("SELECT * FROM feed_item WHERE id=?", (item_id,)).fetchone()
         if not before:
             raise KeyError("item_not_found")
+        if before["drupal_draft_id"]:
+            if before["drupal_draft_id"] != drupal_draft_id:
+                raise DraftConflict("Esta oportunidade já está vinculada a outro rascunho Drupal.")
+            return item_detail(item_id)
         conn.execute(
             """
             UPDATE feed_item
