@@ -1589,15 +1589,15 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       final match = path == null
           ? null
           : RegExp(r'^/node/(\d+)(?:/edit)?/?$').firstMatch(path);
-      if (parsed == null || match == null) {
-        _message('Informe o endereço (/node/123) ou o número da ficha.');
-        return;
-      }
-      if (parsed.origin.toLowerCase() != portalUri.origin.toLowerCase()) {
+      if (parsed == null || parsed.origin.toLowerCase() != portalUri.origin.toLowerCase() || path == null) {
         _message('O endereço informado não pertence ao portal configurado.');
         return;
       }
-      nid = match.group(1);
+      nid = match?.group(1);
+      // Aliases Pathauto (ex.: /projeto-agrovila) não trazem o nid — o
+      // bridge resolve pelo shortlink da página.
+      nid ??= await _resolvePortalAlias(input);
+      if (nid == null) return;
     }
     final revision = _beginSessionRequest();
     if (revision == null || saving) return;
@@ -1634,6 +1634,29 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       if (_currentSessionRequest(revision)) _message(workflowError(error));
     } finally {
       if (_currentSessionRequest(revision)) setState(() => saving = false);
+    }
+  }
+
+  /// Resolve a same-portal alias to its node id via the bridge; returns
+  /// null after messaging the user when the address cannot be resolved.
+  Future<String?> _resolvePortalAlias(String url) async {
+    try {
+      final response = await http.get(
+        _uri('/portal/node-lookup', {'url': url}),
+        headers: AppSession.instance.authHeaders,
+      );
+      if (!mounted) return null;
+      if (response.statusCode != 200) {
+        _message(_error(response));
+        return null;
+      }
+      final data = Map<String, dynamic>.from(
+        jsonDecode(utf8.decode(response.bodyBytes)),
+      );
+      return data['nid']?.toString();
+    } catch (error) {
+      if (mounted) _message(workflowError(error));
+      return null;
     }
   }
 

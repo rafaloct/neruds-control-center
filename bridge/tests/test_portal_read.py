@@ -293,6 +293,64 @@ async def test_eventos_sorted_with_days_until(async_client, extensionista_sessio
 
 
 @respx.mock
+async def test_node_lookup_resolves_alias_via_shortlink(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    html = (
+        '<html><head>'
+        '<link rel="shortlink" href="/node/55">'
+        '<link rel="canonical" href="/projeto-agrovila">'
+        '</head><body>ficha</body></html>'
+    )
+    respx.get(f"{PORTAL}/projeto-agrovila").mock(
+        return_value=Response(200, text=html)
+    )
+    response = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": f"{PORTAL}/projeto-agrovila"},
+        headers=_auth(token),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["nid"] == "55"
+    assert body["public_url"] == f"{PORTAL}/node/55"
+    assert body["edit_url"] == f"{PORTAL}/node/55/edit"
+
+
+@respx.mock
+async def test_node_lookup_direct_node_and_rejections(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    # /node path resolves without touching the portal
+    direct = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": f"{PORTAL}/node/42"},
+        headers=_auth(token),
+    )
+    assert direct.status_code == 200
+    assert direct.json()["nid"] == "42"
+
+    foreign = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": "https://evil.example/node/9"},
+        headers=_auth(token),
+    )
+    assert foreign.status_code == 422
+
+    respx.get(f"{PORTAL}/pagina-institucional").mock(
+        return_value=Response(200, text="<html>sem shortlink</html>")
+    )
+    not_node = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": f"{PORTAL}/pagina-institucional"},
+        headers=_auth(token),
+    )
+    assert not_node.status_code == 422
+
+
+@respx.mock
 async def test_projetos_resolve_term_names(async_client, extensionista_session):
     token, _ = extensionista_session
     proj = {

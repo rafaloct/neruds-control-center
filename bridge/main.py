@@ -15,7 +15,7 @@ from email.message import EmailMessage
 from html import escape, unescape
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from weakref import WeakValueDictionary
 
 import httpx
@@ -40,8 +40,9 @@ VPS_TAILSCALE_HOST = os.getenv("NERUDS_VPS_TAILSCALE_HOST", "100.111.132.36")
 _PORTAL_NODE_PATH = re.compile(r"^/node/(\d+)(/edit)?/?$")
 
 
-def _portal_node_parts(url: str) -> tuple[str, bool] | None:
-    """Return (nid, is_edit) when *url* is a /node/{nid}[/edit] portal page."""
+def _portal_url_path(url: str) -> str | None:
+    """Portal-relative path when *url* shares the configured portal's
+    scheme, origin and base path; None otherwise."""
     try:
         parsed = urlparse(str(url))
         portal = urlparse(PORTAL_URL)
@@ -70,6 +71,14 @@ def _portal_node_parts(url: str) -> tuple[str, bool] | None:
         if not path.startswith(base_path + "/"):
             return None
         path = path[len(base_path):]
+    return path
+
+
+def _portal_node_parts(url: str) -> tuple[str, bool] | None:
+    """Return (nid, is_edit) when *url* is a /node/{nid}[/edit] portal page."""
+    path = _portal_url_path(url)
+    if path is None:
+        return None
     match = _PORTAL_NODE_PATH.match(path)
     if not match:
         return None
@@ -1119,6 +1128,61 @@ async def portal_eventos(
             "events": events,
             "listing_url": f"{PORTAL_URL}/eventos",
         },
+    )
+
+
+_SHORTLINK = re.compile(
+    r'<link[^>]+rel="shortlink"[^>]+href="([^"]+)"', re.IGNORECASE
+)
+_SHORTLINK_ALT = re.compile(
+    r'<link[^>]+href="([^"]+)"[^>]+rel="shortlink"', re.IGNORECASE
+)
+
+
+@app.get("/portal/node-lookup")
+async def portal_node_lookup(
+    url: str = Query(min_length=1),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Resolve a same-portal URL to its node — /node paths directly,
+    Pathauto aliases via the page's shortlink or a redirect target."""
+    path = _portal_url_path(url)
+    if path is None:
+        raise HTTPException(
+            status_code=422,
+            detail="O endereço informado não pertence ao portal configurado.",
+        )
+    direct = _PORTAL_NODE_PATH.match(path)
+    if direct:
+        nid = direct.group(1)
+        return {
+            "nid": nid,
+            "public_url": f"{PORTAL_URL}/node/{nid}",
+            "edit_url": f"{PORTAL_URL}/node/{nid}/edit",
+        }
+    async with drupal_client(session) as client:
+        response = await client.get(path)
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="O portal não respondeu a esta ficha.",
+        )
+    candidates = [str(response.url)]
+    candidates.extend(
+        _SHORTLINK.findall(response.text) + _SHORTLINK_ALT.findall(response.text)
+    )
+    for candidate in candidates:
+        parts = _portal_node_parts(urljoin(PORTAL_URL, candidate))
+        if parts:
+            nid = parts[0]
+            return {
+                "nid": nid,
+                "public_url": f"{PORTAL_URL}/node/{nid}",
+                "edit_url": f"{PORTAL_URL}/node/{nid}/edit",
+            }
+    raise HTTPException(
+        status_code=422,
+        detail="Este endereço do portal não identifica uma ficha /node.",
     )
 
 
