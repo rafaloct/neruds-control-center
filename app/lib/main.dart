@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app_session.dart';
+import 'attention_panel.dart';
 import 'drupal_api.dart';
 import 'editorial_page.dart';
 import 'identity_page.dart';
@@ -374,7 +375,9 @@ class DashboardPage extends StatelessWidget {
                   'Cuide do acervo, prepare conteúdos e deixe o próximo passo '
                   'claro para quem continua o trabalho.',
                 ),
-                const SizedBox(height: 28),
+                const SizedBox(height: 24),
+                AttentionPanel(onNavigate: onSelect),
+                const SizedBox(height: 24),
                 Card(
                   color: Theme.of(context).colorScheme.primaryContainer,
                   child: Padding(
