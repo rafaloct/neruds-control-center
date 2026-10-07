@@ -33,8 +33,9 @@ def temp_db(tmp_path, monkeypatch):
     review_store.init_review_db()
     identity_store.init_db()
 
-    # Clear main.py in-memory sessions
+    # Clear main.py in-memory sessions and portal read cache
     main.SESSIONS.clear()
+    main._PORTAL_READ_CACHE.clear()
 
     yield db_file
 

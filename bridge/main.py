@@ -18,6 +18,8 @@ from typing import Any
 from weakref import WeakValueDictionary
 
 import httpx
+
+import content_map
 import identity_store
 import mission_automation
 import mission_store
@@ -773,6 +775,403 @@ async def portal_snapshot() -> dict[str, Any]:
             "workflows": workflows,
             "latest_news": latest_news,
         }
+
+
+# --- Real-structure read layer (issue #22) -------------------------------
+# Everything below is read-only against the portal. Field names come from the
+# versioned content_map, which was generated from the portal's real form
+# displays — never inferred.
+_PORTAL_READ_TTL = timedelta(seconds=int(os.getenv("NERUDS_PORTAL_CACHE_SECONDS", "300")))
+_PORTAL_READ_CACHE: dict[str, tuple[datetime, Any]] = {}
+
+
+def _portal_cache_get(key: str) -> Any | None:
+    entry = _PORTAL_READ_CACHE.get(key)
+    if not entry:
+        return None
+    expires, value = entry
+    if datetime.now(timezone.utc) >= expires:
+        _PORTAL_READ_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _portal_cache_set(key: str, value: Any) -> Any:
+    _PORTAL_READ_CACHE[key] = (
+        datetime.now(timezone.utc) + _PORTAL_READ_TTL,
+        value,
+    )
+    return value
+
+
+async def _portal_nodes(
+    client: httpx.AsyncClient, bundle: str
+) -> dict[str, Any]:
+    """JSON:API items for a monitored bundle, cached with its fetch time."""
+    key = f"nodes:{bundle}"
+    cached = _portal_cache_get(key)
+    if cached is not None:
+        return cached
+    meta = content_map.MONITORED_TYPES[bundle]
+    result = await _jsonapi_items(client, bundle, list(meta["fields"]))
+    result["fetched_at"] = datetime.now(timezone.utc).isoformat()
+    return _portal_cache_set(key, result)
+
+
+async def _jsonapi_items(
+    client: httpx.AsyncClient,
+    bundle: str,
+    fields: list[str],
+    *,
+    published_only: bool = True,
+    include: str | None = None,
+) -> dict[str, Any]:
+    """Fetch all JSON:API items for a bundle, following links.next."""
+    sparse = "title,path,status,created,changed,drupal_internal__nid"
+    for name in fields:
+        sparse += f",{name}"
+    params: dict[str, str] = {
+        "fields[node--%s]" % bundle: sparse,
+        "page[limit]": "50",
+    }
+    if published_only:
+        params["filter[status]"] = "1"
+    if include:
+        params["include"] = include
+    items: list[dict[str, Any]] = []
+    included: list[dict[str, Any]] = []
+    url: str | None = f"/jsonapi/node/{bundle}"
+    while url:
+        response = await client.get(url, params=params)
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Drupal não autorizou a leitura de {bundle}.",
+            )
+        payload = response.json()
+        items.extend(payload.get("data", []))
+        included.extend(payload.get("included") or [])
+        url = (payload.get("links") or {}).get("next", {}).get("href")
+        params = {}  # the next link already carries the query string
+    return {"data": items, "included": included}
+
+
+def _field_empty(item: dict[str, Any], name: str, kind: str) -> bool:
+    """Whether a monitored field is empty in a JSON:API item."""
+    if kind == "relationship":
+        rel = (item.get("relationships") or {}).get(name) or {}
+        data = rel.get("data")
+        return data is None or data == []
+    value = (item.get("attributes") or {}).get(name)
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, dict):
+        inner = value.get("uri") or value.get("value") or ""
+        return not str(inner).strip()
+    if isinstance(value, list):
+        return not value
+    return False
+
+
+def _node_ref(item: dict[str, Any]) -> dict[str, Any]:
+    attrs = item.get("attributes") or {}
+    nid = attrs.get("drupal_internal__nid")
+    path = attrs.get("path") or {}
+    urls = _node_urls(nid, path.get("alias") if isinstance(path, dict) else None)
+    return {
+        "nid": nid,
+        "title": attrs.get("title") or "Sem título",
+        "view_url": urls["public_url"],
+        "edit_url": urls["edit_url"],
+    }
+
+
+def _term_names(included: list[dict[str, Any]]) -> dict[str, str]:
+    """Map taxonomy term JSON:API ids to human names."""
+    names: dict[str, str] = {}
+    for term in included:
+        if isinstance(term, dict) and term.get("type", "").startswith("taxonomy_term--"):
+            names[str(term.get("id"))] = (term.get("attributes") or {}).get("name", "")
+    return names
+
+
+def _rel_term_names(
+    item: dict[str, Any], field: str, names: dict[str, str]
+) -> list[str]:
+    rel = (item.get("relationships") or {}).get(field) or {}
+    data = rel.get("data") or []
+    if isinstance(data, dict):
+        data = [data]
+    return [names[str(t.get("id"))] for t in data if str(t.get("id")) in names]
+
+
+@app.get("/portal/lacunas")
+async def portal_lacunas(
+    tipo: str | None = Query(default=None),
+    campo: str | None = Query(default=None),
+    limite_nodes: int = Query(default=20, ge=1, le=200),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Compute real field gaps per monitored bundle via JSON:API."""
+    if tipo and tipo not in content_map.MONITORED_TYPES:
+        raise HTTPException(status_code=422, detail="Tipo não monitorado.")
+    bundles = [tipo] if tipo else list(content_map.MONITORED_TYPES)
+    if campo:
+        if tipo and campo not in content_map.MONITORED_TYPES[tipo]["fields"]:
+            raise HTTPException(
+                status_code=422, detail="Campo não monitorado neste tipo."
+            )
+        if not tipo:
+            bundles = [
+                b
+                for b in bundles
+                if campo in content_map.MONITORED_TYPES[b]["fields"]
+            ]
+            if not bundles:
+                raise HTTPException(
+                    status_code=422, detail="Campo não monitorado em nenhum tipo."
+                )
+    async with drupal_client(session) as client:
+        result_types = []
+        fetched_ats: list[str] = []
+        for bundle in bundles:
+            meta = content_map.MONITORED_TYPES[bundle]
+            fields = meta["fields"]
+            if campo:
+                fields = {campo: fields[campo]}
+            cached = await _portal_nodes(client, bundle)
+            fetched_ats.append(cached["fetched_at"])
+            items = cached["data"]
+            field_rows = []
+            for fname, fmeta in fields.items():
+                missing = [
+                    _node_ref(item)
+                    for item in items
+                    if _field_empty(item, fname, fmeta["kind"])
+                ]
+                if missing:
+                    field_rows.append(
+                        {
+                            "field": fname,
+                            "label": fmeta["label"],
+                            "kind": fmeta["kind"],
+                            "missing": len(missing),
+                            "nodes": missing[:limite_nodes],
+                        }
+                    )
+            view_path = meta.get("view_path")
+            result_types.append(
+                {
+                    "type": bundle,
+                    "label": meta["label"],
+                    "published": len(items),
+                    "listing_url": f"{PORTAL_URL}{view_path}" if view_path else None,
+                    "fields": field_rows,
+                }
+            )
+    return {
+        "fetched_at": min(fetched_ats) if fetched_ats else datetime.now(timezone.utc).isoformat(),
+        "types": result_types,
+    }
+
+
+@app.get("/portal/eventos")
+async def portal_eventos(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Scientific events with real dates from evento_cientifico."""
+    cached = _portal_cache_get("ep:eventos")
+    if cached is not None:
+        return cached
+    async with drupal_client(session) as client:
+        fetched = await _jsonapi_items(
+            client,
+            "evento_cientifico",
+            [
+                "field_data_evento",
+                "field_local_evento",
+                "field_link_inscricao",
+                "field_descricao_evento",
+                "field_organizadores",
+                # storage-level fields: not rendered in the default form,
+                # but returned when they carry real values
+                "field_chamada_trabalhos",
+                "field_link_submissao",
+            ],
+        )
+    today = datetime.now(timezone.utc).date()
+    events = []
+    for item in fetched["data"]:
+        attrs = item.get("attributes") or {}
+        ref = _node_ref(item)
+        raw_date = attrs.get("field_data_evento")
+        event_date = None
+        if raw_date:
+            try:
+                event_date = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+            except ValueError:
+                event_date = None
+        link = attrs.get("field_link_inscricao") or {}
+        submission = attrs.get("field_link_submissao") or {}
+        events.append(
+            {
+                **ref,
+                "date": raw_date,
+                "days_until": (event_date.date() - today).days if event_date else None,
+                "past": bool(event_date and event_date.date() < today),
+                "local": attrs.get("field_local_evento"),
+                "organizers": attrs.get("field_organizadores"),
+                "signup_url": link.get("uri") if isinstance(link, dict) else None,
+                "call_open": bool(attrs.get("field_chamada_trabalhos")),
+                "submission_url": (
+                    submission.get("uri") if isinstance(submission, dict) else None
+                ),
+                "description": _readable_field(attrs.get("field_descricao_evento")),
+            }
+        )
+    events.sort(key=lambda e: (e["past"], e["date"] or "9999"))
+    return _portal_cache_set(
+        "ep:eventos",
+        {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "events": events,
+            "listing_url": f"{PORTAL_URL}/eventos",
+        },
+    )
+
+
+@app.get("/portal/projetos")
+async def portal_projetos(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Research/extension projects and extension actions with real fields."""
+    cached = _portal_cache_get("ep:projetos")
+    if cached is not None:
+        return cached
+    async with drupal_client(session) as client:
+        projetos = await _jsonapi_items(
+            client,
+            "projeto_pesquisa_extensao",
+            [
+                "field_coordenador",
+                "field_data_inicio",
+                "field_data_fim",
+                "field_resumo",
+                "field_status_projeto",
+                "field_tipo_projeto",
+            ],
+            include="field_status_projeto,field_tipo_projeto",
+        )
+        acoes = await _jsonapi_items(
+            client,
+            "acao_extensionista",
+            [
+                "field_local_acao",
+                "field_municipio",
+                "field_tipo_acao",
+                "field_numero_participantes",
+            ],
+            include="field_municipio,field_tipo_acao",
+        )
+    names = _term_names(projetos["included"] + acoes["included"])
+    out_projetos = []
+    for item in projetos["data"]:
+        attrs = item.get("attributes") or {}
+        out_projetos.append(
+            {
+                **_node_ref(item),
+                "coordinator": attrs.get("field_coordenador"),
+                "start": attrs.get("field_data_inicio"),
+                "end": attrs.get("field_data_fim"),
+                "summary": _readable_field(attrs.get("field_resumo")),
+                "status": _rel_term_names(item, "field_status_projeto", names),
+                "kind": _rel_term_names(item, "field_tipo_projeto", names),
+            }
+        )
+    out_acoes = []
+    for item in acoes["data"]:
+        attrs = item.get("attributes") or {}
+        out_acoes.append(
+            {
+                **_node_ref(item),
+                "local": attrs.get("field_local_acao"),
+                "participants": attrs.get("field_numero_participantes"),
+                "municipality": _rel_term_names(item, "field_municipio", names),
+                "kind": _rel_term_names(item, "field_tipo_acao", names),
+            }
+        )
+    return _portal_cache_set(
+        "ep:projetos",
+        {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "projetos": out_projetos,
+            "acoes": out_acoes,
+            "listing_url": f"{PORTAL_URL}/projetos",
+            "map_url": f"{PORTAL_URL}/mapa-projetos",
+        },
+    )
+
+
+# The portal's own RSS views (/feed/noticias, /feed/eventos, ...) currently
+# return HTTP 500. Until they are fixed portal-side, "what is new" is served
+# from JSON:API — same data, guaranteed to exist.
+_PORTAL_SECTION_TYPES = {
+    "noticias": "noticia",
+    "eventos": "evento_cientifico",
+    "projetos": "projeto_pesquisa_extensao",
+    "publicacoes": "publicacao_cientifica",
+}
+
+
+@app.get("/portal/feeds")
+async def portal_feeds(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Latest published items per section, via JSON:API sorted by -created."""
+    cached = _portal_cache_get("ep:feeds")
+    if cached is not None:
+        return cached
+    async with drupal_client(session) as client:
+        sections: dict[str, Any] = {}
+        for key, bundle in _PORTAL_SECTION_TYPES.items():
+            try:
+                response = await client.get(
+                    f"/jsonapi/node/{bundle}",
+                    params={
+                        "fields[node--%s]" % bundle: "title,path,created,drupal_internal__nid",
+                        "filter[status]": "1",
+                        "sort": "-created",
+                        "page[limit]": "10",
+                    },
+                )
+            except httpx.RequestError:
+                sections[key] = {"ok": False, "items": []}
+                continue
+            if response.status_code >= 400:
+                sections[key] = {"ok": False, "items": []}
+                continue
+            items = []
+            for item in response.json().get("data", []):
+                ref = _node_ref(item)
+                items.append(
+                    {
+                        "nid": ref["nid"],
+                        "title": ref["title"],
+                        "link": ref["view_url"],
+                        "published": (item.get("attributes") or {}).get("created", ""),
+                    }
+                )
+            sections[key] = {"ok": True, "items": items}
+    result = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "sections": sections,
+    }
+    # Transient section failures are not cached — the next request retries them.
+    if all(s["ok"] for s in sections.values()):
+        _portal_cache_set("ep:feeds", result)
+    return result
 
 
 @app.get("/content/news/drafts")
