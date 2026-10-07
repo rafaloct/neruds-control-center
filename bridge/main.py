@@ -1179,11 +1179,12 @@ async def news_drafts(
     status: str | None = Query(default=None),
     mine_only: bool = Query(default=False),
     query: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     if status and status not in review_store.REVIEW_STATUSES:
         raise HTTPException(status_code=422, detail="Status de revisão inválido.")
-    params = {"sort": "-changed", "page[limit]": "50"}
+    params = {"sort": "-changed", "page[limit]": str(limit)}
     if status:
         params["filter[status]"] = "1" if status == "published" else "0"
     async with drupal_client(session) as client:
@@ -1193,8 +1194,10 @@ async def news_drafts(
                 status_code=response.status_code,
                 detail="Drupal não autorizou a leitura dos rascunhos.",
             )
+        payload = response.json()
+        truncated = "next" in (payload.get("links") or {})
         drafts = []
-        for item in response.json().get("data", []):
+        for item in payload.get("data", []):
             draft = _news_queue_item(item, session)
             if status and draft["status"] != status:
                 continue
@@ -1209,6 +1212,7 @@ async def news_drafts(
             drafts.append(draft)
         return {
             "items": drafts,
+            "truncated": truncated,
             "can_review": bool(session.get("can_review", False)),
             "can_publish": bool(session.get("can_publish", False)),
         }

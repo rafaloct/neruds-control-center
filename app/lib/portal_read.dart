@@ -63,6 +63,7 @@ class PortalEvent {
     this.local,
     this.signupUrl,
     this.submissionUrl,
+    this.callOpen,
     this.viewUrl,
     this.editUrl,
   });
@@ -75,6 +76,9 @@ class PortalEvent {
   final String? local;
   final String? signupUrl;
   final String? submissionUrl;
+
+  /// False means the call for papers is closed — do not offer submission.
+  final bool? callOpen;
   final String? viewUrl;
   final String? editUrl;
 }
@@ -85,6 +89,23 @@ class FeedItem {
   final String title;
   final String link;
   final String? published;
+}
+
+/// Latest portal items plus the feed sections that failed to answer.
+class FeedList {
+  const FeedList({required this.items, this.failedSections = const []});
+
+  final List<FeedItem> items;
+  final List<String> failedSections;
+}
+
+/// Pending-review count; [truncated] means the bridge hit the page cap and
+/// the real number is higher.
+class ReviewCount {
+  const ReviewCount({required this.count, this.truncated = false});
+
+  final int count;
+  final bool truncated;
 }
 
 /// One panel section: either real data or an explained failure.
@@ -112,8 +133,8 @@ class AttentionData {
   final String? fetchedAt;
   final SectionResult<List<PortalEvent>> eventos;
   final SectionResult<List<GapType>> lacunas;
-  final SectionResult<List<FeedItem>> feeds;
-  final SectionResult<int> pendingReview;
+  final SectionResult<FeedList> feeds;
+  final SectionResult<ReviewCount> pendingReview;
 }
 
 class PortalReadApi {
@@ -165,6 +186,7 @@ class PortalReadApi {
                 local: e['local']?.toString(),
                 signupUrl: e['signup_url']?.toString(),
                 submissionUrl: e['submission_url']?.toString(),
+                callOpen: e['call_open'] as bool?,
                 viewUrl: e['view_url']?.toString(),
                 editUrl: e['edit_url']?.toString(),
               ),
@@ -207,12 +229,17 @@ class PortalReadApi {
             .toList(),
         '/portal/lacunas',
       ),
-      section<List<FeedItem>>((body) {
+      section<FeedList>((body) {
         final items = <FeedItem>[];
+        final failed = <String>[];
         final sections = body['sections'] as Map? ?? const {};
         for (final entry in sections.entries) {
           final value = entry.value;
-          if (value is! Map || value['ok'] != true) continue;
+          if (value is! Map) continue;
+          if (value['ok'] != true) {
+            failed.add(entry.key.toString());
+            continue;
+          }
           for (final item in (value['items'] as List? ?? const [])) {
             if (item is! Map) continue;
             items.add(
@@ -227,13 +254,20 @@ class PortalReadApi {
         items.sort(
           (a, b) => (b.published ?? '').compareTo(a.published ?? ''),
         );
-        return items;
+        return FeedList(items: items, failedSections: failed);
       }, '/portal/feeds'),
-      section<int>(
-        (body) => (body['items'] as List? ?? const []).length,
-        '/content/news/drafts',
-        {'status': 'pending'},
-      ),
+      section<ReviewCount>((body) {
+        final items = body['items'] as List? ?? const [];
+        // Bridges older than the `truncated` flag cap the upstream page at
+        // 50 — a full page without the flag can still hide more drafts.
+        final truncated =
+            body['truncated'] == true ||
+            (body['truncated'] == null && items.length >= 50);
+        return ReviewCount(count: items.length, truncated: truncated);
+      }, '/content/news/drafts', {
+        'status': 'pending',
+        'limit': '200',
+      }),
     ]);
 
     // The panel shows the oldest fetch: nothing is fresher than that.
@@ -242,8 +276,8 @@ class PortalReadApi {
       fetchedAt: stamps.isEmpty ? null : stamps.first,
       eventos: results[0] as SectionResult<List<PortalEvent>>,
       lacunas: results[1] as SectionResult<List<GapType>>,
-      feeds: results[2] as SectionResult<List<FeedItem>>,
-      pendingReview: results[3] as SectionResult<int>,
+      feeds: results[2] as SectionResult<FeedList>,
+      pendingReview: results[3] as SectionResult<ReviewCount>,
     );
   }
 }

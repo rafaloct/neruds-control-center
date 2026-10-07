@@ -41,18 +41,24 @@ class _AttentionPanelState extends State<AttentionPanel> {
   }
 
   Future<void> _reload() async {
-    if (!AppSession.instance.authenticated) {
-      setState(() => _data = null);
-      return;
-    }
-    setState(() => _loading = true);
-    final data = await _api.loadAttention();
-    if (mounted) {
+    final session = AppSession.instance;
+    if (!session.authenticated) {
       setState(() {
-        _data = data;
+        _data = null;
         _loading = false;
       });
+      return;
     }
+    final epoch = session.identityEpoch;
+    setState(() => _loading = true);
+    final data = await _api.loadAttention();
+    // A sign-out/sign-in while the requests were in flight must not let the
+    // previous identity's data overwrite the panel.
+    if (!mounted || AppSession.instance.identityEpoch != epoch) return;
+    setState(() {
+      _data = data;
+      _loading = false;
+    });
   }
 
   String _when(PortalEvent event) {
@@ -201,7 +207,7 @@ class _AttentionPanelState extends State<AttentionPanel> {
   Widget _eventsSection(AttentionData data) {
     final result = data.eventos;
     final upcoming = (result.data ?? const <PortalEvent>[])
-        .where((e) => !e.past)
+        .where((e) => !e.past && e.daysUntil != null)
         .take(3)
         .toList();
     return _section(
@@ -220,28 +226,34 @@ class _AttentionPanelState extends State<AttentionPanel> {
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     title: Text(event.title),
-                    subtitle: Text(
-                      [
-                        _when(event),
-                        if ((event.local ?? '').isNotEmpty) event.local!,
-                      ].join(' · '),
-                    ),
-                    trailing: Wrap(
-                      spacing: 4,
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if ((event.signupUrl ?? '').isNotEmpty)
-                          PortalLinkButton(
-                            label: 'Inscrição',
-                            url: event.signupUrl,
-                          ),
-                        if ((event.submissionUrl ?? '').isNotEmpty)
-                          PortalLinkButton(
-                            label: 'Submissão',
-                            url: event.submissionUrl,
-                          ),
-                        PortalLinkButton(
-                          label: 'Ver',
-                          url: event.viewUrl,
+                        Text(
+                          [
+                            _when(event),
+                            if ((event.local ?? '').isNotEmpty) event.local!,
+                          ].join(' · '),
+                        ),
+                        Wrap(
+                          spacing: 4,
+                          children: [
+                            if ((event.signupUrl ?? '').isNotEmpty)
+                              PortalLinkButton(
+                                label: 'Inscrição',
+                                url: event.signupUrl,
+                              ),
+                            if ((event.submissionUrl ?? '').isNotEmpty &&
+                                event.callOpen != false)
+                              PortalLinkButton(
+                                label: 'Submissão',
+                                url: event.submissionUrl,
+                              ),
+                            PortalLinkButton(
+                              label: 'Ver',
+                              url: event.viewUrl,
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -253,7 +265,8 @@ class _AttentionPanelState extends State<AttentionPanel> {
 
   Widget _reviewSection(AttentionData data) {
     final result = data.pendingReview;
-    final count = result.data ?? 0;
+    final count = result.data?.count ?? 0;
+    final suffix = result.data?.truncated == true ? '+' : '';
     return _section(
       icon: Icons.rate_review_outlined,
       title: 'Revisão editorial',
@@ -265,7 +278,7 @@ class _AttentionPanelState extends State<AttentionPanel> {
       child: Text(
         count == 0
             ? 'Nenhum rascunho aguardando revisão.'
-            : '$count ${count == 1 ? 'rascunho aguarda' : 'rascunhos aguardam'} '
+            : '$count$suffix ${count == 1 ? 'rascunho aguarda' : 'rascunhos aguardam'} '
                   'revisão antes de qualquer publicação.',
       ),
     );
@@ -319,14 +332,24 @@ class _AttentionPanelState extends State<AttentionPanel> {
 
   Widget _feedsSection(AttentionData data) {
     final result = data.feeds;
-    final items = (result.data ?? const <FeedItem>[]).take(4).toList();
+    final feed = result.data;
+    final items = (feed?.items ?? const <FeedItem>[]).take(4).toList();
+    final failed = feed?.failedSections ?? const <String>[];
     return _section(
       icon: Icons.newspaper_outlined,
       title: 'Novidades do portal',
       error: result.error,
-      child: items.isEmpty
-          ? const Text('Nenhuma novidade retornada nesta consulta.')
-          : Column(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (items.isEmpty)
+            Text(
+              failed.isEmpty
+                  ? 'Nenhuma novidade retornada nesta consulta.'
+                  : 'Nenhuma seção de novidades respondeu nesta consulta.',
+            )
+          else
+            Column(
               children: [
                 for (final item in items)
                   ListTile(
@@ -340,6 +363,19 @@ class _AttentionPanelState extends State<AttentionPanel> {
                   ),
               ],
             ),
+          if (failed.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                'Seções indisponíveis nesta consulta: ${failed.join(', ')}.',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

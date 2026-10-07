@@ -110,6 +110,52 @@ async def test_native_uid_controls_mine_filter_even_with_legacy_author_names(
     assert review_store.get_review("602")["owner_uid"] == "999"
 
 
+async def test_news_drafts_limit_param_and_truncated_flag(
+    async_client, revisor_session, respx_mock
+):
+    token, _ = revisor_session
+    route = respx_mock.get(f"{main.PORTAL_URL}/jsonapi/node/noticia").mock(
+        return_value=Response(
+            200,
+            json={
+                "data": [native_news(700, 101)],
+                "links": {"next": {"href": "https://portal.example.org/x"}},
+            },
+        )
+    )
+    response = await async_client.get(
+        "/content/news/drafts?status=pending&limit=200",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert route.calls.last.request.url.params["page[limit]"] == "200"
+    assert response.json()["truncated"] is True
+
+
+async def test_news_drafts_not_truncated_without_next_link(
+    async_client, revisor_session, respx_mock
+):
+    token, _ = revisor_session
+    respx_mock.get(f"{main.PORTAL_URL}/jsonapi/node/noticia").mock(
+        return_value=Response(200, json={"data": [native_news(701, 101)]})
+    )
+    response = await async_client.get(
+        "/content/news/drafts?status=pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["truncated"] is False
+
+
+async def test_news_drafts_rejects_limit_over_cap(async_client, revisor_session):
+    token, _ = revisor_session
+    response = await async_client.get(
+        "/content/news/drafts?limit=201",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize("owner_uid,expected_http", [(101, 200), (999, 403), (None, 403)])
 async def test_native_legacy_draft_resubmission_requires_proven_owner(
     async_client, extensionista_session, respx_mock, owner_uid, expected_http

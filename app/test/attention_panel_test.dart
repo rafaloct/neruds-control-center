@@ -164,7 +164,9 @@ void main() {
         if (request.url.path == '/portal/feeds') {
           return _json({
             'fetched_at': '2026-10-07T15:00:00Z',
-            'sections': {},
+            'sections': {
+              'eventos': {'ok': false, 'items': []},
+            },
           });
         }
         if (request.url.path == '/content/news/drafts') {
@@ -180,6 +182,11 @@ void main() {
     expect(find.text('Prazos de eventos'), findsOneWidget);
     expect(find.text('Lacunas do inventário'), findsOneWidget);
     expect(find.text('Nenhum rascunho aguardando revisão.'), findsOneWidget);
+    // a feed subsection that failed on the bridge is surfaced, not silent
+    expect(
+      find.textContaining('Seções indisponíveis nesta consulta: eventos'),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 }
