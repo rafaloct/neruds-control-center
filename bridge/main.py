@@ -1179,7 +1179,9 @@ async def portal_node_lookup(
         _SHORTLINK.findall(response.text) + _SHORTLINK_ALT.findall(response.text)
     )
     for candidate in candidates:
-        parts = _portal_node_parts(urljoin(PORTAL_URL, candidate))
+        # Relative hrefs resolve against the fetched page URL, like a
+        # browser would — not against the portal root.
+        parts = _portal_node_parts(urljoin(str(response.url), candidate))
         if parts:
             nid = parts[0]
             return {

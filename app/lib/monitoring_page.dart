@@ -424,6 +424,16 @@ class _MonitoringPageState extends State<MonitoringPage> {
               'Lacunas indisponíveis: ${gapErrors.join(' ')}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
+          )
+        else if (data.projetoGaps.data?.truncated == true ||
+            data.acaoGaps.data?.truncated == true)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              'Lacunas exibidas em amostra — fichas além do limite '
+              'podem ter campos ausentes não listados.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           ),
         Text(
           'Projetos (${projects.length})',
@@ -579,6 +589,15 @@ class _MonitoringPageState extends State<MonitoringPage> {
               style: TextStyle(
                 color: Theme.of(context).colorScheme.error,
               ),
+            ),
+          )
+        else if (data.eventoGaps.data?.truncated == true)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              'Lacunas exibidas em amostra — fichas além do limite '
+              'podem ter campos ausentes não listados.',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
           ),
         if (upcoming.isEmpty && undated.isEmpty && past.isEmpty)
