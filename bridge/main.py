@@ -841,8 +841,9 @@ async def _jsonapi_items(
     items: list[dict[str, Any]] = []
     included: list[dict[str, Any]] = []
     url: str | None = f"/jsonapi/node/{bundle}"
+    req_params: dict[str, str] | None = params
     while url:
-        response = await client.get(url, params=params)
+        response = await client.get(url, params=req_params)
         if response.status_code >= 400:
             raise HTTPException(
                 status_code=response.status_code,
@@ -852,7 +853,7 @@ async def _jsonapi_items(
         items.extend(payload.get("data", []))
         included.extend(payload.get("included") or [])
         url = (payload.get("links") or {}).get("next", {}).get("href")
-        params = {}  # the next link already carries the query string
+        req_params = None  # the next link already carries the query string
     return {"data": items, "included": included}
 
 
@@ -1179,36 +1180,52 @@ async def news_drafts(
     status: str | None = Query(default=None),
     mine_only: bool = Query(default=False),
     query: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     if status and status not in review_store.REVIEW_STATUSES:
         raise HTTPException(status_code=422, detail="Status de revisão inválido.")
-    params = {"sort": "-changed", "page[limit]": "50"}
+    params: dict[str, str] | None = {"sort": "-changed", "page[limit]": "50"}
     if status:
         params["filter[status]"] = "1" if status == "published" else "0"
     async with drupal_client(session) as client:
-        response = await client.get("/jsonapi/node/noticia", params=params)
-        if response.status_code >= 400:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail="Drupal não autorizou a leitura dos rascunhos.",
-            )
-        drafts = []
-        for item in response.json().get("data", []):
-            draft = _news_queue_item(item, session)
-            if status and draft["status"] != status:
-                continue
-            if mine_only and not draft["is_owner"]:
-                continue
-            if query and query.strip():
-                needle = query.strip().casefold()
-                title = draft["title"].casefold()
-                author = (draft["review"] or {}).get("author", "").casefold()
-                if needle not in title and needle not in author:
+        # Follow links.next collecting matching drafts up to `limit` — the
+        # review filters below run after Drupal's publication filter, so a
+        # raw page cap would undercount them. `truncated` means unexamined
+        # items could still match.
+        drafts: list[dict[str, Any]] = []
+        truncated = False
+        url: str | None = "/jsonapi/node/noticia"
+        while url and not truncated:
+            response = await client.get(url, params=params)
+            if response.status_code >= 400:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Drupal não autorizou a leitura dos rascunhos.",
+                )
+            payload = response.json()
+            url = (payload.get("links") or {}).get("next", {}).get("href")
+            params = None  # the next link already carries the query string
+            page_items = payload.get("data", [])
+            for index, item in enumerate(page_items):
+                draft = _news_queue_item(item, session)
+                if status and draft["status"] != status:
                     continue
-            drafts.append(draft)
+                if mine_only and not draft["is_owner"]:
+                    continue
+                if query and query.strip():
+                    needle = query.strip().casefold()
+                    title = draft["title"].casefold()
+                    author = (draft["review"] or {}).get("author", "").casefold()
+                    if needle not in title and needle not in author:
+                        continue
+                drafts.append(draft)
+                if len(drafts) >= limit:
+                    truncated = url is not None or index < len(page_items) - 1
+                    break
         return {
             "items": drafts,
+            "truncated": truncated,
             "can_review": bool(session.get("can_review", False)),
             "can_publish": bool(session.get("can_publish", False)),
         }
