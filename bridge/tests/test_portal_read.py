@@ -224,6 +224,8 @@ async def test_eventos_sorted_with_days_until(async_client, extensionista_sessio
                 "field_data_evento": "2020-01-01T09:00:00+00:00",
                 "field_local_evento": "Palmas",
                 "field_link_inscricao": {"uri": "https://ex.org/insc"},
+                "field_chamada_trabalhos": True,
+                "field_link_submissao": {"uri": "https://ex.org/submissao"},
                 "field_descricao_evento": {"value": "<p>Desc</p>", "format": "x"},
                 "path": {"alias": "/evento/10"},
             },
@@ -251,6 +253,9 @@ async def test_eventos_sorted_with_days_until(async_client, extensionista_sessio
     futuro, passado = body["events"]
     assert futuro["past"] is False and futuro["days_until"] > 0
     assert passado["past"] is True and passado["signup_url"] == "https://ex.org/insc"
+    assert passado["call_open"] is True
+    assert passado["submission_url"] == "https://ex.org/submissao"
+    assert futuro["call_open"] is False and futuro["submission_url"] is None
     assert passado["description"] == "Desc"
     assert futuro["edit_url"] == f"{PORTAL}/node/11/edit"
 
@@ -388,7 +393,7 @@ async def test_feeds_isolates_transport_errors(async_client, extensionista_sessi
     import httpx
 
     token, _ = extensionista_session
-    respx.get(f"{PORTAL}/jsonapi/node/noticia").mock(
+    noticias_route = respx.get(f"{PORTAL}/jsonapi/node/noticia").mock(
         side_effect=httpx.ConnectError("boom")
     )
     for bundle in ("evento_cientifico", "projeto_pesquisa_extensao",
@@ -401,6 +406,10 @@ async def test_feeds_isolates_transport_errors(async_client, extensionista_sessi
     body = response.json()
     assert body["sections"]["noticias"] == {"ok": False, "items": []}
     assert body["sections"]["eventos"]["ok"] is True
+    # failed sections are not cached: a second request retries them
+    again = await async_client.get("/portal/feeds", headers=_auth(token))
+    assert again.status_code == 200
+    assert noticias_route.call_count == 2
 
 
 @respx.mock

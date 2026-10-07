@@ -995,6 +995,10 @@ async def portal_eventos(
                 "field_link_inscricao",
                 "field_descricao_evento",
                 "field_organizadores",
+                # storage-level fields: not rendered in the default form,
+                # but returned when they carry real values
+                "field_chamada_trabalhos",
+                "field_link_submissao",
             ],
         )
     today = datetime.now(timezone.utc).date()
@@ -1010,6 +1014,7 @@ async def portal_eventos(
             except ValueError:
                 event_date = None
         link = attrs.get("field_link_inscricao") or {}
+        submission = attrs.get("field_link_submissao") or {}
         events.append(
             {
                 **ref,
@@ -1019,6 +1024,10 @@ async def portal_eventos(
                 "local": attrs.get("field_local_evento"),
                 "organizers": attrs.get("field_organizadores"),
                 "signup_url": link.get("uri") if isinstance(link, dict) else None,
+                "call_open": bool(attrs.get("field_chamada_trabalhos")),
+                "submission_url": (
+                    submission.get("uri") if isinstance(submission, dict) else None
+                ),
                 "description": _readable_field(attrs.get("field_descricao_evento")),
             }
         )
@@ -1155,13 +1164,14 @@ async def portal_feeds(
                     }
                 )
             sections[key] = {"ok": True, "items": items}
-    return _portal_cache_set(
-        "ep:feeds",
-        {
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "sections": sections,
-        },
-    )
+    result = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "sections": sections,
+    }
+    # Transient section failures are not cached — the next request retries them.
+    if all(s["ok"] for s in sections.values()):
+        _portal_cache_set("ep:feeds", result)
+    return result
 
 
 @app.get("/content/news/drafts")

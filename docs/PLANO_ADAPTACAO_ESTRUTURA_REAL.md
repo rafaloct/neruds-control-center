@@ -53,18 +53,25 @@ consegue fornecer por consulta.
 
 2. **`GET /portal/lacunas`** (autenticado):
    pagina JSON:API por tipo, computa nós com campo ausente e retorna
-   `{type, field, missing: [{nid, title, edit_url, view_url}]}`, com totais.
+   `{type, fields: [{field, label, missing, nodes: [{nid, title, view_url,
+   edit_url}]}]}`, com totais. Filtros: `tipo`, `campo` (opcionais; `campo`
+   sozinho filtra só os tipos que o renderizam), `limite_nodes`.
    Volume atual é pequeno (169 publicações) — computar no bridge é viável.
-   Filtros: `type`, `field`, limite.
 
 3. **`GET /portal/eventos`**:
    lê `evento_cientifico` via JSON:API com `field_data_evento`,
-   `field_chamada_trabalhos`, `field_link_inscricao`, `field_link_submissao`;
-   ordena por prazo. Alimenta "congressos/submissões".
+   `field_link_inscricao`, `field_local_evento`, `field_organizadores`,
+   `field_descricao_evento` e os campos de chamada/submissão
+   (`field_chamada_trabalhos`, `field_link_submissao` — nível de storage,
+   retornados quando preenchidos). Ordena por prazo; inclui `days_until`/`past`.
+   Alimenta "congressos/submissões".
 
 4. **`GET /portal/feeds`**:
-   consome os feeds RSS próprios do portal para "novidades por tipo"
-   (notícias, eventos, projetos, publicações).
+   últimos itens publicados por seção (`noticias`, `eventos`, `projetos`,
+   `publicacoes`). Implementado via JSON:API (`sort=-created`) — as views
+   RSS do portal (`/feed/*`) existem mas respondem HTTP 500 hoje; se forem
+   corrigidas no portal, o endpoint pode migrar para elas sem mudar o
+   contrato de seções.
 
 5. **`GET /portal/projetos`**:
    `projeto_pesquisa_extensao` + `acao_extensionista` com status, coordenador,
