@@ -496,6 +496,15 @@ async def test_mission_task_portal_link_via_api(
     )
     assert bad_port.status_code == 422
 
+    # Equivalent spellings canonicalize to the stored form — no relink churn.
+    equivalent = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={"public_url": f"{main.PORTAL_URL}/node/555/?utm_source=x"},
+        headers=headers,
+    )
+    assert equivalent.status_code == 200
+    assert equivalent.json()["public_url"] == f"{main.PORTAL_URL}/node/555"
+
 
 async def test_mission_sla_filters_reports_exports_and_saved_filters(
     async_client, extensionista_session, seeded_mission

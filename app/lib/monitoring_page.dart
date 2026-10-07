@@ -701,7 +701,7 @@ class _FichaMenuItem extends StatelessWidget {
   Future<void> _openForm(BuildContext context) async {
     // The portal address may arrive asynchronously from /portal/snapshot —
     // resolve it at tap time, not when the menu was built.
-    final portal = AppConfig.portalUrl;
+    final portal = AppConfig.portalUrl.replaceAll(RegExp(r'/+$'), '');
     final uri = portal.isEmpty
         ? null
         : AppConfig.webUri('$portal/node/add/$bundle');

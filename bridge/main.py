@@ -1650,22 +1650,36 @@ def mission_task_update(
                 ),
             )
     if "public_url" in changes or "edit_url" in changes:
+        # Canonicalize accepted spellings (/node/N/, query strings, ...) so
+        # equivalent links never look like a relink to the store.
+        for link_field, suffix in (("public_url", ""), ("edit_url", "/edit")):
+            if link_field in changes:
+                nid = _portal_node_nid(changes[link_field])
+                changes[link_field] = f"{PORTAL_URL}/node/{nid}{suffix}"
         # Both links must reference the same node — including the persisted
         # counterpart when a partial PATCH supplies only one side.
         try:
             current_task = mission_store.task_detail(task_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
-        linked_nids = {
-            nid
-            for field in ("public_url", "edit_url")
-            for nid in [
-                _portal_node_nid(
-                    changes.get(field) or current_task.get(field) or ""
+        linked_nids: set[str] = set()
+        for link_field in ("public_url", "edit_url"):
+            if link_field in changes:
+                linked_nids.add(_portal_node_nid(changes[link_field]))
+                continue
+            persisted = current_task.get(link_field)
+            if not persisted:
+                continue
+            persisted_nid = _portal_node_nid(persisted)
+            if persisted_nid is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "O endereço salvo usa um alias sem nid. Envie os "
+                        "dois endereços da nova ficha para revincular."
+                    ),
                 )
-            ]
-            if nid is not None
-        }
+            linked_nids.add(persisted_nid)
         if len(linked_nids) > 1:
             raise HTTPException(
                 status_code=422,
