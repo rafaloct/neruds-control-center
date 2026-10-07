@@ -114,6 +114,10 @@ async def test_news_drafts_follows_next_link_before_review_filter(
     async_client, revisor_session, respx_mock
 ):
     token, _ = revisor_session
+    # Page 1 holds a draft whose review status is not pending — pagination
+    # must continue until page 2 supplies a matching one.
+    review_store.register_draft("700", "Reprovado", "Drupal")
+    review_store.decide("700", actor="revisor.test", status="changes_requested", note=None)
     next_href = f"{main.PORTAL_URL}/jsonapi/node/noticia?page%5Boffset%5D=50"
 
     def respond(request):
@@ -129,11 +133,11 @@ async def test_news_drafts_follows_next_link_before_review_filter(
 
     respx_mock.get(path="/jsonapi/node/noticia").mock(side_effect=respond)
     response = await async_client.get(
-        "/content/news/drafts?status=pending&limit=2",
+        "/content/news/drafts?status=pending&limit=1",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
-    assert len(response.json()["items"]) == 2
+    assert [item["nid"] for item in response.json()["items"]] == [701]
     assert response.json()["truncated"] is False
 
 

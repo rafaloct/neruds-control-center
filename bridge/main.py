@@ -1189,13 +1189,14 @@ async def news_drafts(
     if status:
         params["filter[status]"] = "1" if status == "published" else "0"
     async with drupal_client(session) as client:
-        # Follow links.next up to `limit` items so the review-status filter
-        # below sees every fetched draft — `truncated` only marks a page cap
-        # that could still hide matching items.
-        data: list[dict[str, Any]] = []
+        # Follow links.next collecting matching drafts up to `limit` — the
+        # review filters below run after Drupal's publication filter, so a
+        # raw page cap would undercount them. `truncated` means unexamined
+        # items could still match.
+        drafts: list[dict[str, Any]] = []
         truncated = False
         url: str | None = "/jsonapi/node/noticia"
-        while url:
+        while url and not truncated:
             response = await client.get(url, params=params)
             if response.status_code >= 400:
                 raise HTTPException(
@@ -1203,26 +1204,25 @@ async def news_drafts(
                     detail="Drupal não autorizou a leitura dos rascunhos.",
                 )
             payload = response.json()
-            data.extend(payload.get("data", []))
             url = (payload.get("links") or {}).get("next", {}).get("href")
             params = None  # the next link already carries the query string
-            if len(data) >= limit:
-                truncated = url is not None
-                break
-        drafts = []
-        for item in data:
-            draft = _news_queue_item(item, session)
-            if status and draft["status"] != status:
-                continue
-            if mine_only and not draft["is_owner"]:
-                continue
-            if query and query.strip():
-                needle = query.strip().casefold()
-                title = draft["title"].casefold()
-                author = (draft["review"] or {}).get("author", "").casefold()
-                if needle not in title and needle not in author:
+            page_items = payload.get("data", [])
+            for index, item in enumerate(page_items):
+                draft = _news_queue_item(item, session)
+                if status and draft["status"] != status:
                     continue
-            drafts.append(draft)
+                if mine_only and not draft["is_owner"]:
+                    continue
+                if query and query.strip():
+                    needle = query.strip().casefold()
+                    title = draft["title"].casefold()
+                    author = (draft["review"] or {}).get("author", "").casefold()
+                    if needle not in title and needle not in author:
+                        continue
+                drafts.append(draft)
+                if len(drafts) >= limit:
+                    truncated = url is not None or index < len(page_items) - 1
+                    break
         return {
             "items": drafts,
             "truncated": truncated,
