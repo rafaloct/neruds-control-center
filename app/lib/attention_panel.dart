@@ -50,11 +50,16 @@ class _AttentionPanelState extends State<AttentionPanel> {
       return;
     }
     final epoch = session.identityEpoch;
+    final token = session.token;
     setState(() => _loading = true);
     final data = await _api.loadAttention();
-    // A sign-out/sign-in while the requests were in flight must not let the
-    // previous identity's data overwrite the panel.
-    if (!mounted || AppSession.instance.identityEpoch != epoch) return;
+    // A sign-out/sign-in or same-user reauthentication while the requests
+    // were in flight must not let stale data overwrite the panel.
+    if (!mounted ||
+        AppSession.instance.identityEpoch != epoch ||
+        AppSession.instance.token != token) {
+      return;
+    }
     setState(() {
       _data = data;
       _loading = false;
@@ -216,7 +221,10 @@ class _AttentionPanelState extends State<AttentionPanel> {
       error: result.error,
       trailing: PortalLinkButton(
         label: 'Todos os eventos',
-        url: '${AppConfig.portalUrl}/eventos',
+        url: data.eventsListingUrl ??
+            (AppConfig.portalUrl.isEmpty
+                ? null
+                : '${AppConfig.portalUrl}/eventos'),
       ),
       child: upcoming.isEmpty
           ? const Text('Nenhum evento futuro com data registrada no portal.')

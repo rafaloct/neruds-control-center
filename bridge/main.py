@@ -841,8 +841,9 @@ async def _jsonapi_items(
     items: list[dict[str, Any]] = []
     included: list[dict[str, Any]] = []
     url: str | None = f"/jsonapi/node/{bundle}"
+    req_params: dict[str, str] | None = params
     while url:
-        response = await client.get(url, params=params)
+        response = await client.get(url, params=req_params)
         if response.status_code >= 400:
             raise HTTPException(
                 status_code=response.status_code,
@@ -852,7 +853,7 @@ async def _jsonapi_items(
         items.extend(payload.get("data", []))
         included.extend(payload.get("included") or [])
         url = (payload.get("links") or {}).get("next", {}).get("href")
-        params = {}  # the next link already carries the query string
+        req_params = None  # the next link already carries the query string
     return {"data": items, "included": included}
 
 
@@ -1184,20 +1185,32 @@ async def news_drafts(
 ) -> dict[str, Any]:
     if status and status not in review_store.REVIEW_STATUSES:
         raise HTTPException(status_code=422, detail="Status de revisão inválido.")
-    params = {"sort": "-changed", "page[limit]": str(limit)}
+    params: dict[str, str] | None = {"sort": "-changed", "page[limit]": "50"}
     if status:
         params["filter[status]"] = "1" if status == "published" else "0"
     async with drupal_client(session) as client:
-        response = await client.get("/jsonapi/node/noticia", params=params)
-        if response.status_code >= 400:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail="Drupal não autorizou a leitura dos rascunhos.",
-            )
-        payload = response.json()
-        truncated = "next" in (payload.get("links") or {})
+        # Follow links.next up to `limit` items so the review-status filter
+        # below sees every fetched draft — `truncated` only marks a page cap
+        # that could still hide matching items.
+        data: list[dict[str, Any]] = []
+        truncated = False
+        url: str | None = "/jsonapi/node/noticia"
+        while url:
+            response = await client.get(url, params=params)
+            if response.status_code >= 400:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Drupal não autorizou a leitura dos rascunhos.",
+                )
+            payload = response.json()
+            data.extend(payload.get("data", []))
+            url = (payload.get("links") or {}).get("next", {}).get("href")
+            params = None  # the next link already carries the query string
+            if len(data) >= limit:
+                truncated = url is not None
+                break
         drafts = []
-        for item in payload.get("data", []):
+        for item in data:
             draft = _news_queue_item(item, session)
             if status and draft["status"] != status:
                 continue

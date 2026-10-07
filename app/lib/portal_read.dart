@@ -127,6 +127,7 @@ class AttentionData {
     required this.lacunas,
     required this.feeds,
     required this.pendingReview,
+    this.eventsListingUrl,
   });
 
   /// Oldest fetch timestamp across the sections that answered.
@@ -135,6 +136,9 @@ class AttentionData {
   final SectionResult<List<GapType>> lacunas;
   final SectionResult<FeedList> feeds;
   final SectionResult<ReviewCount> pendingReview;
+
+  /// Public events listing reported by the bridge (absolute portal URL).
+  final String? eventsListingUrl;
 }
 
 class PortalReadApi {
@@ -161,16 +165,20 @@ class PortalReadApi {
       FutureOr<T> Function(Map<String, dynamic> body) parse,
       String path, [
       Map<String, String>? q,
+      void Function(Map<String, dynamic> body)? inspect,
     ]) async {
       try {
         final body = await get(path, q);
         final stamp = body['fetched_at']?.toString();
         if (stamp != null && stamp.isNotEmpty) stamps.add(stamp);
+        inspect?.call(body);
         return SectionResult.ok(await parse(body));
       } catch (error) {
         return SectionResult.failure(workflowError(error));
       }
     }
+
+    String? eventsListingUrl;
 
     final results = await Future.wait([
       section<List<PortalEvent>>(
@@ -193,6 +201,8 @@ class PortalReadApi {
             )
             .toList(),
         '/portal/eventos',
+        null,
+        (body) => eventsListingUrl = body['listing_url']?.toString(),
       ),
       section<List<GapType>>(
         (body) => (body['types'] as List? ?? const [])
@@ -278,6 +288,7 @@ class PortalReadApi {
       lacunas: results[1] as SectionResult<List<GapType>>,
       feeds: results[2] as SectionResult<FeedList>,
       pendingReview: results[3] as SectionResult<ReviewCount>,
+      eventsListingUrl: eventsListingUrl,
     );
   }
 }

@@ -110,11 +110,38 @@ async def test_native_uid_controls_mine_filter_even_with_legacy_author_names(
     assert review_store.get_review("602")["owner_uid"] == "999"
 
 
-async def test_news_drafts_limit_param_and_truncated_flag(
+async def test_news_drafts_follows_next_link_before_review_filter(
     async_client, revisor_session, respx_mock
 ):
     token, _ = revisor_session
-    route = respx_mock.get(f"{main.PORTAL_URL}/jsonapi/node/noticia").mock(
+    next_href = f"{main.PORTAL_URL}/jsonapi/node/noticia?page%5Boffset%5D=50"
+
+    def respond(request):
+        if request.url.params.get("page[offset]") == "50":
+            return Response(200, json={"data": [native_news(701, 101)]})
+        return Response(
+            200,
+            json={
+                "data": [native_news(700, 101)],
+                "links": {"next": {"href": next_href}},
+            },
+        )
+
+    respx_mock.get(path="/jsonapi/node/noticia").mock(side_effect=respond)
+    response = await async_client.get(
+        "/content/news/drafts?status=pending&limit=2",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 2
+    assert response.json()["truncated"] is False
+
+
+async def test_news_drafts_truncated_when_cap_hides_more_pages(
+    async_client, revisor_session, respx_mock
+):
+    token, _ = revisor_session
+    respx_mock.get(f"{main.PORTAL_URL}/jsonapi/node/noticia").mock(
         return_value=Response(
             200,
             json={
@@ -124,11 +151,10 @@ async def test_news_drafts_limit_param_and_truncated_flag(
         )
     )
     response = await async_client.get(
-        "/content/news/drafts?status=pending&limit=200",
+        "/content/news/drafts?status=pending&limit=1",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
-    assert route.calls.last.request.url.params["page[limit]"] == "200"
     assert response.json()["truncated"] is True
 
 
