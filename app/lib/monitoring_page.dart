@@ -571,6 +571,16 @@ class _MonitoringPageState extends State<MonitoringPage> {
           ),
         ]),
         const SizedBox(height: 12),
+        if (data.eventoGaps.error != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              'Lacunas indisponíveis: ${data.eventoGaps.error}',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.error,
+              ),
+            ),
+          ),
         if (upcoming.isEmpty && undated.isEmpty && past.isEmpty)
           const Text('Nenhum evento registrado no portal.'),
         if (upcoming.isNotEmpty) ...[
@@ -652,8 +662,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
     required String feedSection,
     Widget? extraAction,
   }) {
-    if (!result.ok) return ListView(children: [_sectionError(result.error!)]);
-    final nodes = result.data!;
+    final nodes = result.data ?? const <GapNode>[];
     final feed = data.feeds;
     final latest = (feed.data?.items ?? const <FeedItem>[])
         .where((i) => i.section == feedSection)
@@ -670,11 +679,18 @@ class _MonitoringPageState extends State<MonitoringPage> {
         ]),
         const SizedBox(height: 12),
         Text(
-          'Fichas com lacunas (${nodes.length})',
+          result.ok
+              ? 'Fichas com lacunas (${nodes.length})'
+              : 'Fichas com lacunas',
           style: Theme.of(context).textTheme.titleMedium,
         ),
         const SizedBox(height: 6),
-        if (nodes.isEmpty)
+        if (!result.ok)
+          Text(
+            result.error!,
+            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          )
+        else if (nodes.isEmpty)
           const Text('Nenhum campo monitorado ausente nesta consulta.')
         else
           for (final node in nodes)

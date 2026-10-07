@@ -860,15 +860,25 @@ def _portal_cache_set(key: str, value: Any) -> Any:
 
 
 async def _portal_nodes(
-    client: httpx.AsyncClient, bundle: str
+    client: httpx.AsyncClient,
+    bundle: str,
+    *,
+    drafts: bool = False,
+    owner: str = "",
 ) -> dict[str, Any]:
-    """JSON:API items for a monitored bundle, cached with its fetch time."""
-    key = f"nodes:{bundle}"
+    """JSON:API items for a monitored bundle, cached with its fetch time.
+
+    Draft-aware reads are cached per requesting user — unpublished
+    visibility is per-session and must not cross accounts.
+    """
+    key = f"nodes:{bundle}:{owner}" if drafts else f"nodes:{bundle}"
     cached = _portal_cache_get(key)
     if cached is not None:
         return cached
     meta = content_map.MONITORED_TYPES[bundle]
-    result = await _jsonapi_items(client, bundle, list(meta["fields"]))
+    result = await _jsonapi_items(
+        client, bundle, list(meta["fields"]), published_only=not drafts
+    )
     result["fetched_at"] = datetime.now(timezone.utc).isoformat()
     return _portal_cache_set(key, result)
 
@@ -968,6 +978,7 @@ async def portal_lacunas(
     tipo: str | None = Query(default=None),
     campo: str | None = Query(default=None),
     limite_nodes: int = Query(default=20, ge=1, le=200),
+    incluir_rascunhos: bool = Query(default=False),
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Compute real field gaps per monitored bundle via JSON:API."""
@@ -997,7 +1008,12 @@ async def portal_lacunas(
             fields = meta["fields"]
             if campo:
                 fields = {campo: fields[campo]}
-            cached = await _portal_nodes(client, bundle)
+            cached = await _portal_nodes(
+                client,
+                bundle,
+                drafts=incluir_rascunhos,
+                owner=session["username"] if incluir_rascunhos else "",
+            )
             fetched_ats.append(cached["fetched_at"])
             items = cached["data"]
             field_rows = []

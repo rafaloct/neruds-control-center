@@ -595,7 +595,13 @@ class PortalReadApi {
         stamps,
         _gapNodes,
         '/portal/lacunas',
-        {'tipo': 'evento_cientifico', 'limite_nodes': '200'},
+        // Drafts included so the event tab can show gaps on rascunhos
+        // the session can see; the bridge scopes this cache per user.
+        {
+          'tipo': 'evento_cientifico',
+          'limite_nodes': '200',
+          'incluir_rascunhos': 'true',
+        },
       ),
     ]);
 

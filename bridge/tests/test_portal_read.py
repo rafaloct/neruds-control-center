@@ -213,6 +213,36 @@ async def test_lacunas_requires_session(async_client):
 
 
 @respx.mock
+async def test_lacunas_drafts_drop_status_filter_and_cache_per_user(
+    async_client, extensionista_session, revisor_session
+):
+    """incluir_rascunhos consulta rascunhos e isola o cache por sessão."""
+    ext_token, _ = extensionista_session
+    rev_token, _ = revisor_session
+    route = respx.get(f"{PORTAL}/jsonapi/node/evento_cientifico").mock(
+        return_value=Response(200, json=_jsonapi_payload([]))
+    )
+    base = "/portal/lacunas?tipo=evento_cientifico"
+
+    await async_client.get(base, headers=_auth(ext_token))
+    published_url = route.calls[0].request.url
+    assert "filter%5Bstatus%5D=1" in str(published_url)
+
+    await async_client.get(f"{base}&incluir_rascunhos=true",
+                           headers=_auth(ext_token))
+    draft_url = route.calls[1].request.url
+    assert "filter" not in str(draft_url)
+
+    # Same user hits the draft cache; another user must fetch again.
+    await async_client.get(f"{base}&incluir_rascunhos=true",
+                           headers=_auth(ext_token))
+    assert route.call_count == 2
+    await async_client.get(f"{base}&incluir_rascunhos=true",
+                           headers=_auth(rev_token))
+    assert route.call_count == 3
+
+
+@respx.mock
 async def test_eventos_sorted_with_days_until(async_client, extensionista_session):
     token, _ = extensionista_session
     items = [
