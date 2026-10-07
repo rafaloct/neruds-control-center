@@ -524,7 +524,7 @@ class PortalReadApi {
         stamps,
         _gapNodes,
         '/portal/lacunas',
-        {'tipo': 'publicacao_cientifica'},
+        {'tipo': 'publicacao_cientifica', 'limite_nodes': '200'},
         (body) =>
             publicacoesListingUrl = typeListingUrl(body, 'publicacao_cientifica'),
       ),
@@ -532,7 +532,7 @@ class PortalReadApi {
         stamps,
         _gapNodes,
         '/portal/lacunas',
-        {'tipo': 'noticia'},
+        {'tipo': 'noticia', 'limite_nodes': '200'},
         (body) => noticiasListingUrl = typeListingUrl(body, 'noticia'),
       ),
       _section<FeedList>(stamps, _parseFeeds, '/portal/feeds'),

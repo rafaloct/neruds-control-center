@@ -27,21 +27,24 @@ class _MonitoringPageState extends State<MonitoringPage> {
   String? _kindFilter;
   String? _municipalityFilter;
 
-  /// Bundles each role may create — the real permissions observed on the
-  /// portal: extensionista/pesquisador only create noticia+relatorio, the
-  /// rest belongs to content_editor/administrator.
+  /// Bundles each role may create — the real permission matrix observed on
+  /// the portal: extensionista/pesquisador create noticia+relatorio,
+  /// content_editor additionally page; the remaining bundles are
+  /// administrator-only.
   static const _createRoles = <String, Set<String>>{
     'noticia': {'extensionista', 'pesquisador', 'content_editor', 'administrator'},
     'relatorio': {'extensionista', 'pesquisador', 'content_editor', 'administrator'},
-    'projeto_pesquisa_extensao': {'content_editor', 'administrator'},
-    'acao_extensionista': {'content_editor', 'administrator'},
-    'evento_cientifico': {'content_editor', 'administrator'},
-    'publicacao_cientifica': {'content_editor', 'administrator'},
+    'page': {'content_editor', 'administrator'},
+    'projeto_pesquisa_extensao': {'administrator'},
+    'acao_extensionista': {'administrator'},
+    'evento_cientifico': {'administrator'},
+    'publicacao_cientifica': {'administrator'},
   };
 
   static const _fichaLabels = <String, String>{
     'noticia': 'Notícia',
     'relatorio': 'Relatório',
+    'page': 'Página',
     'projeto_pesquisa_extensao': 'Projeto de pesquisa e extensão',
     'acao_extensionista': 'Ação extensionista',
     'evento_cientifico': 'Evento científico',
@@ -224,7 +227,6 @@ class _MonitoringPageState extends State<MonitoringPage> {
   }
 
   Widget _newFichaMenu() {
-    final portal = AppConfig.portalUrl;
     return MenuAnchor(
       builder: (context, controller, _) => OutlinedButton.icon(
         onPressed: () =>
@@ -236,7 +238,6 @@ class _MonitoringPageState extends State<MonitoringPage> {
         for (final entry in _fichaLabels.entries)
           _FichaMenuItem(
             label: entry.value,
-            portalUrl: portal,
             bundle: entry.key,
             enabled: _canCreate(entry.key),
           ),
@@ -625,23 +626,18 @@ class _MonitoringPageState extends State<MonitoringPage> {
 class _FichaMenuItem extends StatelessWidget {
   const _FichaMenuItem({
     required this.label,
-    required this.portalUrl,
     required this.bundle,
     required this.enabled,
   });
 
   final String label;
-  final String portalUrl;
   final String bundle;
   final bool enabled;
 
   @override
   Widget build(BuildContext context) {
-    final url = portalUrl.isEmpty ? null : '$portalUrl/node/add/$bundle';
     return MenuItemButton(
-      onPressed: enabled && url != null
-          ? () => _openForm(context, url)
-          : null,
+      onPressed: enabled ? () => _openForm(context) : null,
       child: Row(
         children: [
           Expanded(child: Text(label)),
@@ -655,10 +651,26 @@ class _FichaMenuItem extends StatelessWidget {
     );
   }
 
-  Future<void> _openForm(BuildContext context, String url) async {
-    // Reuse the same confirmed-open flow as edit links.
-    final uri = AppConfig.webUri(url);
-    if (uri == null) return;
+  Future<void> _openForm(BuildContext context) async {
+    // The portal address may arrive asynchronously from /portal/snapshot —
+    // resolve it at tap time, not when the menu was built.
+    final portal = AppConfig.portalUrl;
+    final uri = portal.isEmpty
+        ? null
+        : AppConfig.webUri('$portal/node/add/$bundle');
+    if (uri == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'O endereço do portal ainda não foi descoberto. '
+              'Tente novamente em instantes.',
+            ),
+          ),
+        );
+      }
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(

@@ -431,6 +431,29 @@ async def test_mission_assignment_fields_require_reviewer_permission(
     assert allowed.json()["internal_deadline"] == "2026-12-31"
 
 
+async def test_mission_task_portal_link_via_api(
+    async_client, extensionista_session, seeded_mission
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    task_id = mission_store.list_tasks(1, limit=1)["items"][0]["id"]
+
+    response = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={
+            "public_url": "https://portal.example.org/node/555",
+            "edit_url": "https://portal.example.org/node/555/edit",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["public_url"] == "https://portal.example.org/node/555"
+    assert (
+        response.json()["edit_url"]
+        == "https://portal.example.org/node/555/edit"
+    )
+
+
 async def test_mission_sla_filters_reports_exports_and_saved_filters(
     async_client, extensionista_session, seeded_mission
 ):

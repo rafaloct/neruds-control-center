@@ -171,6 +171,8 @@ class MissionTaskPatch(BaseModel):
     cross_reviewer: str | None = None
     public_check_ok: bool | None = None
     internal_deadline: str | None = None
+    public_url: str | None = None
+    edit_url: str | None = None
     note: str | None = None
     evidence_url: str | None = None
 
