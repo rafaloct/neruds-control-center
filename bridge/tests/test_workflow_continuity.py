@@ -339,6 +339,18 @@ async def test_snapshot_includes_institutional_pages_and_working_news_link(async
             "webform_default",
             "<p>Texto &lt;tags&gt; &lt;3 &amp;amp;<br>Segunda linha.</p>",
         ),
+        (
+            '<div class="js-filter-guidelines"><div data-drupal-format-id="plain_text" '
+            'class="filter-guidelines__item"><h4>Texto puro</h4></div></div>',
+            "plain_text",
+            "Texto <tags> <3 &amp;\nSegunda linha.",
+        ),
+        (
+            '<div class="js-filter-guidelines"><div data-drupal-format-id="content_format" '
+            'class="filter-guidelines__item"><h4>Conteúdo</h4></div></div>',
+            "content_format",
+            "<p>Texto &lt;tags&gt; &lt;3 &amp;amp;<br>Segunda linha.</p>",
+        ),
     ],
 )
 async def test_native_creation_respects_offered_format_and_escapes_only_html(
@@ -377,23 +389,32 @@ async def test_native_creation_respects_offered_format_and_escapes_only_html(
         '<select name="body[0][format]" disabled><option value="plain_text">Simples</option></select>',
         '<select name="body[0][format]"><option value="">Escolha</option>'
         '<option value="full_html" disabled>Indisponível</option></select>',
+        '<div class="js-filter-guidelines"><div data-drupal-format-id="plain_text"></div>'
+        '<div data-drupal-format-id="content_format"></div></div>',
     ],
 )
-async def test_no_available_text_format_stops_before_saving(
+async def test_hidden_format_selector_defers_to_portal_default(
     async_client, extensionista_session, respx_mock, format_field
 ):
     token, _ = extensionista_session
     respx_mock.get(f"{main.PORTAL_URL}/node/add/noticia").mock(
         return_value=Response(200, text=f'<form>{format_field}</form>')
     )
+    save = respx_mock.post(f"{main.PORTAL_URL}/node/add/noticia").mock(
+        return_value=Response(302, headers={"location": "/node/904"})
+    )
+    literal = "Texto <tags> <3 &amp;\nSegunda linha."
     response = await async_client.post(
         "/content/news/draft",
-        json={"title": "Registro bloqueado", "body": "Conteúdo conferido."},
+        json={"title": "Registro conferido", "body": literal},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert response.status_code == 403
-    assert "não ofereceu um formato" in response.json()["detail"]
-    assert all(call.request.method == "GET" for call in respx_mock.calls)
+    assert response.status_code == 200
+    fields = parse_qs(save.calls.last.request.content.decode())
+    assert "body[0][format]" not in fields
+    assert fields["body[0][value]"] == [literal]
+    assert fields["status[value]"] == ["0"]
+    assert response.json()["id"] == "904"
 
 
 async def test_plain_text_draft_review_preserves_literal_content(

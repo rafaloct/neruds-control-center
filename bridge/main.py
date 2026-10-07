@@ -86,22 +86,32 @@ class HiddenInputParser(HTMLParser):
         self._format_select_disabled = False
         self._format_group_disabled = False
         self._format_options: list[tuple[str, bool]] = []
+        self._guideline_format_ids: set[str] = set()
 
     @property
     def body_format(self) -> str | None:
-        if not self._format_select_seen:
+        if (
+            self._format_select_seen
+            and not self._format_select_disabled
+            and self._format_options
+        ):
+            return next(
+                (value for value, selected in self._format_options if selected),
+                self._format_options[0][0],
+            )
+        if self._hidden_body_format is not None:
             return self._hidden_body_format
-        if self._format_select_disabled or not self._format_options:
-            return None
-        return next(
-            (value for value, selected in self._format_options if selected),
-            self._format_options[0][0],
-        )
+        if len(self._guideline_format_ids) == 1:
+            return next(iter(self._guideline_format_ids))
+        return None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         data = dict(attrs)
         name = data.get("name")
+        guideline_format = data.get("data-drupal-format-id")
+        if guideline_format:
+            self._guideline_format_ids.add(guideline_format)
         if tag == "select" and name == "body[0][format]":
             self._format_select_seen = True
             self._in_format_select = True
@@ -457,22 +467,17 @@ async def _create_news_draft_internal(
         parser = HiddenInputParser()
         parser.feed(form.text)
         text_format = parser.body_format
-        if text_format is None:
-            raise HTTPException(
-                status_code=403,
-                detail="Drupal não ofereceu um formato de texto para esta conta. Confira o formulário no portal.",
-            )
         fields = parser.fields
+        use_html = text_format is not None and text_format != "plain_text"
         fields.update(
             {
                 "title[0][value]": title,
-                "body[0][summary]": summary
-                if text_format == "plain_text"
-                else plain_to_basic_html(summary),
-                "body[0][value]": body
-                if text_format == "plain_text"
-                else plain_to_basic_html(body),
-                "body[0][format]": text_format,
+                "body[0][summary]": plain_to_basic_html(summary)
+                if use_html
+                else summary,
+                "body[0][value]": plain_to_basic_html(body)
+                if use_html
+                else body,
                 "status[value]": "0",
                 "field_data_noticia[0][value][date]": publication_date
                 or datetime.now().date().isoformat(),
@@ -480,6 +485,10 @@ async def _create_news_draft_internal(
                 "op": fields.get("op", "Salvar"),
             }
         )
+        if text_format is None:
+            fields.pop("body[0][format]", None)
+        else:
+            fields["body[0][format]"] = text_format
         if publication_date:
             fields["field_data_publicacao[0][value][date]"] = publication_date
 
