@@ -269,7 +269,7 @@ class PortalReadApi {
       headers: AppSession.instance.authHeaders,
     );
     if (response.statusCode != 200) {
-      throw http.ClientException('HTTP ${response.statusCode}');
+      throw HttpStatusException(response.statusCode);
     }
     return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
   }

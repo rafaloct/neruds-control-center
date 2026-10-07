@@ -1611,6 +1611,9 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       if (!_currentSessionRequest(revision)) return;
       setState(() {
         _applyTask(data, preserveEdits: true);
+        // preserveEdits skips the checkbox, but a relink resets the
+        // server-side verification — reflect that immediately.
+        publicCheck = data['public_check_ok'] == true;
         _didChange = true;
       });
       _message('Ficha $nid vinculada a esta tarefa.');

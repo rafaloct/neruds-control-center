@@ -441,17 +441,28 @@ async def test_mission_task_portal_link_via_api(
     response = await async_client.patch(
         f"/mission-tasks/{task_id}",
         json={
-            "public_url": "https://portal.example.org/node/555",
-            "edit_url": "https://portal.example.org/node/555/edit",
+            "public_url": f"{main.PORTAL_URL}/node/555",
+            "edit_url": f"{main.PORTAL_URL}/node/555/edit",
         },
         headers=headers,
     )
     assert response.status_code == 200
-    assert response.json()["public_url"] == "https://portal.example.org/node/555"
-    assert (
-        response.json()["edit_url"]
-        == "https://portal.example.org/node/555/edit"
+    assert response.json()["public_url"] == f"{main.PORTAL_URL}/node/555"
+    assert response.json()["edit_url"] == f"{main.PORTAL_URL}/node/555/edit"
+
+    foreign = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={"public_url": "https://other.example.org/node/777"},
+        headers=headers,
     )
+    assert foreign.status_code == 422
+
+    not_a_node = await async_client.patch(
+        f"/mission-tasks/{task_id}",
+        json={"public_url": f"{main.PORTAL_URL}/admin/content"},
+        headers=headers,
+    )
+    assert not_a_node.status_code == 422
 
 
 async def test_mission_sla_filters_reports_exports_and_saved_filters(

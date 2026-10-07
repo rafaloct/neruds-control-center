@@ -35,6 +35,14 @@ class _WorkflowResponseException implements Exception {
   final String? message;
 }
 
+/// Raised when a request reaches the service but is refused — carries the
+/// status code so callers can distinguish authz failures from outages.
+class HttpStatusException implements Exception {
+  const HttpStatusException(this.statusCode);
+
+  final int statusCode;
+}
+
 /// Retains actionable, known contract messages without exposing server output.
 Exception workflowResponseError(Response response) {
   try {
@@ -56,6 +64,19 @@ Exception workflowResponseError(Response response) {
 String workflowError(Object error) {
   if (error is _WorkflowResponseException && error.message != null) {
     return error.message!;
+  }
+  if (error is HttpStatusException) {
+    if (error.statusCode == 401) {
+      return 'Sua sessão expirou ou não é válida. Saia e entre novamente '
+          'para continuar.';
+    }
+    if (error.statusCode == 403) {
+      return 'Sua conta não tem permissão para esta consulta no portal. '
+          'Se deveria ter, peça a revisão do seu perfil.';
+    }
+    return 'O serviço não pôde responder a esta consulta agora '
+        '(HTTP ${error.statusCode}). Tente novamente e, se continuar, '
+        'avise a equipe responsável.';
   }
   if (error is AppConfigurationException) {
     return 'Este computador ainda precisa do endereço do serviço NERUDS. '

@@ -15,6 +15,7 @@ from email.message import EmailMessage
 from html import escape, unescape
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urlparse
 from weakref import WeakValueDictionary
 
 import httpx
@@ -35,6 +36,36 @@ load_dotenv()
 
 PORTAL_URL = os.getenv("NERUDS_PORTAL_URL", "https://neruds.org").rstrip("/")
 VPS_TAILSCALE_HOST = os.getenv("NERUDS_VPS_TAILSCALE_HOST", "100.111.132.36")
+
+_PORTAL_NODE_PATH = re.compile(r"^/node/(\d+)(/edit)?/?$")
+
+
+def _portal_node_link(url: str, *, require_edit: bool = False) -> bool:
+    """True when *url* points at a /node/{nid} page on the configured portal."""
+    parsed = urlparse(str(url))
+    portal = urlparse(PORTAL_URL)
+    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
+        return False
+    if (parsed.scheme, parsed.hostname, parsed.port) != (
+        portal.scheme,
+        portal.hostname,
+        portal.port,
+    ):
+        return False
+    base_path = portal.path.rstrip("/")
+    path = parsed.path
+    if base_path:
+        if not path.startswith(base_path + "/"):
+            return False
+        path = path[len(base_path):]
+    match = _PORTAL_NODE_PATH.match(path)
+    if not match:
+        return False
+    if require_edit and match.group(2) != "/edit":
+        return False
+    return True
+
+
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -1582,6 +1613,17 @@ def mission_task_update(
                 "responsável, revisor cruzado ou prazo interno."
             ),
         )
+    for link_field, require_edit in (("public_url", False), ("edit_url", True)):
+        if link_field in changes and not _portal_node_link(
+            changes[link_field], require_edit=require_edit
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "O endereço precisa apontar para uma ficha /node "
+                    "do portal configurado."
+                ),
+            )
     if payload.current_stage and payload.current_stage not in mission_store.WORKFLOW:
         raise HTTPException(status_code=422, detail="Etapa da missão inválida.")
     try:
