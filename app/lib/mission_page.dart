@@ -1538,6 +1538,128 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     }
   }
 
+  Future<void> _linkPortalNode() async {
+    final controller = TextEditingController();
+    final input = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Vincular ficha do portal'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Endereço ou número da ficha',
+            hintText: 'https://portal/node/123 ou 123',
+          ),
+          onSubmitted: (value) => Navigator.pop(context, value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Vincular'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (!mounted || input == null || input.isEmpty) return;
+    final portal = AppConfig.portalUrl;
+    final portalUri = AppConfig.webUri(portal);
+    if (portalUri == null) {
+      _message('O endereço do portal não está configurado nesta estação.');
+      return;
+    }
+    String? nid;
+    if (RegExp(r'^\d+$').hasMatch(input)) {
+      nid = input;
+    } else {
+      final parsed = AppConfig.webUri(input);
+      // A configured portal may live under a path prefix (/neruds/node/1);
+      // URLs on the same origin but outside that prefix do not belong to it.
+      final basePath = portalUri.path.replaceAll(RegExp(r'/+$'), '');
+      final path = parsed != null && basePath.isNotEmpty
+          ? (parsed.path.startsWith('$basePath/')
+              ? parsed.path.substring(basePath.length)
+              : null)
+          : parsed?.path;
+      final match = path == null
+          ? null
+          : RegExp(r'^/node/(\d+)(?:/edit)?/?$').firstMatch(path);
+      if (parsed == null || parsed.origin.toLowerCase() != portalUri.origin.toLowerCase() || path == null) {
+        _message('O endereço informado não pertence ao portal configurado.');
+        return;
+      }
+      nid = match?.group(1);
+      // Aliases Pathauto (ex.: /projeto-agrovila) não trazem o nid — o
+      // bridge resolve pelo shortlink da página.
+      nid ??= await _resolvePortalAlias(input);
+      if (nid == null) return;
+    }
+    final revision = _beginSessionRequest();
+    if (revision == null || saving) return;
+    setState(() => saving = true);
+    try {
+      final response = await http.patch(
+        _uri('/mission-tasks/${widget.taskId}'),
+        headers: AppSession.instance.authHeaders,
+        body: jsonEncode({
+          'public_url':
+              '${portal.replaceAll(RegExp(r'/+$'), '')}/node/$nid',
+          'edit_url':
+              '${portal.replaceAll(RegExp(r'/+$'), '')}/node/$nid/edit',
+        }),
+      );
+      if (!_currentSessionRequest(revision)) return;
+      if (response.statusCode != 200) throw Exception(_error(response));
+      final data = Map<String, dynamic>.from(
+        jsonDecode(utf8.decode(response.bodyBytes)),
+      );
+      if (!_currentSessionRequest(revision)) return;
+      setState(() {
+        _applyTask(data, preserveEdits: true);
+        // preserveEdits skips the checkbox and its baseline, but a relink
+        // resets the server-side verification — reflect both immediately so
+        // the already-persisted change is not treated as unsaved work.
+        publicCheck = data['public_check_ok'] == true;
+        _original['public_check_ok'] = publicCheck;
+        UnsavedWork.instance.setDirty(this, _dirty);
+        _didChange = true;
+      });
+      _message('Ficha $nid vinculada a esta tarefa.');
+    } catch (error) {
+      if (_currentSessionRequest(revision)) _message(workflowError(error));
+    } finally {
+      if (_currentSessionRequest(revision)) setState(() => saving = false);
+    }
+  }
+
+  /// Resolve a same-portal alias to its node id via the bridge; returns
+  /// null after messaging the user when the address cannot be resolved.
+  Future<String?> _resolvePortalAlias(String url) async {
+    try {
+      final response = await http.get(
+        _uri('/portal/node-lookup', {'url': url}),
+        headers: AppSession.instance.authHeaders,
+      );
+      if (!mounted) return null;
+      if (response.statusCode != 200) {
+        _message(_error(response));
+        return null;
+      }
+      final data = Map<String, dynamic>.from(
+        jsonDecode(utf8.decode(response.bodyBytes)),
+      );
+      return data['nid']?.toString();
+    } catch (error) {
+      if (mounted) _message(workflowError(error));
+      return null;
+    }
+  }
+
   String? _portalTarget(Map<String, dynamic> match) {
     final reference = task?['public_url'] ?? task?['edit_url'];
     final base = Uri.tryParse(reference?.toString() ?? '');
@@ -1773,7 +1895,19 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
         'A edição utiliza sua conta e as permissões do Drupal. '
         'O registro desta missão permanece disponível para reunir a evidência.',
       ),
-      const SizedBox(height: 20),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(
+        key: const ValueKey('mission-link-node'),
+        onPressed: saving ? null : _linkPortalNode,
+        icon: const Icon(Icons.link, size: 18),
+        label: const Text('Vincular ficha do portal'),
+      ),
+      const SizedBox(height: 6),
+      const Text(
+        'Quando a ficha for criada pelo formulário do portal, informe o '
+        'endereço ou o número para ligar esta tarefa a ela.',
+      ),
+      const SizedBox(height: 12),
       _Info('Onde pesquisar', data['where_to_search']),
       _Info('Fontes de partida', data['sources']),
       _Info('Consulta sugerida', data['suggested_query']),

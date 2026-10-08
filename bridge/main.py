@@ -15,6 +15,7 @@ from email.message import EmailMessage
 from html import escape, unescape
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urljoin, urlparse
 from weakref import WeakValueDictionary
 
 import httpx
@@ -23,6 +24,7 @@ import content_map
 import identity_store
 import mission_automation
 import mission_store
+import portal_links
 import review_store
 import rss_store
 from dotenv import load_dotenv
@@ -35,6 +37,34 @@ load_dotenv()
 
 PORTAL_URL = os.getenv("NERUDS_PORTAL_URL", "https://neruds.org").rstrip("/")
 VPS_TAILSCALE_HOST = os.getenv("NERUDS_VPS_TAILSCALE_HOST", "100.111.132.36")
+
+_PORTAL_NODE_PATH = portal_links.NODE_PATH_RE
+
+
+def _portal_url_path(url: str) -> str | None:
+    """Portal-relative path when *url* shares the configured portal's
+    scheme, origin and base path; None otherwise."""
+    return portal_links.portal_url_path(url, PORTAL_URL)
+
+
+def _portal_node_parts(url: str) -> tuple[str, bool] | None:
+    """Return (nid, is_edit) when *url* is a /node/{nid}[/edit] portal page."""
+    return portal_links.portal_node_parts(url, PORTAL_URL)
+
+
+def _portal_node_nid(url: str) -> str | None:
+    parts = _portal_node_parts(url)
+    return parts[0] if parts else None
+
+
+def _portal_node_link(url: str, *, require_edit: bool) -> bool:
+    """True when *url* is a portal /node link of exactly the expected kind —
+    the /edit suffix must be present for edit_url and absent for public_url."""
+    return portal_links.portal_node_link(
+        url, require_edit=require_edit, portal_url=PORTAL_URL
+    )
+
+
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
@@ -171,6 +201,8 @@ class MissionTaskPatch(BaseModel):
     cross_reviewer: str | None = None
     public_check_ok: bool | None = None
     internal_deadline: str | None = None
+    public_url: str | None = None
+    edit_url: str | None = None
     note: str | None = None
     evidence_url: str | None = None
 
@@ -805,15 +837,25 @@ def _portal_cache_set(key: str, value: Any) -> Any:
 
 
 async def _portal_nodes(
-    client: httpx.AsyncClient, bundle: str
+    client: httpx.AsyncClient,
+    bundle: str,
+    *,
+    drafts: bool = False,
+    owner: str = "",
 ) -> dict[str, Any]:
-    """JSON:API items for a monitored bundle, cached with its fetch time."""
-    key = f"nodes:{bundle}"
+    """JSON:API items for a monitored bundle, cached with its fetch time.
+
+    Draft-aware reads are cached per requesting user — unpublished
+    visibility is per-session and must not cross accounts.
+    """
+    key = f"nodes:{bundle}:{owner}" if drafts else f"nodes:{bundle}"
     cached = _portal_cache_get(key)
     if cached is not None:
         return cached
     meta = content_map.MONITORED_TYPES[bundle]
-    result = await _jsonapi_items(client, bundle, list(meta["fields"]))
+    result = await _jsonapi_items(
+        client, bundle, list(meta["fields"]), published_only=not drafts
+    )
     result["fetched_at"] = datetime.now(timezone.utc).isoformat()
     return _portal_cache_set(key, result)
 
@@ -913,6 +955,7 @@ async def portal_lacunas(
     tipo: str | None = Query(default=None),
     campo: str | None = Query(default=None),
     limite_nodes: int = Query(default=20, ge=1, le=200),
+    incluir_rascunhos: bool = Query(default=False),
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Compute real field gaps per monitored bundle via JSON:API."""
@@ -942,7 +985,12 @@ async def portal_lacunas(
             fields = meta["fields"]
             if campo:
                 fields = {campo: fields[campo]}
-            cached = await _portal_nodes(client, bundle)
+            cached = await _portal_nodes(
+                client,
+                bundle,
+                drafts=incluir_rascunhos,
+                owner=session["username"] if incluir_rascunhos else "",
+            )
             fetched_ats.append(cached["fetched_at"])
             items = cached["data"]
             field_rows = []
@@ -983,10 +1031,16 @@ async def portal_eventos(
     session: dict[str, Any] = Depends(require_session),
 ) -> dict[str, Any]:
     """Scientific events with real dates from evento_cientifico."""
-    cached = _portal_cache_get("ep:eventos")
+    # Draft visibility is per-session (own/any unpublished permissions), so
+    # the cache must be scoped to the requesting user.
+    cache_key = f"ep:eventos:{session['username']}"
+    cached = _portal_cache_get(cache_key)
     if cached is not None:
         return cached
     async with drupal_client(session) as client:
+        # Monitoring needs drafts too — the portal currently has zero
+        # published events. JSON:API already restricts unpublished content
+        # to sessions whose role allows viewing it.
         fetched = await _jsonapi_items(
             client,
             "evento_cientifico",
@@ -1001,6 +1055,7 @@ async def portal_eventos(
                 "field_chamada_trabalhos",
                 "field_link_submissao",
             ],
+            published_only=False,
         )
     today = datetime.now(timezone.utc).date()
     events = []
@@ -1019,6 +1074,7 @@ async def portal_eventos(
         events.append(
             {
                 **ref,
+                "published": attrs.get("status", True) is not False,
                 "date": raw_date,
                 "days_until": (event_date.date() - today).days if event_date else None,
                 "past": bool(event_date and event_date.date() < today),
@@ -1034,12 +1090,93 @@ async def portal_eventos(
         )
     events.sort(key=lambda e: (e["past"], e["date"] or "9999"))
     return _portal_cache_set(
-        "ep:eventos",
+        cache_key,
         {
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "events": events,
             "listing_url": f"{PORTAL_URL}/eventos",
         },
+    )
+
+
+_SHORTLINK = re.compile(
+    r'<link[^>]+rel="shortlink"[^>]+href="([^"]+)"', re.IGNORECASE
+)
+_SHORTLINK_ALT = re.compile(
+    r'<link[^>]+href="([^"]+)"[^>]+rel="shortlink"', re.IGNORECASE
+)
+
+
+@app.get("/portal/node-lookup")
+async def portal_node_lookup(
+    url: str = Query(min_length=1),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Resolve a same-portal URL to its node — /node paths directly,
+    Pathauto aliases via the page's shortlink or a redirect target."""
+    path = _portal_url_path(url)
+    if path is None:
+        raise HTTPException(
+            status_code=422,
+            detail="O endereço informado não pertence ao portal configurado.",
+        )
+    direct = _PORTAL_NODE_PATH.match(path)
+    if direct:
+        nid = direct.group(1)
+        return {
+            "nid": nid,
+            "public_url": f"{PORTAL_URL}/node/{nid}",
+            "edit_url": f"{PORTAL_URL}/node/{nid}/edit",
+        }
+    async with drupal_client(session, follow_redirects=False) as client:
+        # `path` is portal-relative; httpx appends it to base_url, which
+        # already carries the configured portal base path.
+        response = await client.get(path)
+        # Follow redirects manually: every Location must stay inside the
+        # configured portal, otherwise a redirect endpoint could drive the
+        # bridge into fetching arbitrary internal/external hosts.
+        redirects = 0
+        while response.is_redirect:
+            if redirects >= 5:
+                raise HTTPException(
+                    status_code=422,
+                    detail="O endereço passou por redirecionamentos demais.",
+                )
+            target = urljoin(
+                str(response.url), response.headers.get("location", "")
+            )
+            next_path = _portal_url_path(target)
+            if next_path is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="O endereço redireciona para fora do portal "
+                    "configurado.",
+                )
+            response = await client.get(next_path)
+            redirects += 1
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="O portal não respondeu a esta ficha.",
+        )
+    candidates = [str(response.url)]
+    candidates.extend(
+        _SHORTLINK.findall(response.text) + _SHORTLINK_ALT.findall(response.text)
+    )
+    for candidate in candidates:
+        # Relative hrefs resolve against the fetched page URL, like a
+        # browser would — not against the portal root.
+        parts = _portal_node_parts(urljoin(str(response.url), candidate))
+        if parts:
+            nid = parts[0]
+            return {
+                "nid": nid,
+                "public_url": f"{PORTAL_URL}/node/{nid}",
+                "edit_url": f"{PORTAL_URL}/node/{nid}/edit",
+            }
+    raise HTTPException(
+        status_code=422,
+        detail="Este endereço do portal não identifica uma ficha /node.",
     )
 
 
@@ -1062,8 +1199,15 @@ async def portal_projetos(
                 "field_resumo",
                 "field_status_projeto",
                 "field_tipo_projeto",
+                "field_eixos_tematicos",
+                "field_linhas_pesquisa",
+                "field_ods_interesse",
             ],
-            include="field_status_projeto,field_tipo_projeto",
+            include=(
+                "field_status_projeto,field_tipo_projeto,"
+                "field_eixos_tematicos,field_linhas_pesquisa,"
+                "field_ods_interesse"
+            ),
         )
         acoes = await _jsonapi_items(
             client,
@@ -1089,6 +1233,11 @@ async def portal_projetos(
                 "summary": _readable_field(attrs.get("field_resumo")),
                 "status": _rel_term_names(item, "field_status_projeto", names),
                 "kind": _rel_term_names(item, "field_tipo_projeto", names),
+                "eixos": _rel_term_names(item, "field_eixos_tematicos", names),
+                "linhas_pesquisa": _rel_term_names(
+                    item, "field_linhas_pesquisa", names
+                ),
+                "ods": _rel_term_names(item, "field_ods_interesse", names),
             }
         )
     out_acoes = []
@@ -1580,6 +1729,27 @@ def mission_task_update(
                 "responsável, revisor cruzado ou prazo interno."
             ),
         )
+    for link_field, require_edit in (("public_url", False), ("edit_url", True)):
+        if link_field in changes and not _portal_node_link(
+            changes[link_field], require_edit=require_edit
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "O endereço precisa apontar para uma ficha /node "
+                    "do portal configurado."
+                ),
+            )
+    if "public_url" in changes or "edit_url" in changes:
+        # Canonicalize accepted spellings (/node/N/, query strings, ...) so
+        # equivalent links never look like a relink to the store.
+        for link_field, suffix in (("public_url", ""), ("edit_url", "/edit")):
+            if link_field in changes:
+                nid = _portal_node_nid(changes[link_field])
+                changes[link_field] = f"{PORTAL_URL}/node/{nid}{suffix}"
+        # Both links must reference the same node — the pair check itself
+        # runs inside update_task's transaction so a concurrent PATCH cannot
+        # interleave between this validation and the write.
     if payload.current_stage and payload.current_stage not in mission_store.WORKFLOW:
         raise HTTPException(status_code=422, detail="Etapa da missão inválida.")
     try:
@@ -1592,6 +1762,15 @@ def mission_task_update(
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+    except ValueError as exc:
+        detail = (
+            "O endereço salvo usa um alias sem nid. Envie os "
+            "dois endereços da nova ficha para revincular."
+            if str(exc) == "link_alias_unresolvable"
+            else "Os endereços público e de edição devem apontar "
+            "para a mesma ficha."
+        )
+        raise HTTPException(status_code=422, detail=detail)
 
 
 @app.patch("/mission-tasks/{task_id}/checklists/{kind}/{item_order}")

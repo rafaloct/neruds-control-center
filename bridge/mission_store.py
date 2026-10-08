@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
 import zipfile
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
+
+import portal_links
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -75,6 +78,8 @@ FIELD_MAP = {
     "cross_reviewer": "cross_reviewer",
     "public_check_ok": "public_check_ok",
     "internal_deadline": "internal_deadline",
+    "public_url": "public_url",
+    "edit_url": "edit_url",
 }
 
 WORK_SPECS = {
@@ -176,6 +181,19 @@ def connect() -> sqlite3.Connection:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+PORTAL_URL = os.getenv("NERUDS_PORTAL_URL", "https://neruds.org").rstrip("/")
+
+
+def _link_nid(url: Any) -> str | None:
+    """Extract the node id from a persisted link, but only when the URL
+    provably belongs to the configured portal — a foreign /node/N path
+    must never count as our ficha."""
+    if not url:
+        return None
+    parts = portal_links.portal_node_parts(str(url), PORTAL_URL)
+    return parts[0] if parts else None
 
 
 def _nonempty_rows(rows: list[list[Any]]) -> list[list[Any]]:
@@ -824,9 +842,36 @@ def update_task(
         return task_detail(task_id)
 
     with connect() as conn:
+        # BEGIN IMMEDIATE takes the write lock up front: python-sqlite3
+        # otherwise stays in autocommit until the first DML, leaving a
+        # window between this SELECT/validation and the UPDATE where a
+        # concurrent PATCH could interleave.
+        conn.execute("BEGIN IMMEDIATE")
         before = conn.execute("SELECT * FROM mission_task WHERE id=?", (task_id,)).fetchone()
         if not before:
             raise KeyError("task_not_found")
+
+        if "public_url" in allowed or "edit_url" in allowed:
+            # Pair check inside the transaction: the links being written
+            # must reference the same node as each other and as any
+            # persisted counterpart — verified against the row we hold,
+            # not a snapshot another PATCH could have already replaced.
+            linked_nids: set[str] = set()
+            for link_field in ("public_url", "edit_url"):
+                if link_field in allowed:
+                    nid = _link_nid(allowed[link_field])
+                    if nid:
+                        linked_nids.add(nid)
+                    continue
+                persisted = before[link_field]
+                if not persisted:
+                    continue
+                persisted_nid = _link_nid(persisted)
+                if persisted_nid is None:
+                    raise ValueError("link_alias_unresolvable")
+                linked_nids.add(persisted_nid)
+            if len(linked_nids) > 1:
+                raise ValueError("link_node_mismatch")
 
         actual_changes: dict[str, Any] = {}
         assignments = []
@@ -840,6 +885,36 @@ def update_task(
                 assignments.append(f"{db_field}=?")
                 args.append(value)
                 actual_changes[api_field] = {"from": old_value, "to": value}
+
+        if "public_url" in actual_changes or "edit_url" in actual_changes:
+            # Relinked fichas must not inherit verification results recorded
+            # for the previous node. Compare node identity, not the URL
+            # string: a persisted alias (e.g. /pub/2) canonicalizing to
+            # /node/2 is the same ficha and keeps its checks. Either link
+            # may carry the node identity, so resolve old and new nids
+            # across both fields.
+            new_public = allowed.get("public_url", before["public_url"])
+            new_edit = allowed.get("edit_url", before["edit_url"])
+            old_nid = _link_nid(before["public_url"]) or _link_nid(
+                before["edit_url"]
+            )
+            new_nid = _link_nid(new_public) or _link_nid(new_edit)
+            relinked = new_nid != old_nid
+        else:
+            relinked = False
+        if relinked:
+            if before["public_check_ok"] and "public_check_ok" not in allowed:
+                assignments.append("public_check_ok=?")
+                args.append(0)
+                actual_changes["public_check_ok"] = {"from": 1, "to": 0}
+            url_check_table = conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='task_url_check'"
+            ).fetchone()
+            if url_check_table:
+                conn.execute(
+                    "DELETE FROM task_url_check WHERE task_id=?", (task_id,)
+                )
 
         if assignments:
             assignments.append("updated_at=?")

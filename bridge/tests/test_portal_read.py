@@ -213,6 +213,36 @@ async def test_lacunas_requires_session(async_client):
 
 
 @respx.mock
+async def test_lacunas_drafts_drop_status_filter_and_cache_per_user(
+    async_client, extensionista_session, revisor_session
+):
+    """incluir_rascunhos consulta rascunhos e isola o cache por sessão."""
+    ext_token, _ = extensionista_session
+    rev_token, _ = revisor_session
+    route = respx.get(f"{PORTAL}/jsonapi/node/evento_cientifico").mock(
+        return_value=Response(200, json=_jsonapi_payload([]))
+    )
+    base = "/portal/lacunas?tipo=evento_cientifico"
+
+    await async_client.get(base, headers=_auth(ext_token))
+    published_url = route.calls[0].request.url
+    assert "filter%5Bstatus%5D=1" in str(published_url)
+
+    await async_client.get(f"{base}&incluir_rascunhos=true",
+                           headers=_auth(ext_token))
+    draft_url = route.calls[1].request.url
+    assert "filter" not in str(draft_url)
+
+    # Same user hits the draft cache; another user must fetch again.
+    await async_client.get(f"{base}&incluir_rascunhos=true",
+                           headers=_auth(ext_token))
+    assert route.call_count == 2
+    await async_client.get(f"{base}&incluir_rascunhos=true",
+                           headers=_auth(rev_token))
+    assert route.call_count == 3
+
+
+@respx.mock
 async def test_eventos_sorted_with_days_until(async_client, extensionista_session):
     token, _ = extensionista_session
     items = [
@@ -235,6 +265,7 @@ async def test_eventos_sorted_with_days_until(async_client, extensionista_sessio
             "attributes": {
                 "drupal_internal__nid": 11,
                 "title": "Evento futuro",
+                "status": False,
                 "field_data_evento": "2999-01-01T09:00:00+00:00",
                 "field_local_evento": "Online",
                 "field_link_inscricao": None,
@@ -252,12 +283,117 @@ async def test_eventos_sorted_with_days_until(async_client, extensionista_sessio
     assert [e["title"] for e in body["events"]] == ["Evento futuro", "Evento passado"]
     futuro, passado = body["events"]
     assert futuro["past"] is False and futuro["days_until"] > 0
+    assert futuro["published"] is False and passado["published"] is True
     assert passado["past"] is True and passado["signup_url"] == "https://ex.org/insc"
     assert passado["call_open"] is True
     assert passado["submission_url"] == "https://ex.org/submissao"
     assert futuro["call_open"] is False and futuro["submission_url"] is None
     assert passado["description"] == "Desc"
     assert futuro["edit_url"] == f"{PORTAL}/node/11/edit"
+
+
+@respx.mock
+async def test_node_lookup_resolves_alias_via_shortlink(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    html = (
+        '<html><head>'
+        '<link rel="shortlink" href="/node/55">'
+        '<link rel="canonical" href="/projeto-agrovila">'
+        '</head><body>ficha</body></html>'
+    )
+    respx.get(f"{PORTAL}/projeto-agrovila").mock(
+        return_value=Response(200, text=html)
+    )
+    response = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": f"{PORTAL}/projeto-agrovila"},
+        headers=_auth(token),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["nid"] == "55"
+    assert body["public_url"] == f"{PORTAL}/node/55"
+    assert body["edit_url"] == f"{PORTAL}/node/55/edit"
+
+
+@respx.mock
+async def test_node_lookup_direct_node_and_rejections(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    # /node path resolves without touching the portal
+    direct = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": f"{PORTAL}/node/42"},
+        headers=_auth(token),
+    )
+    assert direct.status_code == 200
+    assert direct.json()["nid"] == "42"
+
+    foreign = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": "https://evil.example/node/9"},
+        headers=_auth(token),
+    )
+    assert foreign.status_code == 422
+
+    respx.get(f"{PORTAL}/pagina-institucional").mock(
+        return_value=Response(200, text="<html>sem shortlink</html>")
+    )
+    not_node = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": f"{PORTAL}/pagina-institucional"},
+        headers=_auth(token),
+    )
+    assert not_node.status_code == 422
+
+
+@respx.mock
+async def test_node_lookup_rejects_redirect_outside_portal(
+    async_client, extensionista_session
+):
+    """Redirects are followed manually — leaving the portal is refused
+    before the external host is ever contacted."""
+    token, _ = extensionista_session
+    external = respx.get("https://evil.example/page").mock(
+        return_value=Response(
+            200, text='<link rel="shortlink" href="/node/77">'
+        )
+    )
+    respx.get(f"{PORTAL}/saida").mock(
+        return_value=Response(
+            302, headers={"Location": "https://evil.example/page"}
+        )
+    )
+    response = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": f"{PORTAL}/saida"},
+        headers=_auth(token),
+    )
+    assert response.status_code == 422
+    assert external.call_count == 0
+
+
+@respx.mock
+async def test_node_lookup_follows_same_portal_redirect(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    respx.get(f"{PORTAL}/antigo").mock(
+        return_value=Response(302, headers={"Location": "/node/88"})
+    )
+    respx.get(f"{PORTAL}/node/88").mock(
+        return_value=Response(200, text="<html>node</html>")
+    )
+    response = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": f"{PORTAL}/antigo"},
+        headers=_auth(token),
+    )
+    assert response.status_code == 200
+    assert response.json()["nid"] == "88"
 
 
 @respx.mock
@@ -277,6 +413,9 @@ async def test_projetos_resolve_term_names(async_client, extensionista_session):
         "relationships": {
             "field_status_projeto": {"data": [{"id": "term-1"}]},
             "field_tipo_projeto": {"data": [{"id": "term-2"}]},
+            "field_eixos_tematicos": {"data": [{"id": "term-5"}]},
+            "field_linhas_pesquisa": {"data": [{"id": "term-6"}]},
+            "field_ods_interesse": {"data": [{"id": "term-7"}]},
         },
     }
     acao = {
@@ -302,6 +441,12 @@ async def test_projetos_resolve_term_names(async_client, extensionista_session):
          "attributes": {"name": "Araguaína"}},
         {"id": "term-4", "type": "taxonomy_term--tipo_acao",
          "attributes": {"name": "Curso"}},
+        {"id": "term-5", "type": "taxonomy_term--eixos_tematicos",
+         "attributes": {"name": "Eixo 1"}},
+        {"id": "term-6", "type": "taxonomy_term--linhas_pesquisa",
+         "attributes": {"name": "Linha A"}},
+        {"id": "term-7", "type": "taxonomy_term--ods",
+         "attributes": {"name": "ODS 4"}},
     ]
     respx.get(f"{PORTAL}/jsonapi/node/projeto_pesquisa_extensao").mock(
         return_value=Response(
@@ -319,6 +464,9 @@ async def test_projetos_resolve_term_names(async_client, extensionista_session):
     p = body["projetos"][0]
     assert p["status"] == ["Em andamento"]
     assert p["kind"] == ["Extensão"]
+    assert p["eixos"] == ["Eixo 1"]
+    assert p["linhas_pesquisa"] == ["Linha A"]
+    assert p["ods"] == ["ODS 4"]
     assert p["coordinator"] == "Maria"
     assert p["summary"] == "Resumo do projeto"
     a = body["acoes"][0]

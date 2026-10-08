@@ -211,8 +211,9 @@ class _AttentionPanelState extends State<AttentionPanel> {
 
   Widget _eventsSection(AttentionData data) {
     final result = data.eventos;
+    // Drafts are for monitoring, not for the shared deadline panel.
     final upcoming = (result.data ?? const <PortalEvent>[])
-        .where((e) => !e.past && e.daysUntil != null)
+        .where((e) => e.published && !e.past && e.daysUntil != null)
         .take(3)
         .toList();
     return _section(

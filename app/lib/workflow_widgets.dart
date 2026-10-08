@@ -35,6 +35,14 @@ class _WorkflowResponseException implements Exception {
   final String? message;
 }
 
+/// Raised when a request reaches the service but is refused — carries the
+/// status code so callers can distinguish authz failures from outages.
+class HttpStatusException implements Exception {
+  const HttpStatusException(this.statusCode);
+
+  final int statusCode;
+}
+
 /// Retains actionable, known contract messages without exposing server output.
 Exception workflowResponseError(Response response) {
   try {
@@ -57,6 +65,19 @@ String workflowError(Object error) {
   if (error is _WorkflowResponseException && error.message != null) {
     return error.message!;
   }
+  if (error is HttpStatusException) {
+    if (error.statusCode == 401) {
+      return 'Sua sessão expirou ou não é válida. Saia e entre novamente '
+          'para continuar.';
+    }
+    if (error.statusCode == 403) {
+      return 'Sua conta não tem permissão para esta consulta no portal. '
+          'Se deveria ter, peça a revisão do seu perfil.';
+    }
+    return 'O serviço não pôde responder a esta consulta agora '
+        '(HTTP ${error.statusCode}). Tente novamente e, se continuar, '
+        'avise a equipe responsável.';
+  }
   if (error is AppConfigurationException) {
     return 'Este computador ainda precisa do endereço do serviço NERUDS. '
         'Peça à equipe técnica a versão configurada do aplicativo.';
@@ -75,6 +96,29 @@ String workflowError(Object error) {
   }
   return 'Não foi possível concluir esta ação. Seus campos continuam nesta tela. '
       'Confira a conexão e tente novamente.';
+}
+
+/// Launches [uri] in the external browser, offering to copy the address
+/// when the browser cannot be opened.
+Future<void> launchExternalUri(BuildContext context, Uri uri) async {
+  var launched = false;
+  try {
+    launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+  } catch (_) {
+    launched = false;
+  }
+  if (launched || !context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: const Text(
+        'O navegador não abriu. Você pode copiar o endereço.',
+      ),
+      action: SnackBarAction(
+        label: 'Copiar link',
+        onPressed: () => Clipboard.setData(ClipboardData(text: uri.toString())),
+      ),
+    ),
+  );
 }
 
 /// Opens existing portal pages in the browser without passing app credentials.
@@ -126,25 +170,7 @@ class PortalLinkButton extends StatelessWidget {
       );
       if (confirmed != true || !context.mounted) return;
     }
-    var launched = false;
-    try {
-      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (_) {
-      launched = false;
-    }
-    if (launched || !context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text(
-          'O navegador não abriu. Você pode copiar o endereço.',
-        ),
-        action: SnackBarAction(
-          label: 'Copiar link',
-          onPressed: () =>
-              Clipboard.setData(ClipboardData(text: uri.toString())),
-        ),
-      ),
-    );
+    await launchExternalUri(context, uri);
   }
 
   @override

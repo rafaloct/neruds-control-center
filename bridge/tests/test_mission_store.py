@@ -5,6 +5,15 @@ import zipfile
 from io import BytesIO
 
 
+@pytest.fixture(autouse=True)
+def portal_url(monkeypatch):
+    """Links in these tests live on a synthetic portal — the store's
+    origin-aware nid extraction must see them as the configured portal."""
+    monkeypatch.setattr(
+        mission_store, "PORTAL_URL", "https://portal.example.org"
+    )
+
+
 def test_seed_from_json(temp_db):
     res = mission_store.seed_from_json(force=True)
     assert res["seeded"] is True
@@ -101,6 +110,152 @@ def test_task_detail_and_update(seeded_mission):
     assert latest_event["from_stage"] == "Triagem" or latest_event["to_stage"] == "Em pesquisa"
     assert latest_event["note"] == "Iniciando pesquisa"
     assert latest_event["evidence_url"] == "https://example.org/evidence1"
+
+
+def test_task_portal_link_is_updatable(seeded_mission):
+    tasks = mission_store.list_tasks(1, limit=5)
+    first_task_id = tasks["items"][0]["id"]
+
+    updated = mission_store.update_task(
+        first_task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": "https://portal.example.org/node/555",
+            "edit_url": "https://portal.example.org/node/555/edit",
+        },
+    )
+    assert updated["public_url"] == "https://portal.example.org/node/555"
+    assert updated["edit_url"] == "https://portal.example.org/node/555/edit"
+    change = updated["events"][0]["changes_json"]
+    assert "public_url" in change and "edit_url" in change
+
+
+def test_task_relink_resets_stale_verifications(seeded_mission):
+    tasks = mission_store.list_tasks(1, limit=5)
+    first_task_id = tasks["items"][0]["id"]
+
+    mission_store.update_task(
+        first_task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": "https://portal.example.org/node/555",
+            "edit_url": "https://portal.example.org/node/555/edit",
+            "public_check_ok": True,
+        },
+    )
+    import mission_automation
+
+    mission_automation.init_automation_db()
+    with mission_store.connect() as conn:
+        conn.execute(
+            "INSERT INTO task_url_check "
+            "(task_id,mission_id,url,ok,http_code,error,checked_at) "
+            "VALUES (?,1,'https://portal.example.org/node/555',1,200,NULL,'now')",
+            (first_task_id,),
+        )
+        conn.commit()
+
+    relinked = mission_store.update_task(
+        first_task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": "https://portal.example.org/node/777",
+            "edit_url": "https://portal.example.org/node/777/edit",
+        },
+    )
+    assert relinked["public_url"] == "https://portal.example.org/node/777"
+    assert relinked["public_check_ok"] is False
+    with mission_store.connect() as conn:
+        row = conn.execute(
+            "SELECT task_id FROM task_url_check WHERE task_id=?",
+            (first_task_id,),
+        ).fetchone()
+    assert row is None
+
+    # An explicitly resubmitted verification survives the relink even when
+    # the boolean itself does not change relative to the stored row.
+    verified = mission_store.update_task(
+        first_task_id,
+        actor="extensionista.test",
+        changes={"public_check_ok": True},
+    )
+    assert verified["public_check_ok"] is True
+    reverified = mission_store.update_task(
+        first_task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": "https://portal.example.org/node/888",
+            "edit_url": "https://portal.example.org/node/888/edit",
+            "public_check_ok": True,
+        },
+    )
+    assert reverified["public_url"] == "https://portal.example.org/node/888"
+    assert reverified["public_check_ok"] is True
+
+
+def test_task_relink_same_node_keeps_verification(seeded_mission):
+    """Alias -> canonical /node/N for the same ficha is not a relink."""
+    tasks = mission_store.list_tasks(1, limit=5)
+    task_id = tasks["items"][0]["id"]
+
+    mission_store.update_task(
+        task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": "https://portal.example.org/pub/alias",
+            "edit_url": "https://portal.example.org/node/555/edit",
+            "public_check_ok": True,
+        },
+    )
+    import mission_automation
+
+    mission_automation.init_automation_db()
+    with mission_store.connect() as conn:
+        conn.execute(
+            "INSERT INTO task_url_check "
+            "(task_id,mission_id,url,ok,http_code,error,checked_at) "
+            "VALUES (?,1,'https://portal.example.org/node/555',1,200,NULL,'now')",
+            (task_id,),
+        )
+        conn.commit()
+
+    canonical = mission_store.update_task(
+        task_id,
+        actor="extensionista.test",
+        changes={"public_url": "https://portal.example.org/node/555"},
+    )
+    assert canonical["public_url"] == "https://portal.example.org/node/555"
+    assert canonical["public_check_ok"] is True
+    with mission_store.connect() as conn:
+        row = conn.execute(
+            "SELECT task_id FROM task_url_check WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+    assert row is not None
+
+
+def test_task_relink_edit_only_resets_verification(seeded_mission):
+    """A legacy task with only an edit_url still loses verification when
+    the linked node changes through that field alone."""
+    tasks = mission_store.list_tasks(1, limit=5)
+    task_id = tasks["items"][0]["id"]
+
+    mission_store.update_task(
+        task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": None,
+            "edit_url": "https://portal.example.org/node/555/edit",
+            "public_check_ok": True,
+        },
+    )
+    relinked = mission_store.update_task(
+        task_id,
+        actor="extensionista.test",
+        changes={"edit_url": "https://portal.example.org/node/777/edit"},
+    )
+    assert relinked["edit_url"] == "https://portal.example.org/node/777/edit"
+    assert relinked["public_check_ok"] is False
 
 
 def test_task_detail_not_found(temp_db):

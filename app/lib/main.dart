@@ -6,6 +6,7 @@ import 'drupal_api.dart';
 import 'editorial_page.dart';
 import 'identity_page.dart';
 import 'mission_page.dart';
+import 'monitoring_page.dart';
 import 'opportunities_page.dart';
 import 'session_widgets.dart';
 import 'workflow_widgets.dart';
@@ -122,7 +123,7 @@ class _ControlHomeState extends State<ControlHome> {
   void _sessionChanged() {
     if (!mounted) return;
     setState(() {
-      if (index == 4 && !AppSession.instance.canAdminUsers) index = 0;
+      if (index == 5 && !AppSession.instance.canAdminUsers) index = 0;
     });
   }
 
@@ -167,6 +168,10 @@ class _ControlHomeState extends State<ControlHome> {
         label: 'Inventário',
       ),
       const NavigationDestination(
+        icon: Icon(Icons.monitor_heart_outlined),
+        label: 'Monitoramento',
+      ),
+      const NavigationDestination(
         icon: Icon(Icons.rss_feed_outlined),
         label: 'Oportunidades',
       ),
@@ -188,6 +193,10 @@ class _ControlHomeState extends State<ControlHome> {
       else
         const SizedBox.shrink(),
       if (_visited.contains(3))
+        MonitoringPage(key: ValueKey('monitoring-$epoch'), onNavigate: _select)
+      else
+        const SizedBox.shrink(),
+      if (_visited.contains(4))
         OpportunitiesPage(key: ValueKey('opportunities-$epoch'))
       else
         const SizedBox.shrink(),
@@ -438,7 +447,7 @@ class DashboardPage extends StatelessWidget {
                                 'Confira a origem e o prazo, registre uma decisão '
                                 'e continue a pauta que já foi criada.',
                             action: 'Abrir oportunidades',
-                            onPressed: () => onSelect(3),
+                            onPressed: () => onSelect(4),
                           ),
                         ),
                       ],
