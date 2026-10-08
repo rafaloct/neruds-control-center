@@ -667,6 +667,24 @@ async def test_create_task_rejections(
     )
     assert denied.status_code == 403
 
+    # `responsible` feeds the owner dimension, so assigning to someone
+    # else needs the same review gate; self-assignment stays allowed.
+    foreign_owner = await async_client.post(
+        "/missions/1/tasks",
+        json={"title": "Dono alheio", "responsible": "outra.pessoa"},
+        headers=headers,
+    )
+    assert foreign_owner.status_code == 403
+    own_owner = await async_client.post(
+        "/missions/1/tasks",
+        json={
+            "title": "Dono próprio",
+            "responsible": "extensionista.test",
+        },
+        headers=headers,
+    )
+    assert own_owner.status_code == 201
+
     allowed = await async_client.post(
         "/missions/1/tasks",
         json={"title": "Com permissão", "primary_owner": "ext.1"},

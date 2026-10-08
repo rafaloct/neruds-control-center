@@ -1913,6 +1913,22 @@ def mission_task_create(
     _require_review_for_controlled(fields, session)
     _canonical_link_fields(fields)
 
+    # `responsible` feeds the owner dimension when primary_owner is unset,
+    # so a non-reviewer assigning to someone else needs the same gate.
+    responsible = (fields.get("responsible") or "").strip()
+    if (
+        responsible
+        and responsible != session["username"]
+        and not session.get("can_review", False)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Sem perfil de revisão, a tarefa só pode ser atribuída "
+                "ao próprio usuário."
+            ),
+        )
+
     if fields.get("gap_bundle"):
         meta = content_map.MONITORED_TYPES.get(fields["gap_bundle"])
         if meta is None:

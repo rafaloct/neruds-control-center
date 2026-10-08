@@ -659,6 +659,13 @@ class _MonitoringPageState extends State<MonitoringPage> {
   }
 
   Future<void> _createGapTask(GapNode node) async {
+    // The dialog must not outlive the session that opened it — a logout or
+    // account switch while it is open would send the task under a
+    // different account with stale prefilled data.
+    final openingEpoch = AppSession.instance.identityEpoch;
+    bool sessionIntact() =>
+        AppSession.instance.identityEpoch == openingEpoch &&
+        AppSession.instance.authenticated;
     List<MissionRef> missions;
     try {
       missions = await _api.listMissions();
@@ -666,7 +673,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
       _message(workflowError(error));
       return;
     }
-    if (!mounted) return;
+    if (!mounted || !sessionIntact()) return;
     if (missions.isEmpty) {
       _message('Nenhuma missão disponível para receber a tarefa.');
       return;
@@ -719,8 +726,15 @@ class _MonitoringPageState extends State<MonitoringPage> {
                 const SizedBox(height: 8),
                 TextField(
                   controller: responsible,
-                  decoration: const InputDecoration(
+                  // Non-reviewers can only self-assign — the bridge
+                  // enforces the same rule, so lock the field.
+                  readOnly: !AppSession.instance.canReview,
+                  decoration: InputDecoration(
                     labelText: 'Responsável',
+                    helperText: AppSession.instance.canReview
+                        ? null
+                        : 'Atribuição a outra pessoa exige perfil de '
+                            'revisão.',
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -748,7 +762,11 @@ class _MonitoringPageState extends State<MonitoringPage> {
       ),
     );
     if (!mounted) return;
-    if (confirmed != true) {
+    if (confirmed != true || !sessionIntact()) {
+      if (confirmed == true && mounted) {
+        _message('A sessão mudou — a tarefa não foi criada. '
+            'Confira a conta e tente de novo.');
+      }
       title.dispose();
       responsible.dispose();
       action.dispose();

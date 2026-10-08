@@ -1689,10 +1689,15 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
         // the already-persisted change is not treated as unsaved work.
         publicCheck = data['public_check_ok'] == true;
         _original['public_check_ok'] = publicCheck;
+        // A relink targets a different node — drop the previous gap
+        // result so the card never reports node A's state for node B.
+        _gapCheck = null;
+        _gapCheckError = null;
         UnsavedWork.instance.setDirty(this, _dirty);
         _didChange = true;
       });
       _message('Ficha $nid vinculada a esta tarefa.');
+      _recheckGap();
     } catch (error) {
       if (_currentSessionRequest(revision)) _message(workflowError(error));
     } finally {
