@@ -179,7 +179,12 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
-BACKUP_KEEP = int(os.getenv("NERUDS_BACKUP_KEEP", "14"))
+def backup_keep() -> int:
+    """Retenção configurável via NERUDS_BACKUP_KEEP; mínimo de 1 arquivo."""
+    try:
+        return max(1, int(os.getenv("NERUDS_BACKUP_KEEP", "14")))
+    except ValueError:
+        return 14
 
 
 def backup_dir() -> Path:
@@ -189,22 +194,29 @@ def backup_dir() -> Path:
 def backup_db(keep: int | None = None) -> Path:
     """Grava uma cópia consistente do mission store via sqlite backup API.
 
-    Seguro com WAL e com leitores ativos. Retorna o caminho do arquivo criado.
+    Seguro com WAL e com leitores ativos. Escreve em arquivo temporário e
+    renomeia ao concluir — um backup parcial nunca entra na lista de
+    restauráveis nem suprime novas tentativas. Retorna o caminho final.
     """
     dest_dir = backup_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     dest = dest_dir / f"missions-{stamp}.sqlite3"
-    source = connect()
+    tmp = dest_dir / f"missions-{stamp}.tmp"
     try:
-        target = sqlite3.connect(dest)
+        source = connect()
         try:
-            source.backup(target)
+            target = sqlite3.connect(tmp)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
         finally:
-            target.close()
+            source.close()
+        tmp.replace(dest)
     finally:
-        source.close()
-    prune_backups(keep if keep is not None else BACKUP_KEEP)
+        tmp.unlink(missing_ok=True)
+    prune_backups(keep if keep is not None else backup_keep())
     return dest
 
 
@@ -237,6 +249,20 @@ def backup_due(max_age_hours: float = 24.0) -> bool:
         return True
     newest = datetime.fromisoformat(backups[0]["created_at"])
     return datetime.now(timezone.utc) - newest > timedelta(hours=max_age_hours)
+
+
+def check_ready() -> bool:
+    """Readiness real: o arquivo existe e o schema da missão responde.
+
+    Abre em modo somente-leitura — um banco ausente não é recriado."""
+    if not DB_PATH.is_file():
+        return False
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    try:
+        conn.execute("SELECT 1 FROM mission_task LIMIT 1")
+        return True
+    finally:
+        conn.close()
 
 
 def _json(value: Any) -> str:

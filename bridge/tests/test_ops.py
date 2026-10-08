@@ -32,7 +32,27 @@ async def test_ready_fails_when_db_unavailable(async_client, monkeypatch):
     def _boom():
         raise sqlite3.OperationalError("unable to open database file")
 
-    monkeypatch.setattr(mission_store, "connect", _boom)
+    monkeypatch.setattr(mission_store, "check_ready", _boom)
+    response = await async_client.get("/ready")
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_ready_fails_when_db_file_missing(async_client, tmp_path, monkeypatch):
+    """Banco apagado/substituído por arquivo vazio: readiness não pode
+    recriar o arquivo nem fingir prontidão com SELECT 1 solto."""
+    missing = tmp_path / "deleted.sqlite3"
+    monkeypatch.setattr(mission_store, "DB_PATH", missing)
+    response = await async_client.get("/ready")
+    assert response.status_code == 503
+    assert not missing.exists(), "readiness criou um banco novo"
+
+
+@pytest.mark.asyncio
+async def test_ready_fails_on_empty_db(async_client, tmp_path, monkeypatch):
+    empty = tmp_path / "empty.sqlite3"
+    sqlite3.connect(empty).close()
+    monkeypatch.setattr(mission_store, "DB_PATH", empty)
     response = await async_client.get("/ready")
     assert response.status_code == 503
 
@@ -168,6 +188,49 @@ async def test_ops_status_portal_down(async_client, admin_session, monkeypatch):
     probes = {p["name"]: p for p in response.json()["probes"]}
     assert probes["drupal_portal"]["ok"] is False
     assert probes["drupal_portal"]["http_status"] == 503
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ops_status_portal_4xx_is_unhealthy(
+    async_client, admin_session, monkeypatch
+):
+    """403/404 do portal significa login quebrado — o probe não pode
+    reportar verde para qualquer status < 500."""
+    token, _ = admin_session
+    monkeypatch.setattr(main, "SMTP_CONNECT_HOST", "127.0.0.1")
+    monkeypatch.setattr(main, "SMTP_PORT", 1)
+    respx.get("https://neruds.org/user/login").mock(return_value=httpx.Response(403))
+
+    response = await async_client.get("/ops/status", headers=auth(token))
+    probes = {p["name"]: p for p in response.json()["probes"]}
+    assert probes["drupal_portal"]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_backup_failure_leaves_no_file(async_client, admin_session, monkeypatch):
+    """Falha na cópia não publica arquivo parcial nem suprime novas
+    tentativas."""
+    token, _ = admin_session
+
+    class _FlakyConn(sqlite3.Connection):
+        def backup(self, *args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    real_connect = sqlite3.connect
+
+    def _connect(path, *args, **kwargs):
+        # backup() é método da conexão de origem: toda conexão vira flaky
+        kwargs["factory"] = _FlakyConn
+        return real_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(mission_store.sqlite3, "connect", _connect)
+    response = await async_client.post("/ops/backup", headers=auth(token))
+    assert response.status_code == 500
+
+    leftovers = list(mission_store.backup_dir().glob("missions-*"))
+    assert leftovers == []
+    assert mission_store.backup_due() is True
 
 
 # ---------------------------------------------------------------------------

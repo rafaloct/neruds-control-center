@@ -751,18 +751,18 @@ def health() -> dict[str, Any]:
 
 @app.get("/ready")
 def ready() -> dict[str, Any]:
-    """Readiness: o processo só está pronto se o mission store abrir e
-    responder. Liveness simples continua em /health."""
+    """Readiness: o processo só está pronto se o mission store existir e
+    o schema da missão responder. Liveness simples continua em /health."""
     try:
-        conn = mission_store.connect()
-        try:
-            conn.execute("SELECT 1")
-        finally:
-            conn.close()
+        ok = mission_store.check_ready()
     except Exception as exc:
         raise HTTPException(
             status_code=503, detail=f"mission store indisponível: {type(exc).__name__}"
         ) from exc
+    if not ok:
+        raise HTTPException(
+            status_code=503, detail="mission store ausente ou schema inválido"
+        )
     return {
         "ready": True,
         "db": True,
@@ -807,7 +807,9 @@ async def _probe_http(name: str, url: str, timeout: float = 5.0) -> dict[str, An
             response = await client.get(url)
         return {
             "name": name,
-            "ok": response.status_code < 500,
+            # Somente 200 é saudável: um 403/404 do portal também quebraria
+            # o fluxo real de login — não pode ficar verde no painel.
+            "ok": response.status_code == 200,
             "http_status": response.status_code,
             "duration_ms": round((time.monotonic() - start) * 1000, 1),
         }
@@ -848,14 +850,10 @@ async def _probe_tcp(name: str, host: str, port: int, timeout: float = 5.0) -> d
 def _probe_db() -> dict[str, Any]:
     start = time.monotonic()
     try:
-        conn = mission_store.connect()
-        try:
-            conn.execute("SELECT 1")
-        finally:
-            conn.close()
+        ok = mission_store.check_ready()
         return {
             "name": "mission_db",
-            "ok": True,
+            "ok": ok,
             "duration_ms": round((time.monotonic() - start) * 1000, 1),
         }
     except Exception as exc:
@@ -884,7 +882,7 @@ async def ops_status(session: dict[str, Any] = Depends(require_session)) -> dict
         ),
         "probes": [portal, tailnet, mail, db],
         "backup": {
-            "keep": mission_store.BACKUP_KEEP,
+            "keep": mission_store.backup_keep(),
             "count": len(backups),
             "latest": backups[0] if backups else None,
         },
