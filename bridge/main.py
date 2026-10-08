@@ -183,7 +183,11 @@ class AccessLogMiddleware:
 async def _backup_loop() -> None:
     while True:
         try:
-            if mission_store.backup_due():
+            if not mission_store.check_ready():
+                # Store ausente/vazio = perda de dados; arquivar isso
+                # poderia expulsar o último backup bom pela retenção.
+                _access_log("backup_skipped_store_unready")
+            elif mission_store.backup_due():
                 dest = await asyncio.to_thread(mission_store.backup_db)
                 _access_log("backup_completed", file=dest.name)
         except Exception as exc:  # backup failure must not kill the service
@@ -902,6 +906,11 @@ async def ops_status(session: dict[str, Any] = Depends(require_session)) -> dict
 @app.post("/ops/backup")
 async def ops_backup(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
     _require_user_admin(session)
+    if not mission_store.check_ready():
+        raise HTTPException(
+            status_code=503,
+            detail="Mission store ausente ou vazio — backup recusado.",
+        )
     try:
         dest = await asyncio.to_thread(mission_store.backup_db)
     except Exception as exc:

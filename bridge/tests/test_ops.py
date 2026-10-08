@@ -75,6 +75,14 @@ async def test_ops_backup_requires_admin(async_client, extensionista_session):
 
 
 @pytest.mark.asyncio
+async def test_ops_backup_refuses_empty_store(async_client, admin_session):
+    """Store recriado vazio indica perda de dados — não se arquiva isso."""
+    token, _ = admin_session
+    response = await async_client.post("/ops/backup", headers=auth(token))
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_ops_backup_creates_listable_file(async_client, admin_session, seeded_mission):
     token, _ = admin_session
     response = await async_client.post("/ops/backup", headers=auth(token))
@@ -237,7 +245,7 @@ async def test_ops_status_portal_4xx_is_unhealthy(
 
 
 @pytest.mark.asyncio
-async def test_backup_failure_leaves_no_file(async_client, admin_session, monkeypatch):
+async def test_backup_failure_leaves_no_file(async_client, admin_session, seeded_mission, monkeypatch):
     """Falha na cópia não publica arquivo parcial nem suprime novas
     tentativas."""
     token, _ = admin_session
