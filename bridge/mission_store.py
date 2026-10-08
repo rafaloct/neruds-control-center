@@ -179,6 +179,66 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+BACKUP_KEEP = int(os.getenv("NERUDS_BACKUP_KEEP", "14"))
+
+
+def backup_dir() -> Path:
+    return DATA_DIR / "backups"
+
+
+def backup_db(keep: int | None = None) -> Path:
+    """Grava uma cópia consistente do mission store via sqlite backup API.
+
+    Seguro com WAL e com leitores ativos. Retorna o caminho do arquivo criado.
+    """
+    dest_dir = backup_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    dest = dest_dir / f"missions-{stamp}.sqlite3"
+    source = connect()
+    try:
+        target = sqlite3.connect(dest)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
+    prune_backups(keep if keep is not None else BACKUP_KEEP)
+    return dest
+
+
+def list_backups() -> list[dict[str, Any]]:
+    dest_dir = backup_dir()
+    if not dest_dir.is_dir():
+        return []
+    files = sorted(dest_dir.glob("missions-*.sqlite3"), reverse=True)
+    return [
+        {
+            "file": f.name,
+            "size_bytes": f.stat().st_size,
+            "created_at": datetime.fromtimestamp(
+                f.stat().st_mtime, tz=timezone.utc
+            ).isoformat(),
+        }
+        for f in files
+    ]
+
+
+def prune_backups(keep: int) -> None:
+    files = sorted(backup_dir().glob("missions-*.sqlite3"), reverse=True)
+    for stale in files[keep:]:
+        stale.unlink(missing_ok=True)
+
+
+def backup_due(max_age_hours: float = 24.0) -> bool:
+    backups = list_backups()
+    if not backups:
+        return True
+    newest = datetime.fromisoformat(backups[0]["created_at"])
+    return datetime.now(timezone.utc) - newest > timedelta(hours=max_age_hours)
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 

@@ -8,6 +8,7 @@ import 'identity_page.dart';
 import 'mission_page.dart';
 import 'monitoring_page.dart';
 import 'opportunities_page.dart';
+import 'ops_page.dart';
 import 'session_widgets.dart';
 import 'workflow_widgets.dart';
 
@@ -646,6 +647,30 @@ class AdminPage extends StatelessWidget {
                       builder: (_) => Scaffold(
                         appBar: AppBar(title: const Text('Equipe e acessos')),
                         body: const IdentityPage(),
+                      ),
+                    ),
+                  ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: ListTile(
+            contentPadding: const EdgeInsets.all(20),
+            leading: const Icon(Icons.monitor_heart_outlined),
+            title: const Text('Saúde do serviço'),
+            subtitle: const Text(
+              'Dependências (portal, Tailscale, e-mail, banco) e backups '
+              'do quadro de trabalho.',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: !AppSession.instance.canAdminUsers
+                ? null
+                : () => Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => Scaffold(
+                        appBar: AppBar(title: const Text('Saúde do serviço')),
+                        body: const OpsPage(),
                       ),
                     ),
                   ),
