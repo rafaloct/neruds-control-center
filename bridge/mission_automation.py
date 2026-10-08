@@ -85,7 +85,9 @@ def _task_brief(row: Any) -> dict[str, Any]:
         "priority": row["priority"],
         "content_type": row["content_type"],
         "current_stage": row["current_stage"],
-        "primary_owner": row["primary_owner"],
+        # Effective owner: gap tasks may only carry the free-text
+        # responsible when the creator lacked assignment permission.
+        "primary_owner": row["primary_owner"] or row["responsible"],
         "internal_deadline": row["internal_deadline"],
         "deadline_status": _deadline_status(deadline, row["current_stage"]),
         "public_url": row["public_url"],

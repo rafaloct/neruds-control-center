@@ -1878,9 +1878,11 @@ def _require_review_for_controlled(
             ),
         )
     # `responsible` is the effective owner when primary_owner is unset —
-    # a non-reviewer may only self-assign, never name someone else.
-    responsible = (changes.get("responsible") or "").strip()
-    if responsible and responsible != session["username"]:
+    # a non-reviewer may only ever assign it to themselves, so clearing
+    # or renaming it on someone else's task also requires review rights.
+    if "responsible" in changes and (
+        (changes["responsible"] or "").strip() != session["username"]
+    ):
         raise HTTPException(
             status_code=403,
             detail=(

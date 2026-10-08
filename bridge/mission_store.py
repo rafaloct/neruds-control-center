@@ -1038,7 +1038,9 @@ def create_task(
                 mission_id,
                 next_row,
                 "portal_gap" if fields.get("gap_bundle") else "app",
-                fields.get("priority"),
+                # NULL priority sorts after every P0-P2 row and would fall
+                # outside the app's first page — default to the mid bucket.
+                fields.get("priority") or "P1",
                 fields.get("content_type"),
                 fields["title"],
                 fields.get("public_url"),
@@ -1406,7 +1408,7 @@ def export_tasks_xlsx(mission_id: int) -> bytes:
             item.get("priority"),
             item.get("content_type"),
             item.get("title"),
-            item.get("primary_owner"),
+            item.get("primary_owner") or item.get("responsible"),
             item.get("cross_reviewer"),
             item.get("current_stage"),
             item.get("deadline_date") or item.get("internal_deadline"),

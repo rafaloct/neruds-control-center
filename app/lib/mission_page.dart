@@ -1663,7 +1663,10 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       if (nid == null) return;
     }
     final revision = _beginSessionRequest();
-    if (revision == null || saving) return;
+    // While a gap re-check is in flight another relink could overlap it —
+    // both writes share the session revision and a late response for the
+    // old node would overwrite the new node's result.
+    if (revision == null || saving || checkingGap) return;
     setState(() => saving = true);
     try {
       final response = await http.patch(
@@ -1697,7 +1700,7 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
         _didChange = true;
       });
       _message('Ficha $nid vinculada a esta tarefa.');
-      _recheckGap();
+      await _recheckGap();
     } catch (error) {
       if (_currentSessionRequest(revision)) _message(workflowError(error));
     } finally {
