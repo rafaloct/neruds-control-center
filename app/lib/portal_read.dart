@@ -799,14 +799,23 @@ class PortalReadApi {
   }) async {
     final portal = AppConfig.portalUrl.replaceAll(RegExp(r'/+$'), '');
     final nid = node.nid;
-    // Prefer the canonical links the gap endpoint already returned — the
-    // portal snapshot may not have populated AppConfig.portalUrl yet.
-    final viewUrl = node.viewUrl ??
-        ((nid != null && portal.isNotEmpty) ? '$portal/node/$nid' : null);
+    // The gap endpoint may return a path alias as view_url, which the
+    // create endpoint rejects — send canonical /node/N links, deriving
+    // the portal base from the returned edit_url when the snapshot has
+    // not populated AppConfig.portalUrl yet.
+    var base = portal;
+    if (base.isEmpty && node.editUrl != null) {
+      base = node.editUrl!
+          .replaceAll(RegExp(r'/node/\d+/edit/?$'), '');
+    }
+    final canonicalView =
+        node.viewUrl != null && RegExp(r'/node/\d+/?$').hasMatch(node.viewUrl!)
+            ? node.viewUrl
+            : null;
+    final viewUrl = canonicalView ??
+        ((nid != null && base.isNotEmpty) ? '$base/node/$nid' : null);
     final editUrl = node.editUrl ??
-        ((nid != null && portal.isNotEmpty)
-            ? '$portal/node/$nid/edit'
-            : null);
+        ((nid != null && base.isNotEmpty) ? '$base/node/$nid/edit' : null);
     final payload = <String, dynamic>{
       'title': title,
       'responsible': responsible,
