@@ -1400,7 +1400,16 @@ def weekly_report(mission_id: int) -> dict[str, Any]:
 
 def export_tasks_xlsx(mission_id: int) -> bytes:
     dashboard(mission_id)
-    items = list_tasks(mission_id, limit=500)["items"]
+    # App-created tasks can grow the mission past the 500-row page —
+    # export must paginate instead of silently truncating the workbook.
+    items: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = list_tasks(mission_id, limit=500, offset=offset)["items"]
+        items.extend(page)
+        if len(page) < 500:
+            break
+        offset += 500
     headers = [
         "ID",
         "Linha",

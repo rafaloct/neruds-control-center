@@ -1882,6 +1882,11 @@ CONTROLLED_ASSIGNMENT_FIELDS = {
 def _require_review_for_controlled(
     changes: dict[str, Any], session: dict[str, Any]
 ) -> None:
+    # `responsible` is the effective owner when primary_owner is unset —
+    # normalize whitespace so the stored value matches what was
+    # authorized, regardless of who sends it.
+    if "responsible" in changes:
+        changes["responsible"] = (changes["responsible"] or "").strip()
     if session.get("can_review", False):
         return
     if CONTROLLED_ASSIGNMENT_FIELDS.intersection(changes):
@@ -1892,11 +1897,10 @@ def _require_review_for_controlled(
                 "responsável, revisor cruzado ou prazo interno."
             ),
         )
-    # `responsible` is the effective owner when primary_owner is unset —
-    # a non-reviewer may only ever assign it to themselves, so clearing
-    # or renaming it on someone else's task also requires review rights.
+    # A non-reviewer may only ever self-assign — clearing or renaming the
+    # owner on someone else's task needs review rights.
     if "responsible" in changes and (
-        (changes["responsible"] or "").strip() != session["username"]
+        changes["responsible"] != session["username"]
     ):
         raise HTTPException(
             status_code=403,

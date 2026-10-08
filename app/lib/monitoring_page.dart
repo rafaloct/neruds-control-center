@@ -671,20 +671,23 @@ class _MonitoringPageState extends State<MonitoringPage> {
     bool sessionIntact() =>
         AppSession.instance.identityEpoch == openingEpoch &&
         AppSession.instance.authenticated;
+    void finish() {
+      if (mounted) setState(() => _creatingGapTask = false);
+    }
     List<MissionRef> missions;
     try {
       missions = await _api.listMissions();
     } catch (error) {
-      _creatingGapTask = false;
+      finish();
       _message(workflowError(error));
       return;
     }
     if (!mounted || !sessionIntact()) {
-      _creatingGapTask = false;
+      finish();
       return;
     }
     if (missions.isEmpty) {
-      _creatingGapTask = false;
+      finish();
       _message('Nenhuma missão disponível para receber a tarefa.');
       return;
     }
@@ -772,7 +775,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
       ),
     );
     if (!mounted) {
-      _creatingGapTask = false;
+      finish();
       return;
     }
     if (confirmed != true || !sessionIntact()) {
@@ -783,7 +786,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
       title.dispose();
       responsible.dispose();
       action.dispose();
-      setState(() => _creatingGapTask = false);
+      finish();
       return;
     }
     try {
@@ -804,7 +807,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
       title.dispose();
       responsible.dispose();
       action.dispose();
-      if (mounted) setState(() => _creatingGapTask = false);
+      finish();
     }
   }
 
