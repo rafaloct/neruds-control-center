@@ -28,6 +28,15 @@ void _mockBridge({upstream.Response? Function(upstream.Request)? extra}) {
     MockClient((request) async {
       final custom = extra?.call(request);
       if (custom != null) return custom;
+      if (request.url.path.startsWith('/portal/nodes/') &&
+          request.url.path.endsWith('/lacunas')) {
+        return _json({
+          'found': true,
+          'nid': 50,
+          'missing_fields': ['field_resumo'],
+          'missing_labels': ['Resumo'],
+        });
+      }
       switch (request.url.path) {
         case '/portal/snapshot':
           return _json({
@@ -254,6 +263,96 @@ void main() {
     expect(posted?['responsible'], 'extensionista.test');
     expect(
       find.text('Tarefa criada na missão — acompanhe na aba Inventário.'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('gap task records the fresh ficha gaps, not the clipped sample', (
+    tester,
+  ) async {
+    Map<String, dynamic>? posted;
+    _mockBridge(
+      extra: (request) {
+        if (request.url.path == '/missions' && request.method == 'GET') {
+          return _json([
+            {'id': 1, 'title': 'Gestão do Portal'},
+          ]);
+        }
+        if (request.url.path == '/portal/nodes/50/lacunas') {
+          // The aggregated report clipped this node out of other fields'
+          // samples; the fresh check reports all currently-missing ones.
+          return _json({
+            'found': true,
+            'nid': 50,
+            'missing_fields': ['field_resumo', 'field_doi'],
+            'missing_labels': ['Resumo', 'DOI'],
+          });
+        }
+        if (request.url.path == '/missions/1/tasks' &&
+            request.method == 'POST') {
+          posted = Map<String, dynamic>.from(
+            jsonDecode(utf8.decode(request.bodyBytes)) as Map,
+          );
+          return _json({'id': 99}, 201);
+        }
+        return null;
+      },
+    );
+    _session();
+    await openMonitoring(tester);
+
+    await tester.tap(find.text('Publicações'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('gap-task-50')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Faltam: Resumo, DOI'), findsWidgets);
+
+    await tester.tap(find.byKey(const ValueKey('gap-task-confirm')));
+    await tester.pumpAndSettle();
+
+    expect(posted?['gap_fields'], ['field_resumo', 'field_doi']);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('gap task skips creation when the ficha is already filled', (
+    tester,
+  ) async {
+    var posted = false;
+    _mockBridge(
+      extra: (request) {
+        if (request.url.path == '/missions' && request.method == 'GET') {
+          return _json([
+            {'id': 1, 'title': 'Gestão do Portal'},
+          ]);
+        }
+        if (request.url.path == '/portal/nodes/50/lacunas') {
+          return _json({
+            'found': true,
+            'nid': 50,
+            'missing_fields': <String>[],
+            'missing_labels': <String>[],
+          });
+        }
+        if (request.url.path == '/missions/1/tasks' &&
+            request.method == 'POST') {
+          posted = true;
+          return _json({'id': 99}, 201);
+        }
+        return null;
+      },
+    );
+    _session();
+    await openMonitoring(tester);
+
+    await tester.tap(find.text('Publicações'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('gap-task-50')));
+    await tester.pumpAndSettle();
+
+    expect(posted, isFalse);
+    expect(
+      find.textContaining('já estão preenchidos no portal'),
       findsOneWidget,
     );
     expect(tester.takeException(), isNull);

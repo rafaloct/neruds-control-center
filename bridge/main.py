@@ -1235,21 +1235,33 @@ async def portal_node_lacunas(
         actual_type = None
         if not items:
             # The node may exist under another bundle — e.g. the task was
-            # relinked to a node of a different monitored type. Report it
-            # so the UI does not mistake a type mismatch for a deleted
-            # ficha.
-            for other in content_map.MONITORED_TYPES:
-                if other == tipo:
-                    continue
-                probe = await client.get(
-                    f"/jsonapi/node/{other}",
-                    params={
-                        "filter[drupal_internal__nid]": str(nid),
-                        f"fields[node--{other}]": "drupal_internal__nid",
-                        "page[limit]": "1",
-                    },
-                )
-                if probe.status_code < 400 and probe.json().get("data"):
+            # relinked to a node of a different monitored type. Probe all
+            # bundles in parallel (serially this could take minutes of
+            # upstream timeouts) and report the match so the UI does not
+            # mistake a type mismatch for a deleted ficha.
+            others = [
+                other for other in content_map.MONITORED_TYPES if other != tipo
+            ]
+            probes = await asyncio.gather(
+                *(
+                    client.get(
+                        f"/jsonapi/node/{other}",
+                        params={
+                            "filter[drupal_internal__nid]": str(nid),
+                            f"fields[node--{other}]": "drupal_internal__nid",
+                            "page[limit]": "1",
+                        },
+                    )
+                    for other in others
+                ),
+                return_exceptions=True,
+            )
+            for other, probe in zip(others, probes):
+                if (
+                    isinstance(probe, httpx.Response)
+                    and probe.status_code < 400
+                    and probe.json().get("data")
+                ):
                     actual_type = other
                     break
     if not items:
@@ -2310,27 +2322,20 @@ async def _extensionista_call(
     return response.json()
 
 
-def _mission_id() -> int | None:
-    missions = mission_store.mission_list()
-    return missions[0]["id"] if missions else None
-
-
 def _open_tasks_for(username: str) -> list[dict[str, Any]]:
-    mission_id = _mission_id()
-    if mission_id is None:
-        return []
-    # App-created tasks can push an owner past the 500-row page — page
-    # through instead of silently missing tasks during offboarding.
+    # Gap tasks can be created on any mission — check them all, and page
+    # through instead of silently missing tasks past the 500-row page.
     items: list[dict[str, Any]] = []
-    offset = 0
-    while True:
-        page = mission_store.list_tasks(
-            mission_id, owner=username, limit=500, offset=offset
-        )["items"]
-        items.extend(page)
-        if len(page) < 500:
-            break
-        offset += 500
+    for mission in mission_store.mission_list():
+        offset = 0
+        while True:
+            page = mission_store.list_tasks(
+                mission["id"], owner=username, limit=500, offset=offset
+            )["items"]
+            items.extend(page)
+            if len(page) < 500:
+                break
+            offset += 500
     return [t for t in items if t.get("current_stage") not in CLOSED_STAGES]
 
 

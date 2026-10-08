@@ -239,6 +239,20 @@ async def test_offboarding_blocks_and_transfers(
         actor="extensionista.1",
         fields={"title": "Lacuna sem dono formal", "responsible": "extensionista.1"},
     )
+    # Gap tasks can live on any mission — the transfer must reach beyond
+    # the first one.
+    with mission_store.connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO mission (code,title,workflow_json,created_at,updated_at)"
+            " VALUES ('MIN-2','Segunda missão','[]','x','x')"
+        )
+        conn.commit()
+        second_mission = int(cur.lastrowid)
+    mission_store.create_task(
+        second_mission,
+        actor="extensionista.1",
+        fields={"title": "Lacuna noutra missão", "responsible": "extensionista.1"},
+    )
 
     respx_mock.get(f"{PORTAL}/neruds-control/extensionistas").mock(
         return_value=Response(200, json=ROSTER_PAYLOAD)
@@ -258,7 +272,7 @@ async def test_offboarding_blocks_and_transfers(
     )
     assert res.status_code == 200
     data = res.json()
-    assert data["tasks_transferred"] == 3
+    assert data["tasks_transferred"] == 4
     assert data["account"]["active"] is False
     assert data["account"]["offboarded_by"] == "coordenador.test"
     assert data["checklist"]["done"] >= 2

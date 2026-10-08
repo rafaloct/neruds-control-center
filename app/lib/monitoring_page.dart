@@ -691,6 +691,52 @@ class _MonitoringPageState extends State<MonitoringPage> {
       _message('Nenhuma missão disponível para receber a tarefa.');
       return;
     }
+    // The aggregated gap report can be truncated per field — a node may
+    // be missing fields its sample did not reach. Re-read the ficha so
+    // the task records the fields actually missing right now.
+    var effective = node;
+    final nodeNid = node.nid;
+    if (nodeNid != null) {
+      try {
+        final check = await _api.nodeGapCheck(nodeNid, node.type);
+        if (!mounted || !sessionIntact()) {
+          finish();
+          return;
+        }
+        if (!check.found) {
+          finish();
+          _message(
+            'A ficha não foi encontrada no portal — recarregue o '
+            'monitoramento.',
+          );
+          return;
+        }
+        if (check.missingFields.isEmpty) {
+          finish();
+          _message(
+            'Os campos monitorados já estão preenchidos no portal — '
+            'nenhuma tarefa criada.',
+          );
+          return;
+        }
+        effective = GapNode(
+          title: node.title,
+          type: node.type,
+          nid: node.nid,
+          viewUrl: node.viewUrl,
+          editUrl: node.editUrl,
+          missing: check.missingLabels,
+          missingFields: check.missingFields,
+        );
+      } catch (error) {
+        finish();
+        _message(
+          'Não foi possível confirmar as lacunas no portal: '
+          '${workflowError(error)}',
+        );
+        return;
+      }
+    }
     var missionId = missions.first.id;
     final title = TextEditingController(
       text: 'Completar ficha — ${node.title}',
@@ -712,9 +758,9 @@ class _MonitoringPageState extends State<MonitoringPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Ficha: ${node.title}'),
+                Text('Ficha: ${effective.title}'),
                 Text(
-                  'Faltam: ${node.missing.join(', ')}',
+                  'Faltam: ${effective.missing.join(', ')}',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 const SizedBox(height: 12),
@@ -792,7 +838,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
     try {
       await _api.createGapTask(
         missionId,
-        node: node,
+        node: effective,
         title: title.text.trim().isEmpty
             ? 'Completar ficha — ${node.title}'
             : title.text.trim(),
