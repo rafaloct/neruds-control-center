@@ -231,6 +231,14 @@ async def test_offboarding_blocks_and_transfers(
             actor="coordenador.test",
             changes={"primary_owner": "extensionista.1"},
         )
+    # A gap task may only carry the free-text responsible; the transfer
+    # must rewrite it too or clearing primary_owner would fall back to
+    # the disabled account.
+    fallback_task = mission_store.create_task(
+        mission["id"],
+        actor="extensionista.1",
+        fields={"title": "Lacuna sem dono formal", "responsible": "extensionista.1"},
+    )
 
     respx_mock.get(f"{PORTAL}/neruds-control/extensionistas").mock(
         return_value=Response(200, json=ROSTER_PAYLOAD)
@@ -250,13 +258,16 @@ async def test_offboarding_blocks_and_transfers(
     )
     assert res.status_code == 200
     data = res.json()
-    assert data["tasks_transferred"] == 2
+    assert data["tasks_transferred"] == 3
     assert data["account"]["active"] is False
     assert data["account"]["offboarded_by"] == "coordenador.test"
     assert data["checklist"]["done"] >= 2
 
     moved = mission_store.task_detail(tasks[0]["id"])
     assert moved["primary_owner"] == "extensionista.2"
+    moved_fallback = mission_store.task_detail(fallback_task["id"])
+    assert moved_fallback["primary_owner"] == "extensionista.2"
+    assert moved_fallback["responsible"] == "extensionista.2"
 
     events = identity_store.list_events(username="extensionista.1")
     assert any(e["kind"] == "offboarded" for e in events)

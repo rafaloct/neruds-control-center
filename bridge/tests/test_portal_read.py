@@ -612,7 +612,8 @@ async def test_node_lacunas_reports_missing_fields(
 @respx.mock
 async def test_node_lacunas_not_found(async_client, extensionista_session):
     token, _ = extensionista_session
-    respx.get(f"{PORTAL}/jsonapi/node/publicacao_cientifica").mock(
+    # The endpoint probes every monitored bundle before reporting a miss.
+    respx.get(url__regex=r".*/jsonapi/node/.*").mock(
         return_value=Response(200, json=_jsonapi_payload([]))
     )
     response = await async_client.get(
@@ -620,7 +621,42 @@ async def test_node_lacunas_not_found(async_client, extensionista_session):
         headers=_auth(token),
     )
     assert response.status_code == 200
-    assert response.json()["found"] is False
+    body = response.json()
+    assert body["found"] is False
+    assert "actual_type" not in body
+
+
+@respx.mock
+async def test_node_lacunas_reports_bundle_mismatch(
+    async_client, extensionista_session
+):
+    """A relink to a node of another bundle must not read as 'deleted'."""
+    token, _ = extensionista_session
+    respx.get(f"{PORTAL}/jsonapi/node/noticia").mock(
+        return_value=Response(
+            200,
+            json=_jsonapi_payload(
+                [
+                    {
+                        "id": "uuid-7",
+                        "type": "node--noticia",
+                        "attributes": {"drupal_internal__nid": 999},
+                    }
+                ]
+            ),
+        )
+    )
+    respx.get(url__regex=r".*/jsonapi/node/.*").mock(
+        return_value=Response(200, json=_jsonapi_payload([]))
+    )
+    response = await async_client.get(
+        "/portal/nodes/999/lacunas?tipo=publicacao_cientifica",
+        headers=_auth(token),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["found"] is False
+    assert body["actual_type"] == "noticia"
 
 
 async def test_node_lacunas_rejects_unmonitored_type(

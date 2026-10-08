@@ -2135,12 +2135,17 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
   ) {
     final bodySmall = Theme.of(context).textTheme.bodySmall;
     if (check['found'] != true) {
+      final actualType = check['actual_type']?.toString();
       return [
-        const Padding(
-          padding: EdgeInsets.only(top: 8),
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
           child: Text(
-            'A ficha não foi encontrada no portal — ela pode ter sido '
-            'removida ou sua conta não pode visualizá-la.',
+            actualType != null
+                ? 'A ficha vinculada é do tipo "$actualType" no portal, '
+                    'diferente da lacuna registrada nesta tarefa — '
+                    'revise o vínculo.'
+                : 'A ficha não foi encontrada no portal — ela pode ter sido '
+                    'removida ou sua conta não pode visualizá-la.',
           ),
         ),
       ];

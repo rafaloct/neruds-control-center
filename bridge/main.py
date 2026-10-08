@@ -1232,14 +1232,37 @@ async def portal_node_lacunas(
                 detail="Drupal não respondeu à consulta da ficha.",
             )
         items = response.json().get("data") or []
+        actual_type = None
+        if not items:
+            # The node may exist under another bundle — e.g. the task was
+            # relinked to a node of a different monitored type. Report it
+            # so the UI does not mistake a type mismatch for a deleted
+            # ficha.
+            for other in content_map.MONITORED_TYPES:
+                if other == tipo:
+                    continue
+                probe = await client.get(
+                    f"/jsonapi/node/{other}",
+                    params={
+                        "filter[drupal_internal__nid]": str(nid),
+                        f"fields[node--{other}]": "drupal_internal__nid",
+                        "page[limit]": "1",
+                    },
+                )
+                if probe.status_code < 400 and probe.json().get("data"):
+                    actual_type = other
+                    break
     if not items:
-        return {
+        result: dict[str, Any] = {
             "nid": nid,
             "type": tipo,
             "found": False,
             "missing_fields": [],
             "missing_labels": [],
         }
+        if actual_type:
+            result["actual_type"] = actual_type
+        return result
     item = items[0]
     attrs = item.get("attributes") or {}
     missing = [
@@ -2475,10 +2498,16 @@ async def identity_offboard(
     transferred = 0
     if payload.transfer_to:
         for task in _open_tasks_for(username):
+            changes: dict[str, Any] = {"primary_owner": payload.transfer_to}
+            # Fallback-owned tasks keep the offboarded username in
+            # responsible; leaving it would undo the transfer as soon as
+            # a reviewer cleared the new primary_owner.
+            if (task.get("responsible") or "").strip() == username:
+                changes["responsible"] = payload.transfer_to
             mission_store.update_task(
                 task["id"],
                 actor=actor,
-                changes={"primary_owner": payload.transfer_to},
+                changes=changes,
                 note=f"Offboarding de {username}: tarefa transferida para {payload.transfer_to}.",
             )
             transferred += 1
