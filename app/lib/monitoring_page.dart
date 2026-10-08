@@ -29,6 +29,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
   String? _eixoFilter;
   String? _linhaFilter;
   String? _odsFilter;
+  bool _creatingGapTask = false;
 
   /// Bundles each role may create — the real permission matrix observed on
   /// the portal: extensionista/pesquisador create noticia+relatorio,
@@ -244,6 +245,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                           listingUrl: data.publicacoesListingUrl,
                           listingLabel: 'Publicações no portal',
                           feedSection: 'publicacoes',
+                          showDuplicates: true,
                         ),
                         _gapsTab(
                           data,
@@ -251,6 +253,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                           listingUrl: data.noticiasListingUrl,
                           listingLabel: 'Notícias no portal',
                           feedSection: 'noticias',
+                          showDuplicates: true,
                           extraAction: TextButton.icon(
                             onPressed: () => widget.onNavigate(1),
                             icon: const Icon(Icons.edit_note_outlined, size: 18),
@@ -491,6 +494,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         url: p.editUrl,
                         editing: true,
                       ),
+                      if (gaps[p.nid] != null) _gapTaskButton(gaps[p.nid]!),
                     ]),
                   ],
                 ),
@@ -529,6 +533,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         url: a.editUrl,
                         editing: true,
                       ),
+                      if (gaps[a.nid] != null) _gapTaskButton(gaps[a.nid]!),
                     ]),
                   ],
                 ),
@@ -629,7 +634,8 @@ class _MonitoringPageState extends State<MonitoringPage> {
     );
   }
 
-  Widget _gapsLine(List<String>? missing) {
+  Widget _gapsLine(GapNode? gap) {
+    final missing = gap?.missing;
     if (missing == null || missing.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(top: 4),
@@ -640,7 +646,267 @@ class _MonitoringPageState extends State<MonitoringPage> {
     );
   }
 
-  Widget _eventTile(PortalEvent event, Map<int, List<String>> gaps) => Card(
+  /// A real portal gap becomes a mission task (issue #25): the task
+  /// remembers the node and the missing fields so it can be reconciled
+  /// against the portal later.
+  Widget _gapTaskButton(GapNode node) {
+    if (node.nid == null) return const SizedBox.shrink();
+    return TextButton.icon(
+      key: ValueKey('gap-task-${node.nid}'),
+      // A second tap mid-flight would open another dialog/POST and create
+      // a duplicate task for the same gap.
+      onPressed: _creatingGapTask ? null : () => _createGapTask(node),
+      icon: const Icon(Icons.playlist_add, size: 18),
+      label: const Text('Criar tarefa'),
+    );
+  }
+
+  Future<void> _createGapTask(GapNode node) async {
+    if (_creatingGapTask) return;
+    setState(() => _creatingGapTask = true);
+    // The dialog must not outlive the session that opened it — a logout or
+    // account switch while it is open would send the task under a
+    // different account with stale prefilled data.
+    final openingEpoch = AppSession.instance.identityEpoch;
+    bool sessionIntact() =>
+        AppSession.instance.identityEpoch == openingEpoch &&
+        AppSession.instance.authenticated;
+    void finish() {
+      if (mounted) setState(() => _creatingGapTask = false);
+    }
+    List<MissionRef> missions;
+    try {
+      missions = await _api.listMissions();
+    } catch (error) {
+      finish();
+      _message(workflowError(error));
+      return;
+    }
+    if (!mounted || !sessionIntact()) {
+      finish();
+      return;
+    }
+    if (missions.isEmpty) {
+      finish();
+      _message('Nenhuma missão disponível para receber a tarefa.');
+      return;
+    }
+    // The aggregated gap report can be truncated per field — a node may
+    // be missing fields its sample did not reach. Re-read the ficha so
+    // the task records the fields actually missing right now.
+    var effective = node;
+    final nodeNid = node.nid;
+    if (nodeNid != null) {
+      try {
+        final check = await _api.nodeGapCheck(nodeNid, node.type);
+        if (!mounted || !sessionIntact()) {
+          finish();
+          return;
+        }
+        if (!check.found) {
+          finish();
+          _message(
+            'A ficha não foi encontrada no portal — recarregue o '
+            'monitoramento.',
+          );
+          return;
+        }
+        if (check.missingFields.isEmpty) {
+          finish();
+          _message(
+            'Os campos monitorados já estão preenchidos no portal — '
+            'nenhuma tarefa criada.',
+          );
+          return;
+        }
+        effective = GapNode(
+          title: node.title,
+          type: node.type,
+          nid: node.nid,
+          viewUrl: node.viewUrl,
+          editUrl: node.editUrl,
+          missing: check.missingLabels,
+          missingFields: check.missingFields,
+        );
+      } catch (error) {
+        finish();
+        _message(
+          'Não foi possível confirmar as lacunas no portal: '
+          '${workflowError(error)}',
+        );
+        return;
+      }
+    }
+    var missionId = missions.first.id;
+    final title = TextEditingController(
+      text: 'Completar ficha — ${node.title}',
+    );
+    final responsible = TextEditingController(
+      text: AppSession.instance.username ?? '',
+    );
+    final action = TextEditingController(
+      text: 'Abrir a ficha no portal e completar os campos ausentes.',
+    );
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Criar tarefa a partir da lacuna'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Ficha: ${effective.title}'),
+                Text(
+                  'Faltam: ${effective.missing.join(', ')}',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<int>(
+                  initialValue: missionId,
+                  decoration: const InputDecoration(labelText: 'Missão'),
+                  items: [
+                    for (final mission in missions)
+                      DropdownMenuItem(
+                        value: mission.id,
+                        child: Text(mission.title),
+                      ),
+                  ],
+                  onChanged: (value) =>
+                      setDialogState(() => missionId = value ?? missionId),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: title,
+                  decoration: const InputDecoration(labelText: 'Título'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: responsible,
+                  // Non-reviewers can only self-assign — the bridge
+                  // enforces the same rule, so lock the field.
+                  readOnly: !AppSession.instance.canReview,
+                  decoration: InputDecoration(
+                    labelText: 'Responsável',
+                    helperText: AppSession.instance.canReview
+                        ? null
+                        : 'Atribuição a outra pessoa exige perfil de '
+                            'revisão.',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: action,
+                  decoration: const InputDecoration(
+                    labelText: 'Próxima ação',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              key: const ValueKey('gap-task-confirm'),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Criar tarefa'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) {
+      finish();
+      return;
+    }
+    if (confirmed != true || !sessionIntact()) {
+      if (confirmed == true) {
+        _message('A sessão mudou — a tarefa não foi criada. '
+            'Confira a conta e tente de novo.');
+      }
+      title.dispose();
+      responsible.dispose();
+      action.dispose();
+      finish();
+      return;
+    }
+    try {
+      await _api.createGapTask(
+        missionId,
+        node: effective,
+        title: title.text.trim().isEmpty
+            ? 'Completar ficha — ${node.title}'
+            : title.text.trim(),
+        responsible: responsible.text.trim(),
+        action: action.text.trim(),
+      );
+      missionBoardChanged.value++;
+      _message('Tarefa criada na missão — acompanhe na aba Inventário.');
+    } catch (error) {
+      _message(workflowError(error));
+    } finally {
+      title.dispose();
+      responsible.dispose();
+      action.dispose();
+      finish();
+    }
+  }
+
+  void _message(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..removeCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  /// Shared-DOI groups flagged by the bridge — shown as a review signal,
+  /// never merged or acted on automatically.
+  Widget _duplicatesCard(List<DuplicateGroup> groups) {
+    if (groups.isEmpty) return const SizedBox.shrink();
+    return Card(
+      color: Theme.of(context).colorScheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Possível duplicidade de DOI — conferir no portal',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 6),
+            for (final group in groups)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'DOI ${group.doi} aparece em ${group.nodes.length} fichas '
+                      '(${group.nodes.map((n) => n.typeLabel).toSet().join(', ')}).',
+                    ),
+                    _linkRow([
+                      for (final node in group.nodes)
+                        PortalLinkButton(
+                          label: node.title,
+                          url: node.viewUrl,
+                        ),
+                    ]),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _eventTile(PortalEvent event, Map<int, GapNode> gaps) => Card(
     child: ListTile(
       title: Text(event.title),
       subtitle: Column(
@@ -667,6 +933,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
               url: event.editUrl,
               editing: true,
             ),
+            if (gaps[event.nid] != null) _gapTaskButton(gaps[event.nid]!),
           ]),
         ],
       ),
@@ -680,6 +947,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
     required String listingLabel,
     required String feedSection,
     Widget? extraAction,
+    bool showDuplicates = false,
   }) {
     final report = result.data;
     final nodes = report?.nodes ?? const <GapNode>[];
@@ -697,6 +965,17 @@ class _MonitoringPageState extends State<MonitoringPage> {
           PortalLinkButton(label: listingLabel, url: listingUrl),
           ?extraAction,
         ]),
+        if (showDuplicates && data.duplicates.ok)
+          _duplicatesCard(data.duplicates.data!),
+        if (showDuplicates && !data.duplicates.ok)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              'Verificação de duplicatas indisponível: '
+              '${data.duplicates.error ?? 'falha na consulta'}',
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ),
         const SizedBox(height: 12),
         Text(
           result.ok
@@ -729,6 +1008,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         url: node.editUrl,
                         editing: true,
                       ),
+                      _gapTaskButton(node),
                     ]),
                   ],
                 ),

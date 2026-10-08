@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+
 import 'app_config.dart';
 import 'app_session.dart';
 import 'bridge_http.dart' as http;
@@ -8,6 +10,10 @@ import 'workflow_widgets.dart';
 
 /// Read-only data from the portal's real structure (bridge issue #22).
 /// Every collection is stamped with the bridge fetch time, never invented.
+
+/// Bumped whenever a mission task is created outside the Inventário page
+/// (e.g. from a monitoring gap), so the retained page reloads.
+final missionBoardChanged = ValueNotifier<int>(0);
 
 class GapNodeRef {
   const GapNodeRef({
@@ -66,17 +72,83 @@ class GapReport {
 class GapNode {
   const GapNode({
     required this.title,
+    required this.type,
     this.nid,
     this.viewUrl,
     this.editUrl,
     required this.missing,
+    required this.missingFields,
   });
 
   final int? nid;
+
+  /// Bundle machine name (e.g. `publicacao_cientifica`) — needed to create
+  /// a gap task and to re-check the node later.
+  final String type;
   final String title;
   final String? viewUrl;
   final String? editUrl;
   final List<String> missing;
+
+  /// Machine names of the missing fields, parallel to [missing].
+  final List<String> missingFields;
+}
+
+/// Fresh per-node gap state from the reconciliation endpoint — never
+/// cached, it reads the portal's current values.
+class NodeGapCheck {
+  const NodeGapCheck({
+    required this.found,
+    this.published = true,
+    this.title,
+    this.viewUrl,
+    this.editUrl,
+    this.missingFields = const [],
+    this.missingLabels = const [],
+  });
+
+  final bool found;
+  final bool published;
+  final String? title;
+  final String? viewUrl;
+  final String? editUrl;
+  final List<String> missingFields;
+  final List<String> missingLabels;
+}
+
+/// One node inside a shared-DOI group.
+class DuplicateNode {
+  const DuplicateNode({
+    required this.title,
+    required this.type,
+    required this.typeLabel,
+    this.nid,
+    this.viewUrl,
+    this.editUrl,
+  });
+
+  final int? nid;
+  final String title;
+  final String type;
+  final String typeLabel;
+  final String? viewUrl;
+  final String? editUrl;
+}
+
+/// Nodes that repeat the same normalized DOI — a review signal only.
+class DuplicateGroup {
+  const DuplicateGroup({required this.doi, required this.nodes});
+
+  final String doi;
+  final List<DuplicateNode> nodes;
+}
+
+/// Mission option for the gap-task picker.
+class MissionRef {
+  const MissionRef({required this.id, required this.title});
+
+  final int id;
+  final String title;
 }
 
 class PortalEvent {
@@ -259,6 +331,7 @@ class MonitoringData {
     required this.projetoGaps,
     required this.acaoGaps,
     required this.eventoGaps,
+    required this.duplicates,
     this.eventsListingUrl,
     this.projetosListingUrl,
     this.projetosMapUrl,
@@ -277,19 +350,22 @@ class MonitoringData {
   final SectionResult<GapReport> projetoGaps;
   final SectionResult<GapReport> acaoGaps;
   final SectionResult<GapReport> eventoGaps;
+
+  /// Nodes sharing a DOI across portal bundles — review signal only.
+  final SectionResult<List<DuplicateGroup>> duplicates;
   final String? eventsListingUrl;
   final String? projetosListingUrl;
   final String? projetosMapUrl;
   final String? publicacoesListingUrl;
   final String? noticiasListingUrl;
 
-  /// Missing-field lists keyed by node id, merged across the gap sections.
-  Map<int, List<String>> gapsByNode() {
-    final map = <int, List<String>>{};
+  /// Missing-field details keyed by node id, merged across gap sections.
+  Map<int, GapNode> gapsByNode() {
+    final map = <int, GapNode>{};
     for (final section in [projetoGaps, acaoGaps, eventoGaps]) {
       for (final gap in section.data?.nodes ?? const <GapNode>[]) {
         final nid = gap.nid;
-        if (nid != null) map[nid] = gap.missing;
+        if (nid != null) map[nid] = gap;
       }
     }
     return map;
@@ -388,7 +464,7 @@ class PortalReadApi {
           .toList();
 
   /// Aggregate a bundle's gap report into one row per node with the labels
-  /// of every monitored field it is missing.
+  /// and machine names of every monitored field it is missing.
   static GapReport _gapNodes(Map<String, dynamic> body) {
     final byNid = <String, GapNode>{};
     var truncated = false;
@@ -401,13 +477,16 @@ class PortalReadApi {
           if (existing == null) {
             byNid[key] = GapNode(
               nid: node.nid,
+              type: type.type,
               title: node.title,
               viewUrl: node.viewUrl,
               editUrl: node.editUrl,
               missing: [field.label],
+              missingFields: [field.field],
             );
-          } else if (!existing.missing.contains(field.label)) {
+          } else if (!existing.missingFields.contains(field.field)) {
             existing.missing.add(field.label);
+            existing.missingFields.add(field.field);
           }
         }
       }
@@ -443,6 +522,30 @@ class PortalReadApi {
     items.sort((a, b) => (b.published ?? '').compareTo(a.published ?? ''));
     return FeedList(items: items, failedSections: failed);
   }
+
+  static List<DuplicateGroup> _parseDuplicates(Map<String, dynamic> body) =>
+      (body['groups'] as List? ?? const [])
+          .whereType<Map>()
+          .map(
+            (g) => DuplicateGroup(
+              doi: (g['doi'] ?? '').toString(),
+              nodes: (g['nodes'] as List? ?? const [])
+                  .whereType<Map>()
+                  .map(
+                    (n) => DuplicateNode(
+                      nid: n['nid'] as int?,
+                      title: (n['title'] ?? 'Sem título').toString(),
+                      type: (n['type'] ?? '').toString(),
+                      typeLabel:
+                          (n['type_label'] ?? n['type'] ?? '').toString(),
+                      viewUrl: n['view_url']?.toString(),
+                      editUrl: n['edit_url']?.toString(),
+                    ),
+                  )
+                  .toList(),
+            ),
+          )
+          .toList();
 
   static ProjectBoard _parseProjects(Map<String, dynamic> body) => ProjectBoard(
     projects: (body['projetos'] as List? ?? const [])
@@ -614,6 +717,11 @@ class PortalReadApi {
           'incluir_rascunhos': 'true',
         },
       ),
+      _section<List<DuplicateGroup>>(
+        stamps,
+        _parseDuplicates,
+        '/portal/duplicatas',
+      ),
     ]);
 
     stamps.sort();
@@ -630,12 +738,107 @@ class PortalReadApi {
       projetoGaps: results[5] as SectionResult<GapReport>,
       acaoGaps: results[6] as SectionResult<GapReport>,
       eventoGaps: results[7] as SectionResult<GapReport>,
+      duplicates: results[8] as SectionResult<List<DuplicateGroup>>,
       eventsListingUrl: eventsListingUrl ?? '$portal/eventos',
       projetosListingUrl: projetosListingUrl ?? '$portal/projetos',
       projetosMapUrl: projetosMapUrl ?? '$portal/mapa-projetos',
       publicacoesListingUrl:
           publicacoesListingUrl ?? '$portal/publicacoes',
       noticiasListingUrl: noticiasListingUrl ?? '$portal/noticias',
+    );
+  }
+
+  /// Re-check one node's monitored fields against the portal right now —
+  /// the bridge answers uncached so reconciliation reflects real state.
+  Future<NodeGapCheck> nodeGapCheck(int nid, String tipo) async {
+    final body = await _get('/portal/nodes/$nid/lacunas', {'tipo': tipo});
+    return NodeGapCheck(
+      found: body['found'] == true,
+      published: body['published'] != false,
+      title: body['title']?.toString(),
+      viewUrl: body['view_url']?.toString(),
+      editUrl: body['edit_url']?.toString(),
+      missingFields: (body['missing_fields'] as List? ?? const [])
+          .map((f) => f.toString())
+          .toList(),
+      missingLabels: (body['missing_labels'] as List? ?? const [])
+          .map((f) => f.toString())
+          .toList(),
+    );
+  }
+
+  /// Missions the signed-in user can attach gap tasks to.
+  Future<List<MissionRef>> listMissions() async {
+    final response = await http.get(
+      AppConfig.endpoint('/missions'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw HttpStatusException(response.statusCode);
+    }
+    return (jsonDecode(utf8.decode(response.bodyBytes)) as List? ?? const [])
+        .whereType<Map>()
+        .map(
+          (m) => MissionRef(
+            id: m['id'] as int? ?? 0,
+            title: (m['title'] ?? m['code'] ?? 'Missão').toString(),
+          ),
+        )
+        .where((m) => m.id > 0)
+        .toList();
+  }
+
+  /// Turn a portal gap into a tracked mission task. The bridge validates
+  /// the ficha links and the monitored field names server-side.
+  Future<Map<String, dynamic>> createGapTask(
+    int missionId, {
+    required GapNode node,
+    required String title,
+    required String responsible,
+    required String action,
+  }) async {
+    final portal = AppConfig.portalUrl.replaceAll(RegExp(r'/+$'), '');
+    final nid = node.nid;
+    // The gap endpoint may return a path alias as view_url, which the
+    // create endpoint rejects — send canonical /node/N links, deriving
+    // the portal base from the returned edit_url when the snapshot has
+    // not populated AppConfig.portalUrl yet.
+    var base = portal;
+    if (base.isEmpty && node.editUrl != null) {
+      base = node.editUrl!
+          .replaceAll(RegExp(r'/node/\d+/edit/?$'), '');
+    }
+    final canonicalView =
+        node.viewUrl != null && RegExp(r'/node/\d+/?$').hasMatch(node.viewUrl!)
+            ? node.viewUrl
+            : null;
+    final viewUrl = canonicalView ??
+        ((nid != null && base.isNotEmpty) ? '$base/node/$nid' : null);
+    final editUrl = node.editUrl ??
+        ((nid != null && base.isNotEmpty) ? '$base/node/$nid/edit' : null);
+    final payload = <String, dynamic>{
+      'title': title,
+      'responsible': responsible,
+      'action': action,
+      'gaps': 'Faltam no portal: ${node.missing.join(', ')}',
+      'gap_bundle': node.type,
+      'gap_fields': node.missingFields,
+      // primary_owner is a controlled field — only review-capable
+      // sessions may set it; others keep the free-text responsible.
+      if (AppSession.instance.canReview) 'primary_owner': responsible,
+      'public_url': ?viewUrl,
+      'edit_url': ?editUrl,
+    };
+    final response = await http.post(
+      AppConfig.endpoint('/missions/$missionId/tasks'),
+      headers: AppSession.instance.authHeaders,
+      body: jsonEncode(payload),
+    );
+    if (response.statusCode != 201) {
+      throw HttpStatusException(response.statusCode);
+    }
+    return Map<String, dynamic>.from(
+      jsonDecode(utf8.decode(response.bodyBytes)) as Map,
     );
   }
 }

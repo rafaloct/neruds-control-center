@@ -207,6 +207,29 @@ class MissionTaskPatch(BaseModel):
     evidence_url: str | None = None
 
 
+class MissionTaskCreate(BaseModel):
+    """Task born from the monitoring board — a real portal gap becomes
+    tracked work. gap_bundle/gap_fields record which monitored fields were
+    missing so the task can be reconciled against the portal later."""
+
+    title: str = Field(min_length=1, max_length=300)
+    content_type: str | None = None
+    priority: str | None = None
+    status: str | None = None
+    responsible: str | None = None
+    primary_owner: str | None = None
+    cross_reviewer: str | None = None
+    internal_deadline: str | None = None
+    action: str | None = None
+    gaps: str | None = None
+    observations: str | None = None
+    public_url: str | None = None
+    edit_url: str | None = None
+    gap_bundle: str | None = None
+    gap_fields: list[str] = Field(default_factory=list, max_length=50)
+    note: str | None = None
+
+
 class SavedMissionFilterCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     filters: dict[str, str] = Field(default_factory=dict)
@@ -1180,6 +1203,191 @@ async def portal_node_lookup(
     )
 
 
+@app.get("/portal/nodes/{nid}/lacunas")
+async def portal_node_lacunas(
+    nid: int,
+    tipo: str = Query(min_length=1),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Re-check the monitored fields of a single node — reconciliation
+    must read the portal's current state, so this is never cached."""
+    meta = content_map.MONITORED_TYPES.get(tipo)
+    if meta is None:
+        raise HTTPException(status_code=422, detail="Tipo não monitorado.")
+    sparse = "title,path,status,drupal_internal__nid"
+    for name in meta["fields"]:
+        sparse += f",{name}"
+    async with drupal_client(session) as client:
+        response = await client.get(
+            f"/jsonapi/node/{tipo}",
+            params={
+                "filter[drupal_internal__nid]": str(nid),
+                "fields[node--%s]" % tipo: sparse,
+                "page[limit]": "1",
+            },
+        )
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail="Drupal não respondeu à consulta da ficha.",
+            )
+        items = response.json().get("data") or []
+        actual_type = None
+        if not items:
+            # The node may exist under another bundle — e.g. the task was
+            # relinked to a node of a different monitored type. Probe all
+            # bundles in parallel (serially this could take minutes of
+            # upstream timeouts) and report the match so the UI does not
+            # mistake a type mismatch for a deleted ficha.
+            others = [
+                other for other in content_map.MONITORED_TYPES if other != tipo
+            ]
+            probes = await asyncio.gather(
+                *(
+                    client.get(
+                        f"/jsonapi/node/{other}",
+                        params={
+                            "filter[drupal_internal__nid]": str(nid),
+                            f"fields[node--{other}]": "drupal_internal__nid",
+                            "page[limit]": "1",
+                        },
+                    )
+                    for other in others
+                ),
+                return_exceptions=True,
+            )
+            for other, probe in zip(others, probes):
+                if (
+                    isinstance(probe, httpx.Response)
+                    and probe.status_code < 400
+                    and probe.json().get("data")
+                ):
+                    actual_type = other
+                    break
+    if not items:
+        result: dict[str, Any] = {
+            "nid": nid,
+            "type": tipo,
+            "found": False,
+            "missing_fields": [],
+            "missing_labels": [],
+        }
+        if actual_type:
+            result["actual_type"] = actual_type
+        return result
+    item = items[0]
+    attrs = item.get("attributes") or {}
+    missing = [
+        (fname, fmeta["label"])
+        for fname, fmeta in meta["fields"].items()
+        if _field_empty(item, fname, fmeta["kind"])
+    ]
+    ref = _node_ref(item)
+    return {
+        "nid": attrs.get("drupal_internal__nid") or nid,
+        "type": tipo,
+        "found": True,
+        "published": bool(attrs.get("status")),
+        "title": ref["title"],
+        "view_url": ref["view_url"],
+        "edit_url": ref["edit_url"],
+        "missing_fields": [name for name, _ in missing],
+        "missing_labels": [label for _, label in missing],
+    }
+
+
+# Bundles whose storage has field_doi — the known shared-DOI case spans
+# noticia, grupo_estudos, publicacao and publicacao_cientifica.
+DOI_BUNDLES = (
+    "grupo_estudos",
+    "noticia",
+    "publicacao",
+    "publicacao_cientifica",
+)
+
+
+_DOI_SHAPE = re.compile(r"^10\.\d{4,9}/\S+$")
+
+
+_DOI_PREFIXES = (
+    "https://doi.org/",
+    "http://doi.org/",
+    "https://dx.doi.org/",
+    "http://dx.doi.org/",
+    "doi:",
+    "doi ",
+)
+
+
+def _normalize_doi(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    # Prefixes may stack ("DOI: https://doi.org/10.x/…") — keep stripping
+    # until none of them match anymore.
+    while True:
+        stripped = text.strip()
+        for prefix in _DOI_PREFIXES:
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):].strip()
+                break
+        if stripped == text:
+            break
+        text = stripped
+    text = text.rstrip(".;,/")
+    return text if _DOI_SHAPE.match(text) else ""
+
+
+@app.get("/portal/duplicatas")
+async def portal_duplicatas(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Flag nodes sharing a DOI across bundles — a signal for human
+    review only; the bridge never merges or deletes portal records."""
+    # Field visibility is per-session (Drupal cookies), so the cache must
+    # be scoped to the requesting user like the other portal reads.
+    cache_key = f"portal:duplicatas:{session['username']}"
+    cached = _portal_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    groups: dict[str, list[dict[str, Any]]] = {}
+    async with drupal_client(session) as client:
+        # Drafts reusing a DOI are the case worth flagging — JSON:API
+        # already hides unpublished content the session cannot see.
+        # Serially these reads could exceed the app's request timeout.
+        scans = await asyncio.gather(
+            *(
+                _jsonapi_items(
+                    client, bundle, ["field_doi"], published_only=False
+                )
+                for bundle in DOI_BUNDLES
+            )
+        )
+        for bundle, fetched in zip(DOI_BUNDLES, scans):
+            for item in fetched["data"]:
+                attrs = item.get("attributes") or {}
+                doi = _normalize_doi(attrs.get("field_doi"))
+                if not doi:
+                    continue
+                ref = _node_ref(item)
+                ref["type"] = bundle
+                ref["type_label"] = content_map.MONITORED_TYPES.get(
+                    bundle, {}
+                ).get("label", bundle)
+                groups.setdefault(doi, []).append(ref)
+    duplicates = [
+        {"doi": doi, "nodes": nodes}
+        for doi, nodes in groups.items()
+        if len(nodes) >= 2
+    ]
+    duplicates.sort(key=lambda group: -len(group["nodes"]))
+    return _portal_cache_set(
+        cache_key,
+        {
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "groups": duplicates,
+        },
+    )
+
+
 @app.get("/portal/projetos")
 async def portal_projetos(
     session: dict[str, Any] = Depends(require_session),
@@ -1705,23 +1913,24 @@ def mission_task_detail(
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
 
 
-@app.patch("/mission-tasks/{task_id}")
-def mission_task_update(
-    task_id: int,
-    payload: MissionTaskPatch,
-    session: dict[str, Any] = Depends(require_session),
-) -> dict[str, Any]:
-    changes = payload.model_dump(
-        exclude_none=True,
-        exclude={"note", "evidence_url"},
-    )
-    controlled_assignment_fields = {
-        "primary_owner",
-        "cross_reviewer",
-        "internal_deadline",
-    }
-    requested_controlled_fields = controlled_assignment_fields.intersection(changes)
-    if requested_controlled_fields and not session.get("can_review", False):
+CONTROLLED_ASSIGNMENT_FIELDS = {
+    "primary_owner",
+    "cross_reviewer",
+    "internal_deadline",
+}
+
+
+def _require_review_for_controlled(
+    changes: dict[str, Any], session: dict[str, Any]
+) -> None:
+    # `responsible` is the effective owner when primary_owner is unset —
+    # normalize whitespace so the stored value matches what was
+    # authorized, regardless of who sends it.
+    if "responsible" in changes:
+        changes["responsible"] = (changes["responsible"] or "").strip()
+    if session.get("can_review", False):
+        return
+    if CONTROLLED_ASSIGNMENT_FIELDS.intersection(changes):
         raise HTTPException(
             status_code=403,
             detail=(
@@ -1729,6 +1938,24 @@ def mission_task_update(
                 "responsável, revisor cruzado ou prazo interno."
             ),
         )
+    # A non-reviewer may only ever self-assign — clearing or renaming the
+    # owner on someone else's task needs review rights.
+    if "responsible" in changes and (
+        changes["responsible"] != session["username"]
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Sem perfil de revisão, a tarefa só pode ser atribuída "
+                "ao próprio usuário."
+            ),
+        )
+
+
+def _canonical_link_fields(changes: dict[str, Any]) -> None:
+    """Validate portal ficha links in *changes* and rewrite them to the
+    canonical /node/N spelling. The node-pair check itself stays inside the
+    store transaction so a concurrent write cannot interleave."""
     for link_field, require_edit in (("public_url", False), ("edit_url", True)):
         if link_field in changes and not _portal_node_link(
             changes[link_field], require_edit=require_edit
@@ -1740,18 +1967,82 @@ def mission_task_update(
                     "do portal configurado."
                 ),
             )
-    if "public_url" in changes or "edit_url" in changes:
-        # Canonicalize accepted spellings (/node/N/, query strings, ...) so
-        # equivalent links never look like a relink to the store.
-        for link_field, suffix in (("public_url", ""), ("edit_url", "/edit")):
-            if link_field in changes:
-                nid = _portal_node_nid(changes[link_field])
-                changes[link_field] = f"{PORTAL_URL}/node/{nid}{suffix}"
-        # Both links must reference the same node — the pair check itself
-        # runs inside update_task's transaction so a concurrent PATCH cannot
-        # interleave between this validation and the write.
-    if payload.current_stage and payload.current_stage not in mission_store.WORKFLOW:
-        raise HTTPException(status_code=422, detail="Etapa da missão inválida.")
+    # Canonicalize accepted spellings (/node/N/, query strings, ...) so
+    # equivalent links never look like a relink to the store.
+    for link_field, suffix in (("public_url", ""), ("edit_url", "/edit")):
+        if link_field in changes:
+            nid = _portal_node_nid(changes[link_field])
+            changes[link_field] = f"{PORTAL_URL}/node/{nid}{suffix}"
+
+
+@app.post("/missions/{mission_id}/tasks", status_code=201)
+def mission_task_create(
+    mission_id: int,
+    payload: MissionTaskCreate,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    fields = payload.model_dump(exclude_none=True, exclude={"note"})
+    _require_review_for_controlled(fields, session)
+    _canonical_link_fields(fields)
+
+    if fields.get("gap_bundle"):
+        meta = content_map.MONITORED_TYPES.get(fields["gap_bundle"])
+        if meta is None:
+            raise HTTPException(status_code=422, detail="Tipo não monitorado.")
+        if not fields.get("gap_fields"):
+            raise HTTPException(
+                status_code=422,
+                detail="Tarefa de lacuna exige os campos faltantes "
+                "registrados.",
+            )
+        unknown = [
+            f for f in fields["gap_fields"] if f not in meta["fields"]
+        ]
+        if unknown:
+            raise HTTPException(
+                status_code=422, detail="Campo não monitorado neste tipo."
+            )
+        fields.setdefault("content_type", meta["label"])
+    elif fields.get("gap_fields"):
+        raise HTTPException(
+            status_code=422,
+            detail="Campos de lacuna exigem o tipo da ficha.",
+        )
+
+    try:
+        return mission_store.create_task(
+            mission_id,
+            actor=session["username"],
+            fields=fields,
+            note=payload.note,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Missão não encontrada.")
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="Os endereços público e de edição devem apontar "
+            "para a mesma ficha.",
+        )
+
+
+@app.patch("/mission-tasks/{task_id}")
+def mission_task_update(
+    task_id: int,
+    payload: MissionTaskPatch,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    changes = payload.model_dump(
+        exclude_none=True,
+        exclude={"note", "evidence_url"},
+    )
+    _require_review_for_controlled(changes, session)
+    _canonical_link_fields(changes)
+    # When both links change they must reference the same node — the pair
+    # check itself runs inside update_task's transaction so a concurrent
+    # PATCH cannot interleave between this validation and the write.
+    # Stage validity is checked there too, against the mission's own
+    # workflow (which may differ from the global WORKFLOW).
     try:
         return mission_store.update_task(
             task_id,
@@ -1759,6 +2050,15 @@ def mission_task_update(
             changes=changes,
             note=payload.note,
             evidence_url=payload.evidence_url,
+            actor_can_review=session.get("can_review", False),
+        )
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Sem perfil de revisão, a tarefa só pode ser atribuída "
+                "ao próprio usuário."
+            ),
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
@@ -1767,6 +2067,8 @@ def mission_task_update(
             "O endereço salvo usa um alias sem nid. Envie os "
             "dois endereços da nova ficha para revincular."
             if str(exc) == "link_alias_unresolvable"
+            else "Etapa da missão inválida."
+            if str(exc) == "invalid_stage"
             else "Os endereços público e de edição devem apontar "
             "para a mesma ficha."
         )
@@ -1927,15 +2229,36 @@ async def mission_task_drupal_duplicates(
     except KeyError:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
 
-    bundle = mission_automation.CONTENT_TYPE_BUNDLES.get(
+    bundle = task.get("gap_bundle") or mission_automation.CONTENT_TYPE_BUNDLES.get(
         (task.get("content_type") or "").strip()
     )
     title = (task.get("title") or "").strip()
+    linked_nid = _portal_node_nid(task.get("public_url") or "") or _portal_node_nid(
+        task.get("edit_url") or ""
+    )
     if not bundle or not title:
         return {"task_id": task_id, "bundle": bundle, "matches": []}
 
     matches = []
     async with drupal_client(session) as client:
+        if linked_nid is not None:
+            # Gap tasks are titled "Completar ficha — <node title>"; the
+            # duplicate search must use the linked node's real title.
+            response = await client.get(
+                f"/jsonapi/node/{bundle}",
+                params={
+                    "filter[drupal_internal__nid]": linked_nid,
+                    "page[limit]": 1,
+                },
+            )
+            if response.status_code < 400:
+                data = response.json().get("data", [])
+                if data:
+                    node_title = (
+                        data[0].get("attributes", {}).get("title") or ""
+                    ).strip()
+                    if node_title:
+                        title = node_title
         response = await client.get(
             f"/jsonapi/node/{bundle}",
             params={"filter[title]": title, "page[limit]": 20},
@@ -1947,9 +2270,12 @@ async def mission_task_drupal_duplicates(
             )
         for item in response.json().get("data", []):
             attrs = item.get("attributes", {})
+            nid = attrs.get("drupal_internal__nid")
+            if linked_nid is not None and str(nid) == str(linked_nid):
+                continue
             matches.append(
                 {
-                    "nid": attrs.get("drupal_internal__nid"),
+                    "nid": nid,
                     "uuid": item.get("id"),
                     "title": attrs.get("title", ""),
                     "published": bool(attrs.get("status", False)),
@@ -2004,16 +2330,20 @@ async def _extensionista_call(
     return response.json()
 
 
-def _mission_id() -> int | None:
-    missions = mission_store.mission_list()
-    return missions[0]["id"] if missions else None
-
-
 def _open_tasks_for(username: str) -> list[dict[str, Any]]:
-    mission_id = _mission_id()
-    if mission_id is None:
-        return []
-    items = mission_store.list_tasks(mission_id, owner=username, limit=500)["items"]
+    # Gap tasks can be created on any mission — check them all, and page
+    # through instead of silently missing tasks past the 500-row page.
+    items: list[dict[str, Any]] = []
+    for mission in mission_store.mission_list():
+        offset = 0
+        while True:
+            page = mission_store.list_tasks(
+                mission["id"], owner=username, limit=500, offset=offset
+            )["items"]
+            items.extend(page)
+            if len(page) < 500:
+                break
+            offset += 500
     return [t for t in items if t.get("current_stage") not in CLOSED_STAGES]
 
 
@@ -2181,10 +2511,16 @@ async def identity_offboard(
     transferred = 0
     if payload.transfer_to:
         for task in _open_tasks_for(username):
+            changes: dict[str, Any] = {"primary_owner": payload.transfer_to}
+            # Fallback-owned tasks keep the offboarded username in
+            # responsible; leaving it would undo the transfer as soon as
+            # a reviewer cleared the new primary_owner.
+            if (task.get("responsible") or "").strip() == username:
+                changes["responsible"] = payload.transfer_to
             mission_store.update_task(
                 task["id"],
                 actor=actor,
-                changes={"primary_owner": payload.transfer_to},
+                changes=changes,
                 note=f"Offboarding de {username}: tarefa transferida para {payload.transfer_to}.",
             )
             transferred += 1

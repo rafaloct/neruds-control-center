@@ -374,6 +374,16 @@ def init_db() -> None:
                 ON task_evidence_file(task_id, created_at);
             """
         )
+        # Gap-born tasks remember which bundle/fields they were created to
+        # fix so reconciliation can re-check that exact portal state.
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(mission_task)")
+        }
+        for column in ("gap_bundle", "gap_fields"):
+            if column not in existing:
+                conn.execute(
+                    f"ALTER TABLE mission_task ADD COLUMN {column} TEXT"
+                )
 
 
 def seed_from_json(force: bool = False) -> dict[str, Any]:
@@ -660,7 +670,8 @@ def dashboard(mission_id: int) -> dict[str, Any]:
             raise KeyError("mission_not_found")
         tasks = conn.execute(
             """
-            SELECT priority,content_type,current_stage,primary_owner,internal_deadline
+            SELECT priority,content_type,current_stage,primary_owner,
+                   responsible,internal_deadline
             FROM mission_task WHERE mission_id=?
             """,
             (mission_id,),
@@ -677,7 +688,10 @@ def dashboard(mission_id: int) -> dict[str, Any]:
     stages = Counter((row["current_stage"] or "Sem etapa") for row in tasks)
     priorities = Counter((row["priority"] or "Sem prioridade") for row in tasks)
     types = Counter((row["content_type"] or "Sem tipo") for row in tasks)
-    owners = Counter((row["primary_owner"] or "Não atribuído") for row in tasks)
+    owners = Counter(
+        (row["primary_owner"] or row["responsible"] or "Não atribuído")
+        for row in tasks
+    )
     total = len(tasks)
     concluded = stages.get("Concluído", 0)
     overdue = sum(
@@ -727,13 +741,17 @@ def list_tasks(
     filters = {
         "current_stage": stage,
         "priority": priority,
-        "primary_owner": owner,
         "content_type": content_type,
     }
     for field, value in filters.items():
         if value:
             where.append(f"{field}=?")
             args.append(value)
+    if owner:
+        # Gap tasks may only carry the free-text responsible when the
+        # creator lacked assignment permission.
+        where.append("COALESCE(NULLIF(primary_owner,''),responsible)=?")
+        args.append(owner)
     if query:
         where.append("(title LIKE ? OR action LIKE ? OR gaps LIKE ? OR suggested_query LIKE ?)")
         q = f"%{query}%"
@@ -765,6 +783,15 @@ def list_tasks(
 def _task_row(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["public_check_ok"] = bool(data["public_check_ok"])
+    # Empty strings behave as "unassigned" everywhere — normalize so
+    # consumers can rely on null alone for the fallback logic.
+    for owner_field in ("primary_owner", "cross_reviewer", "responsible"):
+        if data.get(owner_field) == "":
+            data[owner_field] = None
+    try:
+        data["gap_fields"] = json.loads(data.get("gap_fields") or "[]")
+    except ValueError:
+        data["gap_fields"] = []
     due_date = _deadline_date(data.get("internal_deadline"))
     data["deadline_date"] = due_date.isoformat() if due_date else None
     data["deadline_status"] = _deadline_status(
@@ -836,6 +863,7 @@ def update_task(
     changes: dict[str, Any],
     note: str | None = None,
     evidence_url: str | None = None,
+    actor_can_review: bool = True,
 ) -> dict[str, Any]:
     allowed = {k: v for k, v in changes.items() if k in FIELD_MAP}
     if not allowed and not note and not evidence_url:
@@ -850,6 +878,41 @@ def update_task(
         before = conn.execute("SELECT * FROM mission_task WHERE id=?", (task_id,)).fetchone()
         if not before:
             raise KeyError("task_not_found")
+
+        if "current_stage" in allowed:
+            # Missions may store their own workflow — a stage is valid
+            # when it belongs to the global workflow or this mission's.
+            mission_row = conn.execute(
+                "SELECT workflow_json FROM mission WHERE id=?",
+                (before["mission_id"],),
+            ).fetchone()
+            try:
+                mission_workflow = (
+                    json.loads(mission_row["workflow_json"] or "[]")
+                    if mission_row
+                    else []
+                )
+            except (TypeError, ValueError):
+                mission_workflow = []
+            valid_stages = (
+                set(mission_workflow) if mission_workflow else set(WORKFLOW)
+            )
+            if allowed["current_stage"] not in valid_stages:
+                raise ValueError("invalid_stage")
+
+        if not actor_can_review and "responsible" in allowed:
+            # A non-reviewer may only claim an unassigned task or adjust
+            # their own — never move a task someone else owns, even via
+            # the responsible fallback when primary_owner is unset.
+            current_owner = (
+                (before["primary_owner"] or "") or (before["responsible"] or "")
+            ).strip()
+            requested = (allowed["responsible"] or "").strip()
+            if (
+                requested != actor
+                or (current_owner and current_owner != actor)
+            ):
+                raise PermissionError("owner_change_denied")
 
         if "public_url" in allowed or "edit_url" in allowed:
             # Pair check inside the transaction: the links being written
@@ -952,6 +1015,122 @@ def update_task(
                     utcnow(),
                 ),
             )
+        conn.commit()
+
+    return task_detail(task_id)
+
+
+def create_task(
+    mission_id: int,
+    actor: str,
+    fields: dict[str, Any],
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Create a task on a mission — used by the monitoring board to turn a
+    real portal gap into trackable work. Portal links must already be
+    canonical /node/N URLs; the same-node pair rule is enforced here.
+
+    App-created tasks take negative spreadsheet rows so a later re-seed of
+    the spreadsheet can never collide with or overwrite them.
+    """
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        mission = conn.execute(
+            "SELECT id, workflow_json FROM mission WHERE id=?", (mission_id,)
+        ).fetchone()
+        if not mission:
+            raise KeyError("mission_not_found")
+        try:
+            mission_workflow = json.loads(mission["workflow_json"] or "[]")
+        except (TypeError, ValueError):
+            mission_workflow = []
+        # The first stage belongs to the mission's own workflow — other
+        # missions may not start at the global Triagem.
+        initial_stage = (
+            mission_workflow[0] if mission_workflow else WORKFLOW[0]
+        )
+
+        nids = {
+            nid
+            for nid in (
+                _link_nid(fields.get("public_url")),
+                _link_nid(fields.get("edit_url")),
+            )
+            if nid
+        }
+        if len(nids) > 1:
+            raise ValueError("link_node_mismatch")
+        linked_nid = next(iter(nids), None)
+
+        # Negative rows only: MIN over the whole mission could be a positive
+        # sheet row (min=2 → next=1), which a later re-seed could overwrite.
+        next_row = conn.execute(
+            "SELECT COALESCE(MIN(spreadsheet_row), 0) - 1 "
+            "FROM mission_task WHERE mission_id=? AND spreadsheet_row < 0",
+            (mission_id,),
+        ).fetchone()[0]
+        now = utcnow()
+        cursor = conn.execute(
+            """
+            INSERT INTO mission_task (
+                mission_id, spreadsheet_row, source_record_id, priority,
+                content_type, title, public_url, edit_url, gaps, action,
+                responsible, status, primary_owner, cross_reviewer,
+                current_stage, internal_deadline, observations,
+                gap_bundle, gap_fields, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                mission_id,
+                next_row,
+                (
+                    # The export uses source_record_id as its ID column;
+                    # keep it unique even for repeated tasks of the same
+                    # node (the negative row is unique per creation).
+                    f"portal_gap:{linked_nid or 'unlinked'}:{-next_row}"
+                    if fields.get("gap_bundle")
+                    else f"app:{-next_row}"
+                ),
+                # NULL priority sorts after every P0-P2 row and would fall
+                # outside the app's first page — default to the mid bucket.
+                fields.get("priority") or "P1",
+                fields.get("content_type"),
+                fields["title"],
+                fields.get("public_url"),
+                fields.get("edit_url"),
+                fields.get("gaps"),
+                fields.get("action"),
+                fields.get("responsible"),
+                fields.get("status") or "A fazer",
+                fields.get("primary_owner"),
+                fields.get("cross_reviewer"),
+                initial_stage,
+                fields.get("internal_deadline"),
+                fields.get("observations"),
+                fields.get("gap_bundle"),
+                _json(fields.get("gap_fields") or []),
+                now,
+                now,
+            ),
+        )
+        task_id = int(cursor.lastrowid)
+        conn.execute(
+            """
+            INSERT INTO mission_event
+            (task_id,actor,event_type,from_stage,to_stage,note,changes_json,created_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                task_id,
+                actor,
+                "task_created",
+                None,
+                initial_stage,
+                note,
+                _json({}),
+                now,
+            ),
+        )
         conn.commit()
 
     return task_detail(task_id)
@@ -1259,7 +1438,16 @@ def weekly_report(mission_id: int) -> dict[str, Any]:
 
 def export_tasks_xlsx(mission_id: int) -> bytes:
     dashboard(mission_id)
-    items = list_tasks(mission_id, limit=500)["items"]
+    # App-created tasks can grow the mission past the 500-row page —
+    # export must paginate instead of silently truncating the workbook.
+    items: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = list_tasks(mission_id, limit=500, offset=offset)["items"]
+        items.extend(page)
+        if len(page) < 500:
+            break
+        offset += 500
     headers = [
         "ID",
         "Linha",
@@ -1282,7 +1470,7 @@ def export_tasks_xlsx(mission_id: int) -> bytes:
             item.get("priority"),
             item.get("content_type"),
             item.get("title"),
-            item.get("primary_owner"),
+            item.get("primary_owner") or item.get("responsible"),
             item.get("cross_reviewer"),
             item.get("current_stage"),
             item.get("deadline_date") or item.get("internal_deadline"),
@@ -1366,7 +1554,8 @@ def dashboard(mission_id: int) -> dict[str, Any]:
 
         tasks = conn.execute(
             """
-            SELECT priority,content_type,current_stage,primary_owner,internal_deadline
+            SELECT priority,content_type,current_stage,primary_owner,
+                   responsible,internal_deadline
             FROM mission_task WHERE mission_id=?
             """,
             (mission_id,),
@@ -1398,7 +1587,10 @@ def dashboard(mission_id: int) -> dict[str, Any]:
     stages = Counter((row["current_stage"] or "Sem etapa") for row in tasks)
     priorities = Counter((row["priority"] or "Sem prioridade") for row in tasks)
     types = Counter((row["content_type"] or "Sem tipo") for row in tasks)
-    owners = Counter((row["primary_owner"] or "Não atribuído") for row in tasks)
+    owners = Counter(
+        (row["primary_owner"] or row["responsible"] or "Não atribuído")
+        for row in tasks
+    )
     work_sections = Counter((row["section"] or "Outros") for row in work_items)
 
     total = len(tasks)
