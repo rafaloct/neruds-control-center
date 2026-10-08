@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "default": {
+      "format": "%(asctime)s %(levelname)s %(name)s %(message)s"
+    }
+  },
+  "handlers": {
+    "file": {
+      "class": "logging.handlers.RotatingFileHandler",
+      "filename": "../data/logs/uvicorn.log",
+      "maxBytes": 5242880,
+      "backupCount": 1,
+      "formatter": "default",
+      "encoding": "utf-8"
+    }
+  },
+  "loggers": {
+    "uvicorn": {
+      "handlers": ["file"],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.error": {
+      "handlers": ["file"],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.access": {
+      "handlers": ["file"],
+      "level": "WARNING",
+      "propagate": false
+    }
+  }
+}

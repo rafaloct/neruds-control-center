@@ -30,16 +30,25 @@ function Write-SupLog($msg) {
 
 function Start-Bridge {
   Protect-LogSize
+  # --no-access-log: o middleware do bridge já registra requisições de forma
+  # sanitizada; o access log nativo do uvicorn gravaria query strings (tokens).
+  $uvicornArgs = @(
+    '-m', 'uvicorn', 'main:app',
+    '--host', '127.0.0.1', '--port', '8787',
+    '--no-access-log',
+    '--log-config', 'tools\uvicorn-logging.json'
+  )
   if (Test-Path $venvPython) {
-    & $venvPython -m uvicorn main:app --host 127.0.0.1 --port 8787 *>> $logFile
+    & $venvPython @uvicornArgs *>> $logFile
   } else {
-    & uv run uvicorn main:app --host 127.0.0.1 --port 8787 *>> $logFile
+    & uv run python @uvicornArgs *>> $logFile
   }
 }
 
 Write-SupLog 'supervisor iniciado'
 
 while ($true) {
+  Protect-LogSize
   try {
     $status = Invoke-RestMethod -Uri $health -TimeoutSec 3
     if ($status.ok) {

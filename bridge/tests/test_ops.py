@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import zipfile
 
 import httpx
 import pytest
@@ -88,12 +89,18 @@ async def test_ops_backup_creates_listable_file(async_client, admin_session, see
 
 
 @pytest.mark.asyncio
-async def test_backup_is_restorable(admin_session, seeded_mission):
-    """Ensaio de restore: o arquivo de backup abre, passa integrity_check
-    e contém as mesmas tarefas da base viva."""
+async def test_backup_is_restorable(admin_session, seeded_mission, tmp_path):
+    """Ensaio de restore: o zip de backup contém o banco, que abre, passa
+    integrity_check e traz as mesmas tarefas da base viva."""
     dest = mission_store.backup_db()
+    assert dest.suffix == ".zip"
 
-    restored = sqlite3.connect(dest)
+    extracted = tmp_path / "restored.sqlite3"
+    with zipfile.ZipFile(dest) as zf:
+        zf.extract("missions.sqlite3", tmp_path)
+    extracted = tmp_path / "missions.sqlite3"
+
+    restored = sqlite3.connect(extracted)
     restored.row_factory = sqlite3.Row
     try:
         assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -111,6 +118,28 @@ async def test_backup_is_restorable(admin_session, seeded_mission):
 
     assert restored_tasks == live_tasks
     assert restored_tasks > 0
+
+
+@pytest.mark.asyncio
+async def test_backup_includes_evidence_files(admin_session, seeded_mission):
+    """Evidências são bytes fora do sqlite — o backup precisa cobri-las."""
+    mission_id = seeded_mission["mission_id"]
+    task = mission_store.list_tasks(mission_id, limit=1)["items"][0]
+    mission_store.add_evidence_file(
+        task_id=task["id"],
+        actor="coordenador.test",
+        filename="fonte.pdf",
+        content=b"%PDF-fake",
+        content_type="application/pdf",
+        note=None,
+    )
+
+    dest = mission_store.backup_db()
+    with zipfile.ZipFile(dest) as zf:
+        names = zf.namelist()
+        evidence = [n for n in names if n.startswith("evidence/")]
+        assert evidence, "backup não incluiu a árvore de evidências"
+        assert zf.read(evidence[0]) == b"%PDF-fake"
 
 
 @pytest.mark.asyncio
@@ -228,7 +257,7 @@ async def test_backup_failure_leaves_no_file(async_client, admin_session, monkey
     response = await async_client.post("/ops/backup", headers=auth(token))
     assert response.status_code == 500
 
-    leftovers = list(mission_store.backup_dir().glob("missions-*"))
+    leftovers = list(mission_store.backup_dir().iterdir())
     assert leftovers == []
     assert mission_store.backup_due() is True
 

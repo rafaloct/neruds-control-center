@@ -158,20 +158,23 @@ Unregister-ScheduledTask -TaskName 'NERUDSBridge' -Confirm:$false
 
 `data/logs/access.log` registra uma linha JSON por requisição (método, rota,
 status, duração) — nunca corpos, query strings, cookies ou tokens. Rotaciona
-diariamente com 14 dias de retenção. `data/logs/supervisor.log` recebe o
-stdout do uvicorn quando o serviço roda pelo supervisor.
+diariamente com 14 dias de retenção. Quando o serviço roda pelo supervisor,
+o uvicorn usa `tools/uvicorn-logging.json` — erros vão para
+`data/logs/uvicorn.log` (5 MB, 1 geração) e o access log nativo fica
+desligado (`--no-access-log`), pois gravaria query strings sem sanitizar.
 
 ### Backup e restore
 
 - Backup automático: no arranque e a cada hora o bridge grava
-  `data/backups/missions-<timestamp>.sqlite3` quando o último backup tem mais
-  de 24 h (cópia consistente via `sqlite3` backup API, segura com WAL).
+  `data/backups/missions-<timestamp>.zip` quando o último backup tem mais
+  de 24 h. O zip contém `missions.sqlite3` (cópia consistente via `sqlite3`
+  backup API, segura com WAL) e a árvore `evidence/` com os anexos.
 - Retenção: 14 arquivos (`NERUDS_BACKUP_KEEP` para ajustar).
 - Sob demanda (sessão com `can_admin_users`): `POST /ops/backup`,
   `GET /ops/backups`.
-- Restore: pare o bridge, substitua `data/missions.sqlite3` pelo backup
-  escolhido e inicie de novo. Valide antes com
-  `python -c "import sqlite3; c=sqlite3.connect('<arquivo>'); print(c.execute('PRAGMA integrity_check').fetchone())"`.
+- Restore: pare o bridge, extraia o zip, substitua `data/missions.sqlite3`
+  e `data/evidence/` pelo conteúdo extraído e inicie de novo. Valide antes:
+  `python -c "import sqlite3; c=sqlite3.connect('missions.sqlite3'); print(c.execute('PRAGMA integrity_check').fetchone())"`.
 
 ### Monitoramento
 

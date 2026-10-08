@@ -898,7 +898,7 @@ async def ops_backup(session: dict[str, Any] = Depends(require_session)) -> dict
         raise HTTPException(
             status_code=500, detail=f"Falha no backup: {type(exc).__name__}"
         ) from exc
-    _access_log("backup_manual", file=dest.name, by=session.get("username"))
+    _access_log("backup_manual", file=dest.name)
     return {
         "ok": True,
         "file": dest.name,
