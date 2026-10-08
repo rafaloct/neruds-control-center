@@ -1969,7 +1969,10 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       const SizedBox(height: 8),
       OutlinedButton.icon(
         key: const ValueKey('mission-link-node'),
-        onPressed: saving ? null : _linkPortalNode,
+        // Disabled while a gap re-check runs — the guard inside
+        // _linkPortalNode would otherwise discard the entered node
+        // silently after the dialog closed.
+        onPressed: saving || checkingGap ? null : _linkPortalNode,
         icon: const Icon(Icons.link, size: 18),
         label: const Text('Vincular ficha do portal'),
       ),
