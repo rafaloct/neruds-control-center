@@ -22,7 +22,7 @@ def auth(token: str) -> dict[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_ready_ok(async_client):
+async def test_ready_ok(async_client, seeded_mission):
     response = await async_client.get("/ready")
     assert response.status_code == 200
     assert response.json()["ready"] is True
@@ -165,7 +165,7 @@ async def test_backup_retention_prunes_old(admin_session):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_ops_status_probes(async_client, admin_session, monkeypatch):
+async def test_ops_status_probes(async_client, admin_session, seeded_mission, monkeypatch):
     token, _ = admin_session
     monkeypatch.setattr(main, "SELF_HEALTH_URL", "https://bridge.ts.net:8443/health")
     monkeypatch.setattr(main, "SMTP_CONNECT_HOST", "127.0.0.1")

@@ -172,8 +172,10 @@ desligado (`--no-access-log`), pois gravaria query strings sem sanitizar.
 - Retenção: 14 arquivos (`NERUDS_BACKUP_KEEP` para ajustar).
 - Sob demanda (sessão com `can_admin_users`): `POST /ops/backup`,
   `GET /ops/backups`.
-- Restore: pare o bridge, extraia o zip, substitua `data/missions.sqlite3`
-  e `data/evidence/` pelo conteúdo extraído e inicie de novo. Valide antes:
+- Restore: pare o bridge, extraia o zip, **apague os sidecars**
+  `data/missions.sqlite3-wal` e `data/missions.sqlite3-shm` se existirem
+  (WAL retido de parada impura), substitua `data/missions.sqlite3` e
+  `data/evidence/` pelo conteúdo extraído e inicie de novo. Valide antes:
   `python -c "import sqlite3; c=sqlite3.connect('missions.sqlite3'); print(c.execute('PRAGMA integrity_check').fetchone())"`.
 
 ### Monitoramento

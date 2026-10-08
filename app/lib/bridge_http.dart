@@ -38,9 +38,10 @@ void _checkSession(int statusCode, Map<String, String>? headers) {
 
 Future<upstream.Response> _response(
   Future<upstream.Response> request,
-  Map<String, String>? headers,
-) async {
-  final response = await request.timeout(requestTimeout);
+  Map<String, String>? headers, [
+  Duration? timeout,
+]) async {
+  final response = await request.timeout(timeout ?? requestTimeout);
   _checkSession(response.statusCode, headers);
   return response;
 }
@@ -53,9 +54,11 @@ Future<upstream.Response> post(
   Map<String, String>? headers,
   Object? body,
   Encoding? encoding,
+  Duration? timeout,
 }) => _response(
   _client.post(url, headers: headers, body: body, encoding: encoding),
   headers,
+  timeout,
 );
 
 Future<upstream.Response> patch(

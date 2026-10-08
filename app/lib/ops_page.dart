@@ -102,6 +102,8 @@ class _OpsPageState extends State<OpsPage> {
       final response = await http.post(
         _opsUri('/ops/backup'),
         headers: AppSession.instance.authHeaders,
+        // Um zip grande de evidências pode passar do timeout padrão de 25s.
+        timeout: const Duration(seconds: 120),
       );
       if (!mounted) return;
       if (response.statusCode == 200) {

@@ -168,10 +168,13 @@ class AccessLogMiddleware:
         try:
             await self.app(scope, receive, send_wrapped)
         finally:
+            # Segmentos puramente numéricos são identificadores (uid, nid,
+            # task_id) — redigidos para não persistir PII no log.
+            path = re.sub(r"/\d+(?=/|$)", "/:id", scope.get("path", ""))
             _access_log(
                 "http_request",
                 method=scope.get("method", ""),
-                path=scope.get("path", ""),
+                path=path,
                 status=status,
                 duration_ms=round((time.monotonic() - start) * 1000, 1),
             )

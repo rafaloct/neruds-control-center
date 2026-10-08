@@ -283,15 +283,16 @@ def backup_due(max_age_hours: float = 24.0) -> bool:
 
 
 def check_ready() -> bool:
-    """Readiness real: o arquivo existe e o schema da missão responde.
+    """Readiness real: o arquivo existe, o schema responde e a missão não
+    está vazia (um banco recriado por init_db com zero tarefas indica
+    perda de dados, não prontidão).
 
     Abre em modo somente-leitura — um banco ausente não é recriado."""
     if not DB_PATH.is_file():
         return False
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     try:
-        conn.execute("SELECT 1 FROM mission_task LIMIT 1")
-        return True
+        return conn.execute("SELECT 1 FROM mission_task LIMIT 1").fetchone() is not None
     finally:
         conn.close()
 
