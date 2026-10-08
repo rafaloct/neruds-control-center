@@ -112,6 +112,38 @@ def test_task_detail_and_update(seeded_mission):
     assert latest_event["evidence_url"] == "https://example.org/evidence1"
 
 
+def test_task_stage_validated_against_mission_workflow(seeded_mission):
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+
+    # A stage outside the mission's workflow is rejected.
+    with pytest.raises(ValueError):
+        mission_store.update_task(
+            task["id"], actor="test.user", changes={"current_stage": "Inventada"}
+        )
+
+    # A mission with its own workflow accepts its custom stages and
+    # create_task seeds its first stage.
+    with mission_store.connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO mission (code,title,workflow_json,created_at,updated_at)"
+            " VALUES ('MIN-X','Missão custom','[\"Fila\",\"Feita\"]','x','x')"
+        )
+        conn.commit()
+        custom_id = int(cur.lastrowid)
+    task2 = mission_store.create_task(
+        custom_id, actor="a", fields={"title": "Tarefa custom"}
+    )
+    assert task2["current_stage"] == "Fila"
+    updated = mission_store.update_task(
+        task2["id"], actor="a", changes={"current_stage": "Feita"}
+    )
+    assert updated["current_stage"] == "Feita"
+    with pytest.raises(ValueError):
+        mission_store.update_task(
+            task2["id"], actor="a", changes={"current_stage": "Triagem"}
+        )
+
+
 def test_task_portal_link_is_updatable(seeded_mission):
     tasks = mission_store.list_tasks(1, limit=5)
     first_task_id = tasks["items"][0]["id"]

@@ -879,6 +879,27 @@ def update_task(
         if not before:
             raise KeyError("task_not_found")
 
+        if "current_stage" in allowed:
+            # Missions may store their own workflow — a stage is valid
+            # when it belongs to the global workflow or this mission's.
+            mission_row = conn.execute(
+                "SELECT workflow_json FROM mission WHERE id=?",
+                (before["mission_id"],),
+            ).fetchone()
+            try:
+                mission_workflow = (
+                    json.loads(mission_row["workflow_json"] or "[]")
+                    if mission_row
+                    else []
+                )
+            except (TypeError, ValueError):
+                mission_workflow = []
+            valid_stages = (
+                set(mission_workflow) if mission_workflow else set(WORKFLOW)
+            )
+            if allowed["current_stage"] not in valid_stages:
+                raise ValueError("invalid_stage")
+
         if not actor_can_review and "responsible" in allowed:
             # A non-reviewer may only claim an unassigned task or adjust
             # their own — never move a task someone else owns, even via

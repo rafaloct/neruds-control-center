@@ -2041,8 +2041,8 @@ def mission_task_update(
     # When both links change they must reference the same node — the pair
     # check itself runs inside update_task's transaction so a concurrent
     # PATCH cannot interleave between this validation and the write.
-    if payload.current_stage and payload.current_stage not in mission_store.WORKFLOW:
-        raise HTTPException(status_code=422, detail="Etapa da missão inválida.")
+    # Stage validity is checked there too, against the mission's own
+    # workflow (which may differ from the global WORKFLOW).
     try:
         return mission_store.update_task(
             task_id,
@@ -2067,6 +2067,8 @@ def mission_task_update(
             "O endereço salvo usa um alias sem nid. Envie os "
             "dois endereços da nova ficha para revincular."
             if str(exc) == "link_alias_unresolvable"
+            else "Etapa da missão inválida."
+            if str(exc) == "invalid_stage"
             else "Os endereços público e de edição devem apontar "
             "para a mesma ficha."
         )
