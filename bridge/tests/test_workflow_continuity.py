@@ -8,6 +8,7 @@ import pytest
 from httpx import Response
 
 import main
+import mission_store
 import review_store
 import rss_store
 
@@ -15,6 +16,9 @@ import rss_store
 @pytest.fixture(autouse=True)
 def isolated_editorial_services(monkeypatch):
     monkeypatch.setattr(main, "PORTAL_URL", "https://portal.example.org")
+    monkeypatch.setattr(
+        mission_store, "PORTAL_URL", "https://portal.example.org"
+    )
     monkeypatch.setattr(main, "SMTP_FROM", "")
     monkeypatch.setattr(main, "SMTP_REVIEW_TO", "")
 

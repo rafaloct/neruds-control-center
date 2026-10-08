@@ -24,6 +24,7 @@ import content_map
 import identity_store
 import mission_automation
 import mission_store
+import portal_links
 import review_store
 import rss_store
 from dotenv import load_dotenv
@@ -37,52 +38,18 @@ load_dotenv()
 PORTAL_URL = os.getenv("NERUDS_PORTAL_URL", "https://neruds.org").rstrip("/")
 VPS_TAILSCALE_HOST = os.getenv("NERUDS_VPS_TAILSCALE_HOST", "100.111.132.36")
 
-_PORTAL_NODE_PATH = re.compile(r"^/node/(\d+)(/edit)?/?$")
+_PORTAL_NODE_PATH = portal_links.NODE_PATH_RE
 
 
 def _portal_url_path(url: str) -> str | None:
     """Portal-relative path when *url* shares the configured portal's
     scheme, origin and base path; None otherwise."""
-    try:
-        parsed = urlparse(str(url))
-        portal = urlparse(PORTAL_URL)
-        default_port = {"https": 443, "http": 80}
-        if (
-            parsed.scheme not in ("http", "https")
-            or parsed.username
-            or parsed.password
-            or (
-                parsed.scheme,
-                parsed.hostname,
-                parsed.port or default_port.get(parsed.scheme),
-            )
-            != (
-                portal.scheme,
-                portal.hostname,
-                portal.port or default_port.get(portal.scheme),
-            )
-        ):
-            return None
-    except ValueError:
-        return None
-    base_path = portal.path.rstrip("/")
-    path = parsed.path
-    if base_path:
-        if not path.startswith(base_path + "/"):
-            return None
-        path = path[len(base_path):]
-    return path
+    return portal_links.portal_url_path(url, PORTAL_URL)
 
 
 def _portal_node_parts(url: str) -> tuple[str, bool] | None:
     """Return (nid, is_edit) when *url* is a /node/{nid}[/edit] portal page."""
-    path = _portal_url_path(url)
-    if path is None:
-        return None
-    match = _PORTAL_NODE_PATH.match(path)
-    if not match:
-        return None
-    return match.group(1), match.group(2) == "/edit"
+    return portal_links.portal_node_parts(url, PORTAL_URL)
 
 
 def _portal_node_nid(url: str) -> str | None:
@@ -93,8 +60,9 @@ def _portal_node_nid(url: str) -> str | None:
 def _portal_node_link(url: str, *, require_edit: bool) -> bool:
     """True when *url* is a portal /node link of exactly the expected kind —
     the /edit suffix must be present for edit_url and absent for public_url."""
-    parts = _portal_node_parts(url)
-    return parts is not None and parts[1] == require_edit
+    return portal_links.portal_node_link(
+        url, require_edit=require_edit, portal_url=PORTAL_URL
+    )
 
 
 ALLOWED_ORIGINS = [

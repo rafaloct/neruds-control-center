@@ -617,6 +617,9 @@ class PortalReadApi {
     ]);
 
     stamps.sort();
+    // Listing URLs come from the live response when it succeeds; static
+    // portal paths keep the links working when the gap query fails.
+    final portal = AppConfig.portalUrl.replaceAll(RegExp(r'/+$'), '');
     return MonitoringData(
       fetchedAt: stamps.isEmpty ? null : stamps.first,
       projetos: results[0] as SectionResult<ProjectBoard>,
@@ -627,11 +630,12 @@ class PortalReadApi {
       projetoGaps: results[5] as SectionResult<GapReport>,
       acaoGaps: results[6] as SectionResult<GapReport>,
       eventoGaps: results[7] as SectionResult<GapReport>,
-      eventsListingUrl: eventsListingUrl,
-      projetosListingUrl: projetosListingUrl,
-      projetosMapUrl: projetosMapUrl,
-      publicacoesListingUrl: publicacoesListingUrl,
-      noticiasListingUrl: noticiasListingUrl,
+      eventsListingUrl: eventsListingUrl ?? '$portal/eventos',
+      projetosListingUrl: projetosListingUrl ?? '$portal/projetos',
+      projetosMapUrl: projetosMapUrl ?? '$portal/mapa-projetos',
+      publicacoesListingUrl:
+          publicacoesListingUrl ?? '$portal/publicacoes',
+      noticiasListingUrl: noticiasListingUrl ?? '$portal/noticias',
     );
   }
 }

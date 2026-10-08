@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
 import zipfile
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
+
+import portal_links
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -180,16 +183,17 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
-_NODE_LINK = re.compile(r"/node/(\d+)(?:/edit)?/?$")
+PORTAL_URL = os.getenv("NERUDS_PORTAL_URL", "https://neruds.org").rstrip("/")
 
 
 def _link_nid(url: Any) -> str | None:
-    """Extract the node id from a persisted portal link, or None for
-    aliases/foreign URLs that carry no /node/{nid} path."""
+    """Extract the node id from a persisted link, but only when the URL
+    provably belongs to the configured portal — a foreign /node/N path
+    must never count as our ficha."""
     if not url:
         return None
-    match = _NODE_LINK.search(str(url).split("?")[0])
-    return match.group(1) if match else None
+    parts = portal_links.portal_node_parts(str(url), PORTAL_URL)
+    return parts[0] if parts else None
 
 
 def _nonempty_rows(rows: list[list[Any]]) -> list[list[Any]]:

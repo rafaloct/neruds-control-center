@@ -5,6 +5,15 @@ import zipfile
 from io import BytesIO
 
 
+@pytest.fixture(autouse=True)
+def portal_url(monkeypatch):
+    """Links in these tests live on a synthetic portal — the store's
+    origin-aware nid extraction must see them as the configured portal."""
+    monkeypatch.setattr(
+        mission_store, "PORTAL_URL", "https://portal.example.org"
+    )
+
+
 def test_seed_from_json(temp_db):
     res = mission_store.seed_from_json(force=True)
     assert res["seeded"] is True
