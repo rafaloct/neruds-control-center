@@ -1316,7 +1316,11 @@ async def portal_duplicatas(
     groups: dict[str, list[dict[str, Any]]] = {}
     async with drupal_client(session) as client:
         for bundle in DOI_BUNDLES:
-            fetched = await _jsonapi_items(client, bundle, ["field_doi"])
+            # Drafts reusing a DOI are the case worth flagging — JSON:API
+            # already hides unpublished content the session cannot see.
+            fetched = await _jsonapi_items(
+                client, bundle, ["field_doi"], published_only=False
+            )
             for item in fetched["data"]:
                 attrs = item.get("attributes") or {}
                 doi = _normalize_doi(attrs.get("field_doi"))
@@ -2001,6 +2005,15 @@ def mission_task_update(
             changes=changes,
             note=payload.note,
             evidence_url=payload.evidence_url,
+            actor_can_review=session.get("can_review", False),
+        )
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Sem perfil de revisão, a tarefa só pode ser atribuída "
+                "ao próprio usuário."
+            ),
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")

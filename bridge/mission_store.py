@@ -863,6 +863,7 @@ def update_task(
     changes: dict[str, Any],
     note: str | None = None,
     evidence_url: str | None = None,
+    actor_can_review: bool = True,
 ) -> dict[str, Any]:
     allowed = {k: v for k, v in changes.items() if k in FIELD_MAP}
     if not allowed and not note and not evidence_url:
@@ -877,6 +878,20 @@ def update_task(
         before = conn.execute("SELECT * FROM mission_task WHERE id=?", (task_id,)).fetchone()
         if not before:
             raise KeyError("task_not_found")
+
+        if not actor_can_review and "responsible" in allowed:
+            # A non-reviewer may only claim an unassigned task or adjust
+            # their own — never move a task someone else owns, even via
+            # the responsible fallback when primary_owner is unset.
+            current_owner = (
+                (before["primary_owner"] or "") or (before["responsible"] or "")
+            ).strip()
+            requested = (allowed["responsible"] or "").strip()
+            if (
+                requested != actor
+                or (current_owner and current_owner != actor)
+            ):
+                raise PermissionError("owner_change_denied")
 
         if "public_url" in allowed or "edit_url" in allowed:
             # Pair check inside the transaction: the links being written

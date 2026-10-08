@@ -29,6 +29,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
   String? _eixoFilter;
   String? _linhaFilter;
   String? _odsFilter;
+  bool _creatingGapTask = false;
 
   /// Bundles each role may create — the real permission matrix observed on
   /// the portal: extensionista/pesquisador create noticia+relatorio,
@@ -652,13 +653,17 @@ class _MonitoringPageState extends State<MonitoringPage> {
     if (node.nid == null) return const SizedBox.shrink();
     return TextButton.icon(
       key: ValueKey('gap-task-${node.nid}'),
-      onPressed: () => _createGapTask(node),
+      // A second tap mid-flight would open another dialog/POST and create
+      // a duplicate task for the same gap.
+      onPressed: _creatingGapTask ? null : () => _createGapTask(node),
       icon: const Icon(Icons.playlist_add, size: 18),
       label: const Text('Criar tarefa'),
     );
   }
 
   Future<void> _createGapTask(GapNode node) async {
+    if (_creatingGapTask) return;
+    setState(() => _creatingGapTask = true);
     // The dialog must not outlive the session that opened it — a logout or
     // account switch while it is open would send the task under a
     // different account with stale prefilled data.
@@ -670,11 +675,16 @@ class _MonitoringPageState extends State<MonitoringPage> {
     try {
       missions = await _api.listMissions();
     } catch (error) {
+      _creatingGapTask = false;
       _message(workflowError(error));
       return;
     }
-    if (!mounted || !sessionIntact()) return;
+    if (!mounted || !sessionIntact()) {
+      _creatingGapTask = false;
+      return;
+    }
     if (missions.isEmpty) {
+      _creatingGapTask = false;
       _message('Nenhuma missão disponível para receber a tarefa.');
       return;
     }
@@ -761,15 +771,19 @@ class _MonitoringPageState extends State<MonitoringPage> {
         ),
       ),
     );
-    if (!mounted) return;
+    if (!mounted) {
+      _creatingGapTask = false;
+      return;
+    }
     if (confirmed != true || !sessionIntact()) {
-      if (confirmed == true && mounted) {
+      if (confirmed == true) {
         _message('A sessão mudou — a tarefa não foi criada. '
             'Confira a conta e tente de novo.');
       }
       title.dispose();
       responsible.dispose();
       action.dispose();
+      setState(() => _creatingGapTask = false);
       return;
     }
     try {
@@ -790,6 +804,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
       title.dispose();
       responsible.dispose();
       action.dispose();
+      if (mounted) setState(() => _creatingGapTask = false);
     }
   }
 
