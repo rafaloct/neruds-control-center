@@ -3,6 +3,7 @@ from datetime import date, timedelta
 import pytest
 import respx
 from httpx import Response
+import content_map
 import main
 import mission_store
 import review_store
@@ -564,6 +565,23 @@ async def test_create_task_from_portal_gap(
     assert spelled.status_code == 201
     assert spelled.json()["public_url"] == f"{main.PORTAL_URL}/node/77"
 
+    # A gap task without an explicit content_type derives the bundle's
+    # human label so it stays filterable on the board.
+    derived = await async_client.post(
+        "/missions/1/tasks",
+        json={
+            "title": "Tipo derivado",
+            "gap_bundle": "publicacao_cientifica",
+            "gap_fields": ["field_doi"],
+        },
+        headers=headers,
+    )
+    assert derived.status_code == 201
+    assert (
+        derived.json()["content_type"]
+        == content_map.MONITORED_TYPES["publicacao_cientifica"]["label"]
+    )
+
 
 async def test_create_task_rejections(
     async_client, extensionista_session, revisor_session, seeded_mission
@@ -611,6 +629,13 @@ async def test_create_task_rejections(
         headers=headers,
     )
     assert unknown_field.status_code == 422
+
+    empty_fields = await async_client.post(
+        "/missions/1/tasks",
+        json={"title": "Sem campos", "gap_bundle": "noticia"},
+        headers=headers,
+    )
+    assert empty_fields.status_code == 422
 
     orphan_fields = await async_client.post(
         "/missions/1/tasks",

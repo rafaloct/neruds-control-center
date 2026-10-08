@@ -764,6 +764,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
         responsible: responsible.text.trim(),
         action: action.text.trim(),
       );
+      missionBoardChanged.value++;
       _message('Tarefa criada na missão — acompanhe na aba Inventário.');
     } catch (error) {
       _message(workflowError(error));
@@ -884,6 +885,15 @@ class _MonitoringPageState extends State<MonitoringPage> {
         ]),
         if (showDuplicates && data.duplicates.ok)
           _duplicatesCard(data.duplicates.data!),
+        if (showDuplicates && !data.duplicates.ok)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              'Verificação de duplicatas indisponível: '
+              '${data.duplicates.error ?? 'falha na consulta'}',
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
+          ),
         const SizedBox(height: 12),
         Text(
           result.ok

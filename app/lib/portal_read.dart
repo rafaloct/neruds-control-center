@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+
 import 'app_config.dart';
 import 'app_session.dart';
 import 'bridge_http.dart' as http;
@@ -8,6 +10,10 @@ import 'workflow_widgets.dart';
 
 /// Read-only data from the portal's real structure (bridge issue #22).
 /// Every collection is stamped with the bridge fetch time, never invented.
+
+/// Bumped whenever a mission task is created outside the Inventário page
+/// (e.g. from a monitoring gap), so the retained page reloads.
+final missionBoardChanged = ValueNotifier<int>(0);
 
 class GapNodeRef {
   const GapNodeRef({
@@ -800,6 +806,9 @@ class PortalReadApi {
       'gaps': 'Faltam no portal: ${node.missing.join(', ')}',
       'gap_bundle': node.type,
       'gap_fields': node.missingFields,
+      // primary_owner is a controlled field — only review-capable
+      // sessions may set it; others keep the free-text responsible.
+      if (AppSession.instance.canReview) 'primary_owner': responsible,
       if (nid != null && portal.isNotEmpty) ...{
         'public_url': '$portal/node/$nid',
         'edit_url': '$portal/node/$nid/edit',

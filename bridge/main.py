@@ -1271,6 +1271,9 @@ DOI_BUNDLES = (
 )
 
 
+_DOI_SHAPE = re.compile(r"^10\.\d{4,9}/\S+$")
+
+
 def _normalize_doi(value: Any) -> str:
     text = str(value or "").strip().lower()
     for prefix in (
@@ -1283,7 +1286,8 @@ def _normalize_doi(value: Any) -> str:
     ):
         if text.startswith(prefix):
             text = text[len(prefix):]
-    return text.strip().rstrip(".;,/")
+    text = text.strip().rstrip(".;,/")
+    return text if _DOI_SHAPE.match(text) else ""
 
 
 @app.get("/portal/duplicatas")
@@ -1910,15 +1914,20 @@ def mission_task_create(
         meta = content_map.MONITORED_TYPES.get(fields["gap_bundle"])
         if meta is None:
             raise HTTPException(status_code=422, detail="Tipo não monitorado.")
+        if not fields.get("gap_fields"):
+            raise HTTPException(
+                status_code=422,
+                detail="Tarefa de lacuna exige os campos faltantes "
+                "registrados.",
+            )
         unknown = [
-            f
-            for f in fields.get("gap_fields", [])
-            if f not in meta["fields"]
+            f for f in fields["gap_fields"] if f not in meta["fields"]
         ]
         if unknown:
             raise HTTPException(
                 status_code=422, detail="Campo não monitorado neste tipo."
             )
+        fields.setdefault("content_type", meta["label"])
     elif fields.get("gap_fields"):
         raise HTTPException(
             status_code=422,

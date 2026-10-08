@@ -649,7 +649,12 @@ async def test_duplicatas_groups_shared_doi(
         return_value=Response(
             200,
             json=_jsonapi_payload(
-                [item(11, "grupo_estudos", "Grupo A", doi)]
+                [
+                    item(11, "grupo_estudos", "Grupo A", doi),
+                    # A repeated placeholder is not a DOI — it must not
+                    # form a duplicate group.
+                    item(17, "grupo_estudos", "Grupo B", "não se aplica"),
+                ]
             ),
         )
     )
@@ -661,6 +666,7 @@ async def test_duplicatas_groups_shared_doi(
                     # DOI written with a resolver prefix must still match
                     item(12, "noticia", "Notícia B", f"https://doi.org/{doi}"),
                     item(13, "noticia", "Notícia C", "10.9999/unico"),
+                    item(18, "noticia", "Notícia D", "não se aplica"),
                 ]
             ),
         )
@@ -698,3 +704,12 @@ async def test_duplicatas_groups_shared_doi(
         "publicacao",
         "publicacao_cientifica",
     }
+    # The repeated placeholder across bundles is not a real DOI and must
+    # never be reported as a duplicate group.
+    assert all(
+        "não se aplica" not in node["title"].lower()
+        and "não se aplica" not in group["doi"]
+        for group in groups
+        for node in group["nodes"]
+    )
+    assert all(g["doi"].startswith("10.") for g in groups)

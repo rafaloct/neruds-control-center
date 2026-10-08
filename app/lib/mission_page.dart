@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'app_config.dart';
 import 'bridge_http.dart' as http;
+import 'portal_read.dart' show missionBoardChanged;
 import 'session_widgets.dart';
 import 'unsaved_work.dart';
 import 'workflow_widgets.dart';
@@ -96,14 +97,20 @@ class _MissionPageState extends State<MissionPage> {
   void initState() {
     super.initState();
     AppSession.instance.addListener(_sessionChanged);
+    missionBoardChanged.addListener(_missionDataChanged);
     if (AppSession.instance.authenticated) _load();
   }
 
   @override
   void dispose() {
     AppSession.instance.removeListener(_sessionChanged);
+    missionBoardChanged.removeListener(_missionDataChanged);
     search.dispose();
     super.dispose();
+  }
+
+  void _missionDataChanged() {
+    if (mounted && AppSession.instance.authenticated) _load();
   }
 
   void _sessionChanged() {
@@ -787,7 +794,7 @@ class _MissionPageState extends State<MissionPage> {
                         '${task['current_stage'] ?? 'Triagem'}',
                       ),
                       Text(
-                        'Responsável: ${task['primary_owner'] ?? 'Não atribuído'}'
+                        'Responsável: ${task['primary_owner'] ?? task['responsible'] ?? 'Não atribuído'}'
                         ' · Revisão: ${task['cross_reviewer'] ?? 'Não atribuída'}',
                       ),
                       if ((task['suggested_area']?.toString() ?? '').isNotEmpty)
@@ -1568,6 +1575,7 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     if (revision == null) return;
     setState(() {
       checkingGap = true;
+      _gapCheck = null;
       _gapCheckError = null;
     });
     try {
@@ -1850,7 +1858,7 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
         ),
         const SizedBox(height: 8),
         Text(
-          'Responsável: ${data['primary_owner'] ?? 'Não atribuído'}'
+          'Responsável: ${data['primary_owner'] ?? data['responsible'] ?? 'Não atribuído'}'
           ' · Revisão: ${data['cross_reviewer'] ?? 'Não atribuída'}',
         ),
         const SizedBox(height: 8),
