@@ -260,7 +260,7 @@ async def test_drupal_duplicates_gap_task_uses_linked_node_title(
             "responsible": "extensionista.test",
         },
     )
-    assert task["source_record_id"] == "portal_gap:55"
+    assert task["source_record_id"].startswith("portal_gap:55:")
 
     route = respx_mock.get("https://neruds.org/jsonapi/node/publicacao").mock(
         side_effect=[
@@ -324,6 +324,18 @@ def test_create_task_source_record_id_is_unique(seeded_mission):
         1, actor="a", fields={"title": "Outra tarefa manual"}
     )
     assert first["source_record_id"] != second["source_record_id"]
+
+    # Repeated gap tasks for the same node must not collide either.
+    gap_fields = {
+        "gap_bundle": "publicacao",
+        "gap_fields": ["field_resumo"],
+        "title": "Completar ficha — X",
+        "public_url": "https://neruds.org/node/55",
+        "edit_url": "https://neruds.org/node/55/edit",
+    }
+    a = mission_store.create_task(1, actor="a", fields=dict(gap_fields))
+    b = mission_store.create_task(1, actor="a", fields=dict(gap_fields))
+    assert a["source_record_id"] != b["source_record_id"]
 
 
 async def test_automation_endpoints_require_auth(async_client):

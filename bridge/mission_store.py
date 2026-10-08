@@ -1055,10 +1055,11 @@ def create_task(
                 next_row,
                 (
                     # The export uses source_record_id as its ID column;
-                    # make it unique per linked node / creation.
-                    f"portal_gap:{linked_nid or f'row{next_row}'}"
+                    # keep it unique even for repeated tasks of the same
+                    # node (the negative row is unique per creation).
+                    f"portal_gap:{linked_nid or 'unlinked'}:{-next_row}"
                     if fields.get("gap_bundle")
-                    else f"app:{next_row}"
+                    else f"app:{-next_row}"
                 ),
                 # NULL priority sorts after every P0-P2 row and would fall
                 # outside the app's first page — default to the mid bucket.
