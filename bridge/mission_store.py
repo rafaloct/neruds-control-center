@@ -783,6 +783,11 @@ def list_tasks(
 def _task_row(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["public_check_ok"] = bool(data["public_check_ok"])
+    # Empty strings behave as "unassigned" everywhere — normalize so
+    # consumers can rely on null alone for the fallback logic.
+    for owner_field in ("primary_owner", "cross_reviewer", "responsible"):
+        if data.get(owner_field) == "":
+            data[owner_field] = None
     try:
         data["gap_fields"] = json.loads(data.get("gap_fields") or "[]")
     except ValueError:
