@@ -838,6 +838,11 @@ def update_task(
         return task_detail(task_id)
 
     with connect() as conn:
+        # BEGIN IMMEDIATE takes the write lock up front: python-sqlite3
+        # otherwise stays in autocommit until the first DML, leaving a
+        # window between this SELECT/validation and the UPDATE where a
+        # concurrent PATCH could interleave.
+        conn.execute("BEGIN IMMEDIATE")
         before = conn.execute("SELECT * FROM mission_task WHERE id=?", (task_id,)).fetchone()
         if not before:
             raise KeyError("task_not_found")
