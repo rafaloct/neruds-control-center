@@ -2186,15 +2186,36 @@ async def mission_task_drupal_duplicates(
     except KeyError:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
 
-    bundle = mission_automation.CONTENT_TYPE_BUNDLES.get(
+    bundle = task.get("gap_bundle") or mission_automation.CONTENT_TYPE_BUNDLES.get(
         (task.get("content_type") or "").strip()
     )
     title = (task.get("title") or "").strip()
+    linked_nid = _portal_node_nid(task.get("public_url") or "") or _portal_node_nid(
+        task.get("edit_url") or ""
+    )
     if not bundle or not title:
         return {"task_id": task_id, "bundle": bundle, "matches": []}
 
     matches = []
     async with drupal_client(session) as client:
+        if linked_nid is not None:
+            # Gap tasks are titled "Completar ficha — <node title>"; the
+            # duplicate search must use the linked node's real title.
+            response = await client.get(
+                f"/jsonapi/node/{bundle}",
+                params={
+                    "filter[drupal_internal__nid]": linked_nid,
+                    "page[limit]": 1,
+                },
+            )
+            if response.status_code < 400:
+                data = response.json().get("data", [])
+                if data:
+                    node_title = (
+                        data[0].get("attributes", {}).get("title") or ""
+                    ).strip()
+                    if node_title:
+                        title = node_title
         response = await client.get(
             f"/jsonapi/node/{bundle}",
             params={"filter[title]": title, "page[limit]": 20},
@@ -2206,9 +2227,12 @@ async def mission_task_drupal_duplicates(
             )
         for item in response.json().get("data", []):
             attrs = item.get("attributes", {})
+            nid = attrs.get("drupal_internal__nid")
+            if linked_nid is not None and str(nid) == str(linked_nid):
+                continue
             matches.append(
                 {
-                    "nid": attrs.get("drupal_internal__nid"),
+                    "nid": nid,
                     "uuid": item.get("id"),
                     "title": attrs.get("title", ""),
                     "published": bool(attrs.get("status", False)),
@@ -2272,7 +2296,18 @@ def _open_tasks_for(username: str) -> list[dict[str, Any]]:
     mission_id = _mission_id()
     if mission_id is None:
         return []
-    items = mission_store.list_tasks(mission_id, owner=username, limit=500)["items"]
+    # App-created tasks can push an owner past the 500-row page — page
+    # through instead of silently missing tasks during offboarding.
+    items: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = mission_store.list_tasks(
+            mission_id, owner=username, limit=500, offset=offset
+        )["items"]
+        items.extend(page)
+        if len(page) < 500:
+            break
+        offset += 500
     return [t for t in items if t.get("current_stage") not in CLOSED_STAGES]
 
 

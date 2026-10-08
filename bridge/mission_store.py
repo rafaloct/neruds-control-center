@@ -1030,6 +1030,7 @@ def create_task(
         }
         if len(nids) > 1:
             raise ValueError("link_node_mismatch")
+        linked_nid = next(iter(nids), None)
 
         # Negative rows only: MIN over the whole mission could be a positive
         # sheet row (min=2 → next=1), which a later re-seed could overwrite.
@@ -1052,7 +1053,13 @@ def create_task(
             (
                 mission_id,
                 next_row,
-                "portal_gap" if fields.get("gap_bundle") else "app",
+                (
+                    # The export uses source_record_id as its ID column;
+                    # make it unique per linked node / creation.
+                    f"portal_gap:{linked_nid or f'row{next_row}'}"
+                    if fields.get("gap_bundle")
+                    else f"app:{next_row}"
+                ),
                 # NULL priority sorts after every P0-P2 row and would fall
                 # outside the app's first page — default to the mid bucket.
                 fields.get("priority") or "P1",

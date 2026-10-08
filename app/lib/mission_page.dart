@@ -1568,6 +1568,7 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
   /// Reconciliation: re-read the ficha on the portal and compare the
   /// current monitored fields with the gaps this task was created for.
   Future<void> _recheckGap() async {
+    if (checkingGap) return;
     final bundle = task?['gap_bundle']?.toString() ?? '';
     final nid = _taskNid;
     if (bundle.isEmpty || nid == null) return;
@@ -1790,7 +1791,10 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
             actions: [
               FilledButton.icon(
                 key: const ValueKey('mission-task-save'),
-                onPressed: !_sessionReady || loading || saving || !_dirty
+                // A save triggers a gap re-check; disabling it while one
+                // runs prevents two overlapping reconciliation requests.
+                onPressed:
+                    !_sessionReady || loading || saving || checkingGap || !_dirty
                     ? null
                     : _save,
                 icon: saving

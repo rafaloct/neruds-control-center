@@ -236,6 +236,96 @@ async def test_drupal_duplicates_unmapped_type(async_client, extensionista_sessi
     assert res.json()["matches"] == []
 
 
+@respx.mock
+async def test_drupal_duplicates_gap_task_uses_linked_node_title(
+    async_client, extensionista_session, respx_mock
+):
+    """Gap tasks are titled 'Completar ficha — <node title>'; the duplicate
+    search must query the linked node's real title and exclude the node
+    itself from the matches."""
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    mission_store.seed_from_json(force=True)
+
+    task = mission_store.create_task(
+        1,
+        actor="extensionista.test",
+        fields={
+            "gap_bundle": "publicacao",
+            "gap_fields": ["field_resumo"],
+            "content_type": "Publicação",
+            "title": "Completar ficha — Terra Fria",
+            "public_url": "https://neruds.org/node/55",
+            "edit_url": "https://neruds.org/node/55/edit",
+            "responsible": "extensionista.test",
+        },
+    )
+    assert task["source_record_id"] == "portal_gap:55"
+
+    route = respx_mock.get("https://neruds.org/jsonapi/node/publicacao").mock(
+        side_effect=[
+            Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "uuid-55",
+                            "attributes": {
+                                "drupal_internal__nid": 55,
+                                "title": "Terra Fria",
+                            },
+                        }
+                    ]
+                },
+            ),
+            Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "uuid-55",
+                            "attributes": {
+                                "drupal_internal__nid": 55,
+                                "title": "Terra Fria",
+                            },
+                        },
+                        {
+                            "id": "uuid-77",
+                            "attributes": {
+                                "drupal_internal__nid": 77,
+                                "title": "Terra Fria",
+                                "status": True,
+                                "path": {"alias": "/terra-fria-dup"},
+                            },
+                        },
+                    ]
+                },
+            ),
+        ]
+    )
+
+    res = await async_client.get(
+        f"/mission-tasks/{task['id']}/drupal-duplicates", headers=headers
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["bundle"] == "publicacao"
+    assert [m["nid"] for m in data["matches"]] == [77]
+    assert len(route.calls) == 2
+    assert route.calls[0].request.url.params["filter[drupal_internal__nid]"] == "55"
+    assert route.calls[1].request.url.params["filter[title]"] == "Terra Fria"
+
+
+def test_create_task_source_record_id_is_unique(seeded_mission):
+    first = mission_store.create_task(
+        1, actor="a", fields={"title": "Uma tarefa manual"}
+    )
+    second = mission_store.create_task(
+        1, actor="a", fields={"title": "Outra tarefa manual"}
+    )
+    assert first["source_record_id"] != second["source_record_id"]
+
+
 async def test_automation_endpoints_require_auth(async_client):
     assert (await async_client.get("/missions/1/automation")).status_code == 401
     assert (await async_client.post("/missions/1/url-check")).status_code == 401
