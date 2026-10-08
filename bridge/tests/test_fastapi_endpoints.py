@@ -582,6 +582,22 @@ async def test_create_task_from_portal_gap(
         == content_map.MONITORED_TYPES["publicacao_cientifica"]["label"]
     )
 
+    # An extensionista cannot set the controlled primary_owner, so the
+    # owner dimension falls back to the free-text responsible — the task
+    # must still appear under its responsible in filters and dashboards.
+    filtered = await async_client.get(
+        "/missions/1/tasks?owner=extensionista.test", headers=headers
+    )
+    assert filtered.status_code == 200
+    assert any(
+        item["id"] == task["id"] for item in filtered.json()["items"]
+    )
+    board = await async_client.get(
+        "/missions/1/dashboard", headers=headers
+    )
+    assert board.status_code == 200
+    assert board.json()["by_owner"].get("extensionista.test", 0) >= 1
+
 
 async def test_create_task_rejections(
     async_client, extensionista_session, revisor_session, seeded_mission

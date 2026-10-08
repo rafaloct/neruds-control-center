@@ -1253,6 +1253,7 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     loading = false;
     saving = false;
     checkingDuplicates = false;
+    checkingGap = false;
     if (!changedIdentity) return;
     _applying = true;
     task = null;
@@ -1262,7 +1263,6 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     _loadError = null;
     _duplicateError = null;
     _gapCheckError = null;
-    checkingGap = false;
     stage = null;
     publicCheck = false;
     _didChange = false;

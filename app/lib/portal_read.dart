@@ -799,6 +799,14 @@ class PortalReadApi {
   }) async {
     final portal = AppConfig.portalUrl.replaceAll(RegExp(r'/+$'), '');
     final nid = node.nid;
+    // Prefer the canonical links the gap endpoint already returned — the
+    // portal snapshot may not have populated AppConfig.portalUrl yet.
+    final viewUrl = node.viewUrl ??
+        ((nid != null && portal.isNotEmpty) ? '$portal/node/$nid' : null);
+    final editUrl = node.editUrl ??
+        ((nid != null && portal.isNotEmpty)
+            ? '$portal/node/$nid/edit'
+            : null);
     final payload = <String, dynamic>{
       'title': title,
       'responsible': responsible,
@@ -809,10 +817,8 @@ class PortalReadApi {
       // primary_owner is a controlled field — only review-capable
       // sessions may set it; others keep the free-text responsible.
       if (AppSession.instance.canReview) 'primary_owner': responsible,
-      if (nid != null && portal.isNotEmpty) ...{
-        'public_url': '$portal/node/$nid',
-        'edit_url': '$portal/node/$nid/edit',
-      },
+      'public_url': ?viewUrl,
+      'edit_url': ?editUrl,
     };
     final response = await http.post(
       AppConfig.endpoint('/missions/$missionId/tasks'),

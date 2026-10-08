@@ -1296,7 +1296,10 @@ async def portal_duplicatas(
 ) -> dict[str, Any]:
     """Flag nodes sharing a DOI across bundles — a signal for human
     review only; the bridge never merges or deletes portal records."""
-    cached = _portal_cache_get("portal:duplicatas")
+    # Field visibility is per-session (Drupal cookies), so the cache must
+    # be scoped to the requesting user like the other portal reads.
+    cache_key = f"portal:duplicatas:{session['username']}"
+    cached = _portal_cache_get(cache_key)
     if cached is not None:
         return cached
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -1321,7 +1324,7 @@ async def portal_duplicatas(
     ]
     duplicates.sort(key=lambda group: -len(group["nodes"]))
     return _portal_cache_set(
-        "portal:duplicatas",
+        cache_key,
         {
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "groups": duplicates,

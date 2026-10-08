@@ -670,7 +670,8 @@ def dashboard(mission_id: int) -> dict[str, Any]:
             raise KeyError("mission_not_found")
         tasks = conn.execute(
             """
-            SELECT priority,content_type,current_stage,primary_owner,internal_deadline
+            SELECT priority,content_type,current_stage,primary_owner,
+                   responsible,internal_deadline
             FROM mission_task WHERE mission_id=?
             """,
             (mission_id,),
@@ -687,7 +688,10 @@ def dashboard(mission_id: int) -> dict[str, Any]:
     stages = Counter((row["current_stage"] or "Sem etapa") for row in tasks)
     priorities = Counter((row["priority"] or "Sem prioridade") for row in tasks)
     types = Counter((row["content_type"] or "Sem tipo") for row in tasks)
-    owners = Counter((row["primary_owner"] or "Não atribuído") for row in tasks)
+    owners = Counter(
+        (row["primary_owner"] or row["responsible"] or "Não atribuído")
+        for row in tasks
+    )
     total = len(tasks)
     concluded = stages.get("Concluído", 0)
     overdue = sum(
@@ -737,13 +741,17 @@ def list_tasks(
     filters = {
         "current_stage": stage,
         "priority": priority,
-        "primary_owner": owner,
         "content_type": content_type,
     }
     for field, value in filters.items():
         if value:
             where.append(f"{field}=?")
             args.append(value)
+    if owner:
+        # Gap tasks may only carry the free-text responsible when the
+        # creator lacked assignment permission.
+        where.append("COALESCE(NULLIF(primary_owner,''),responsible)=?")
+        args.append(owner)
     if query:
         where.append("(title LIKE ? OR action LIKE ? OR gaps LIKE ? OR suggested_query LIKE ?)")
         q = f"%{query}%"
@@ -1477,7 +1485,8 @@ def dashboard(mission_id: int) -> dict[str, Any]:
 
         tasks = conn.execute(
             """
-            SELECT priority,content_type,current_stage,primary_owner,internal_deadline
+            SELECT priority,content_type,current_stage,primary_owner,
+                   responsible,internal_deadline
             FROM mission_task WHERE mission_id=?
             """,
             (mission_id,),
@@ -1509,7 +1518,10 @@ def dashboard(mission_id: int) -> dict[str, Any]:
     stages = Counter((row["current_stage"] or "Sem etapa") for row in tasks)
     priorities = Counter((row["priority"] or "Sem prioridade") for row in tasks)
     types = Counter((row["content_type"] or "Sem tipo") for row in tasks)
-    owners = Counter((row["primary_owner"] or "Não atribuído") for row in tasks)
+    owners = Counter(
+        (row["primary_owner"] or row["responsible"] or "Não atribuído")
+        for row in tasks
+    )
     work_sections = Counter((row["section"] or "Outros") for row in work_items)
 
     total = len(tasks)
