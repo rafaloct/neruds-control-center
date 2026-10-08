@@ -506,6 +506,141 @@ async def test_mission_task_portal_link_via_api(
     assert equivalent.json()["public_url"] == f"{main.PORTAL_URL}/node/555"
 
 
+async def test_create_task_from_portal_gap(
+    async_client, extensionista_session, seeded_mission
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = await async_client.post(
+        "/missions/1/tasks",
+        json={
+            "title": "Preencher resumo — Publicação X",
+            "content_type": "Publicação Científica",
+            "responsible": "extensionista.test",
+            "action": "Abrir a ficha no portal e completar os campos ausentes",
+            "gaps": "Faltam no portal: Resumo",
+            "public_url": f"{main.PORTAL_URL}/node/55",
+            "edit_url": f"{main.PORTAL_URL}/node/55/edit",
+            "gap_bundle": "publicacao_cientifica",
+            "gap_fields": ["field_resumo_publicacao"],
+            "note": "Criada a partir da lacuna monitorada",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    task = created.json()
+    assert task["current_stage"] == "Triagem"
+    assert task["status"] == "A fazer"
+    assert task["responsible"] == "extensionista.test"
+    assert task["gap_bundle"] == "publicacao_cientifica"
+    assert task["gap_fields"] == ["field_resumo_publicacao"]
+    assert task["public_url"] == f"{main.PORTAL_URL}/node/55"
+    assert task["edit_url"] == f"{main.PORTAL_URL}/node/55/edit"
+    # App-created rows take negative spreadsheet rows so a re-seed can
+    # never overwrite them.
+    assert task["spreadsheet_row"] < 0
+    assert task["events"][0]["event_type"] == "task_created"
+
+    # A second creation gets a distinct generated row.
+    second = await async_client.post(
+        "/missions/1/tasks",
+        json={"title": "Tarefa manual"},
+        headers=headers,
+    )
+    assert second.status_code == 201
+    assert second.json()["spreadsheet_row"] < task["spreadsheet_row"]
+
+    # Equivalent link spellings canonicalize on create too.
+    spelled = await async_client.post(
+        "/missions/1/tasks",
+        json={
+            "title": "Link equivalente",
+            "public_url": f"{main.PORTAL_URL}/node/77/?utm=x",
+            "edit_url": f"{main.PORTAL_URL}/node/77/edit",
+        },
+        headers=headers,
+    )
+    assert spelled.status_code == 201
+    assert spelled.json()["public_url"] == f"{main.PORTAL_URL}/node/77"
+
+
+async def test_create_task_rejections(
+    async_client, extensionista_session, revisor_session, seeded_mission
+):
+    token, _ = extensionista_session
+    revisor_token, _ = revisor_session
+    headers = {"Authorization": f"Bearer {token}"}
+    revisor_headers = {"Authorization": f"Bearer {revisor_token}"}
+
+    mismatch = await async_client.post(
+        "/missions/1/tasks",
+        json={
+            "title": "Par divergente",
+            "public_url": f"{main.PORTAL_URL}/node/55",
+            "edit_url": f"{main.PORTAL_URL}/node/56/edit",
+        },
+        headers=headers,
+    )
+    assert mismatch.status_code == 422
+
+    foreign = await async_client.post(
+        "/missions/1/tasks",
+        json={
+            "title": "Ficha externa",
+            "public_url": "https://other.example.org/node/9",
+        },
+        headers=headers,
+    )
+    assert foreign.status_code == 422
+
+    unknown_bundle = await async_client.post(
+        "/missions/1/tasks",
+        json={"title": "Tipo ruim", "gap_bundle": "inexistente"},
+        headers=headers,
+    )
+    assert unknown_bundle.status_code == 422
+
+    unknown_field = await async_client.post(
+        "/missions/1/tasks",
+        json={
+            "title": "Campo ruim",
+            "gap_bundle": "noticia",
+            "gap_fields": ["field_resumo_publicacao"],
+        },
+        headers=headers,
+    )
+    assert unknown_field.status_code == 422
+
+    orphan_fields = await async_client.post(
+        "/missions/1/tasks",
+        json={"title": "Sem tipo", "gap_fields": ["field_doi"]},
+        headers=headers,
+    )
+    assert orphan_fields.status_code == 422
+
+    denied = await async_client.post(
+        "/missions/1/tasks",
+        json={"title": "Sem permissão", "primary_owner": "outra.pessoa"},
+        headers=headers,
+    )
+    assert denied.status_code == 403
+
+    allowed = await async_client.post(
+        "/missions/1/tasks",
+        json={"title": "Com permissão", "primary_owner": "ext.1"},
+        headers=revisor_headers,
+    )
+    assert allowed.status_code == 201
+
+    missing = await async_client.post(
+        "/missions/999/tasks",
+        json={"title": "Missão ausente"},
+        headers=headers,
+    )
+    assert missing.status_code == 404
+
+
 async def test_mission_sla_filters_reports_exports_and_saved_filters(
     async_client, extensionista_session, seeded_mission
 ):

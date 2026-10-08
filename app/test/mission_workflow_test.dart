@@ -725,4 +725,88 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  testWidgets('tarefa de lacuna reconcilia com o portal', (tester) async {
+    wideSurface(tester);
+    final task = taskFixture()
+      ..['gap_bundle'] = 'publicacao_cientifica'
+      ..['gap_fields'] = ['field_resumo_publicacao', 'field_doi']
+      ..['public_url'] = 'https://portal.example.org/node/41';
+    var gapRequests = 0;
+    bridge.setClientForTesting(
+      MockClient((request) async {
+        if (request.url.path == '/mission-tasks/41') {
+          return jsonResponse(task);
+        }
+        if (request.url.path == '/portal/nodes/41/lacunas') {
+          gapRequests++;
+          expect(
+            request.url.queryParameters['tipo'],
+            'publicacao_cientifica',
+          );
+          return jsonResponse({
+            'nid': 41,
+            'found': true,
+            'published': true,
+            'missing_fields': ['field_resumo_publicacao'],
+            'missing_labels': ['Resumo'],
+          });
+        }
+        throw StateError(
+          'Rota inesperada: ${request.method} ${request.url.path}',
+        );
+      }),
+    );
+    await openTask(tester);
+    await reveal(tester, const ValueKey('mission-recheck-gap'));
+    await tester.tap(find.byKey(const ValueKey('mission-recheck-gap')));
+    await tester.pumpAndSettle();
+    expect(gapRequests, 1);
+    expect(
+      find.textContaining('Ainda falta no portal: Resumo'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Já preenchidos: 1'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('lacuna resolvida no portal é confirmada pela reconsulta', (
+    tester,
+  ) async {
+    wideSurface(tester);
+    final task = taskFixture()
+      ..['gap_bundle'] = 'publicacao_cientifica'
+      ..['gap_fields'] = ['field_doi']
+      ..['edit_url'] = 'https://portal.example.org/node/41/edit';
+    bridge.setClientForTesting(
+      MockClient((request) async {
+        if (request.url.path == '/mission-tasks/41') {
+          return jsonResponse(task);
+        }
+        if (request.url.path == '/portal/nodes/41/lacunas') {
+          return jsonResponse({
+            'nid': 41,
+            'found': true,
+            'published': true,
+            'missing_fields': <String>[],
+            'missing_labels': <String>[],
+          });
+        }
+        throw StateError(
+          'Rota inesperada: ${request.method} ${request.url.path}',
+        );
+      }),
+    );
+    await openTask(tester);
+    await reveal(tester, const ValueKey('mission-recheck-gap'));
+    await tester.tap(find.byKey(const ValueKey('mission-recheck-gap')));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('Lacuna resolvida no portal'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 }

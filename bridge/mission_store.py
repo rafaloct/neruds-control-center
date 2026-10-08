@@ -374,6 +374,16 @@ def init_db() -> None:
                 ON task_evidence_file(task_id, created_at);
             """
         )
+        # Gap-born tasks remember which bundle/fields they were created to
+        # fix so reconciliation can re-check that exact portal state.
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(mission_task)")
+        }
+        for column in ("gap_bundle", "gap_fields"):
+            if column not in existing:
+                conn.execute(
+                    f"ALTER TABLE mission_task ADD COLUMN {column} TEXT"
+                )
 
 
 def seed_from_json(force: bool = False) -> dict[str, Any]:
@@ -765,6 +775,10 @@ def list_tasks(
 def _task_row(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["public_check_ok"] = bool(data["public_check_ok"])
+    try:
+        data["gap_fields"] = json.loads(data.get("gap_fields") or "[]")
+    except ValueError:
+        data["gap_fields"] = []
     due_date = _deadline_date(data.get("internal_deadline"))
     data["deadline_date"] = due_date.isoformat() if due_date else None
     data["deadline_status"] = _deadline_status(
@@ -952,6 +966,103 @@ def update_task(
                     utcnow(),
                 ),
             )
+        conn.commit()
+
+    return task_detail(task_id)
+
+
+def create_task(
+    mission_id: int,
+    actor: str,
+    fields: dict[str, Any],
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Create a task on a mission — used by the monitoring board to turn a
+    real portal gap into trackable work. Portal links must already be
+    canonical /node/N URLs; the same-node pair rule is enforced here.
+
+    App-created tasks take negative spreadsheet rows so a later re-seed of
+    the spreadsheet can never collide with or overwrite them.
+    """
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        mission = conn.execute(
+            "SELECT id FROM mission WHERE id=?", (mission_id,)
+        ).fetchone()
+        if not mission:
+            raise KeyError("mission_not_found")
+
+        nids = {
+            nid
+            for nid in (
+                _link_nid(fields.get("public_url")),
+                _link_nid(fields.get("edit_url")),
+            )
+            if nid
+        }
+        if len(nids) > 1:
+            raise ValueError("link_node_mismatch")
+
+        # Negative rows only: MIN over the whole mission could be a positive
+        # sheet row (min=2 → next=1), which a later re-seed could overwrite.
+        next_row = conn.execute(
+            "SELECT COALESCE(MIN(spreadsheet_row), 0) - 1 "
+            "FROM mission_task WHERE mission_id=? AND spreadsheet_row < 0",
+            (mission_id,),
+        ).fetchone()[0]
+        now = utcnow()
+        cursor = conn.execute(
+            """
+            INSERT INTO mission_task (
+                mission_id, spreadsheet_row, source_record_id, priority,
+                content_type, title, public_url, edit_url, gaps, action,
+                responsible, status, primary_owner, cross_reviewer,
+                current_stage, internal_deadline, observations,
+                gap_bundle, gap_fields, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                mission_id,
+                next_row,
+                "portal_gap" if fields.get("gap_bundle") else "app",
+                fields.get("priority"),
+                fields.get("content_type"),
+                fields["title"],
+                fields.get("public_url"),
+                fields.get("edit_url"),
+                fields.get("gaps"),
+                fields.get("action"),
+                fields.get("responsible"),
+                fields.get("status") or "A fazer",
+                fields.get("primary_owner"),
+                fields.get("cross_reviewer"),
+                WORKFLOW[0],
+                fields.get("internal_deadline"),
+                fields.get("observations"),
+                fields.get("gap_bundle"),
+                _json(fields.get("gap_fields") or []),
+                now,
+                now,
+            ),
+        )
+        task_id = int(cursor.lastrowid)
+        conn.execute(
+            """
+            INSERT INTO mission_event
+            (task_id,actor,event_type,from_stage,to_stage,note,changes_json,created_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                task_id,
+                actor,
+                "task_created",
+                None,
+                WORKFLOW[0],
+                note,
+                _json({}),
+                now,
+            ),
+        )
         conn.commit()
 
     return task_detail(task_id)

@@ -1174,11 +1174,14 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
   Map<String, dynamic>? task;
   Map<String, dynamic> _original = {};
   List<Map<String, dynamic>>? _duplicates;
+  Map<String, dynamic>? _gapCheck;
   String? _loadError;
   String? _duplicateError;
+  String? _gapCheckError;
   bool loading = true;
   bool saving = false;
   bool checkingDuplicates = false;
+  bool checkingGap = false;
   bool _applying = false;
   bool _didChange = false;
   bool _allowClose = false;
@@ -1248,8 +1251,11 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     task = null;
     _original = {};
     _duplicates = null;
+    _gapCheck = null;
     _loadError = null;
     _duplicateError = null;
+    _gapCheckError = null;
+    checkingGap = false;
     stage = null;
     publicCheck = false;
     _didChange = false;
@@ -1378,6 +1384,9 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       _message(
         'Registro da tarefa salvo. O conteúdo do portal não foi alterado.',
       );
+      // Gap-born tasks re-check the ficha on save — "resolved on the
+      // portal" must reflect the portal's real state, not the task's.
+      await _recheckGap();
     } catch (error) {
       if (_currentSessionRequest(revision)) _message(workflowError(error));
     } finally {
@@ -1534,6 +1543,52 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     } finally {
       if (_currentSessionRequest(revision)) {
         setState(() => checkingDuplicates = false);
+      }
+    }
+  }
+
+  /// Node id carried by the task's canonical /node links, if linked.
+  int? get _taskNid {
+    for (final key in const ['public_url', 'edit_url']) {
+      final match = RegExp(
+        r'/node/(\d+)',
+      ).firstMatch(task?[key]?.toString() ?? '');
+      if (match != null) return int.tryParse(match.group(1)!);
+    }
+    return null;
+  }
+
+  /// Reconciliation: re-read the ficha on the portal and compare the
+  /// current monitored fields with the gaps this task was created for.
+  Future<void> _recheckGap() async {
+    final bundle = task?['gap_bundle']?.toString() ?? '';
+    final nid = _taskNid;
+    if (bundle.isEmpty || nid == null) return;
+    final revision = _beginSessionRequest();
+    if (revision == null) return;
+    setState(() {
+      checkingGap = true;
+      _gapCheckError = null;
+    });
+    try {
+      final response = await http.get(
+        _uri('/portal/nodes/$nid/lacunas', {'tipo': bundle}),
+        headers: AppSession.instance.authHeaders,
+      );
+      if (!_currentSessionRequest(revision)) return;
+      if (response.statusCode != 200) throw Exception(_error(response));
+      setState(() {
+        _gapCheck = Map<String, dynamic>.from(
+          jsonDecode(utf8.decode(response.bodyBytes)) as Map,
+        );
+      });
+    } catch (error) {
+      if (_currentSessionRequest(revision)) {
+        setState(() => _gapCheckError = workflowError(error));
+      }
+    } finally {
+      if (_currentSessionRequest(revision)) {
+        setState(() => checkingGap = false);
       }
     }
   }
@@ -1907,6 +1962,10 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
         'Quando a ficha for criada pelo formulário do portal, informe o '
         'endereço ou o número para ligar esta tarefa a ela.',
       ),
+      if ((data['gap_bundle']?.toString() ?? '').isNotEmpty) ...[
+        const SizedBox(height: 12),
+        _gapReconciliation(context),
+      ],
       const SizedBox(height: 12),
       _Info('Onde pesquisar', data['where_to_search']),
       _Info('Fontes de partida', data['sources']),
@@ -1966,6 +2025,10 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
         ),
       const SizedBox(height: 16),
       ExpansionTile(
+        // Own PageStorageKey: inside the scrolled task ListView an unkeyed
+        // ExpansionTile remounts after scrolling past it and PageStorage can
+        // hand back the stored scroll offset (a double), crashing initState.
+        key: const PageStorageKey('mission-task-origins'),
         tilePadding: EdgeInsets.zero,
         title: const Text('Origem e rastreabilidade'),
         children: [
@@ -1973,6 +2036,140 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
           _Info('Linha da planilha', data['spreadsheet_row']),
           _Info('Identificador da tarefa', widget.taskId),
         ],
+      ),
+    ];
+  }
+
+  /// Reconciliation card for tasks born from a monitored portal gap:
+  /// re-reads the ficha and reports which recorded fields are still empty.
+  Widget _gapReconciliation(BuildContext context) {
+    final data = task!;
+    final recorded = (data['gap_fields'] as List? ?? const [])
+        .map((f) => f.toString())
+        .toList();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Reconciliação com o portal',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Esta tarefa nasceu de campos ausentes na ficha '
+              '(${recorded.length} monitorados). A verificação lê o portal '
+              'agora — o resultado não altera a tarefa.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              key: const ValueKey('mission-recheck-gap'),
+              onPressed: checkingGap || _taskNid == null
+                  ? null
+                  : _recheckGap,
+              icon: checkingGap
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.sync, size: 18),
+              label: const Text('Reconferir lacuna no portal'),
+            ),
+            if (_taskNid == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  'Vincule a ficha do portal para reconferir a lacuna.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            if (_gapCheckError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  _gapCheckError!,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+              ),
+            if (_gapCheck != null)
+              ..._gapCheckResult(context, _gapCheck!, recorded),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _gapCheckResult(
+    BuildContext context,
+    Map<String, dynamic> check,
+    List<String> recorded,
+  ) {
+    final bodySmall = Theme.of(context).textTheme.bodySmall;
+    if (check['found'] != true) {
+      return [
+        const Padding(
+          padding: EdgeInsets.only(top: 8),
+          child: Text(
+            'A ficha não foi encontrada no portal — ela pode ter sido '
+            'removida ou sua conta não pode visualizá-la.',
+          ),
+        ),
+      ];
+    }
+    final missingFields = (check['missing_fields'] as List? ?? const [])
+        .map((f) => f.toString())
+        .toList();
+    final missingLabels = (check['missing_labels'] as List? ?? const [])
+        .map((f) => f.toString())
+        .toList();
+    final labelOf = {
+      for (var i = 0; i < missingFields.length; i++)
+        missingFields[i]:
+            i < missingLabels.length ? missingLabels[i] : missingFields[i],
+    };
+    final pending = [
+      for (final field in recorded)
+        if (missingFields.contains(field)) labelOf[field] ?? field,
+    ];
+    final resolvedCount = recorded.length - pending.length;
+    final otherMissing = missingFields.length - pending.length;
+    return [
+      Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (pending.isEmpty)
+              Text(
+                'Lacuna resolvida no portal — os campos registrados '
+                'estão preenchidos.',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              )
+            else
+              Text('Ainda falta no portal: ${pending.join(', ')}.'),
+            if (pending.isNotEmpty && resolvedCount > 0)
+              Text(
+                'Já preenchidos: $resolvedCount campo(s).',
+                style: bodySmall,
+              ),
+            if (otherMissing > 0)
+              Text(
+                'Outros campos monitorados ausentes: $otherMissing.',
+                style: bodySmall,
+              ),
+            if (check['published'] != true)
+              Text('A ficha segue como rascunho no portal.', style: bodySmall),
+          ],
+        ),
       ),
     ];
   }

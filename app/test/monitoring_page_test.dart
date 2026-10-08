@@ -23,9 +23,11 @@ void _session([List<String> roles = const ['extensionista']]) {
   );
 }
 
-void _mockBridge() {
+void _mockBridge({upstream.Response? Function(upstream.Request)? extra}) {
   http.setClientForTesting(
     MockClient((request) async {
+      final custom = extra?.call(request);
+      if (custom != null) return custom;
       switch (request.url.path) {
         case '/portal/snapshot':
           return _json({
@@ -207,6 +209,53 @@ void main() {
       find.widgetWithText(MenuItemButton, 'Projeto de pesquisa e extensão'),
     );
     expect(projeto.onPressed, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('gap card creates a mission task with the real gap', (
+    tester,
+  ) async {
+    Map<String, dynamic>? posted;
+    _mockBridge(
+      extra: (request) {
+        if (request.url.path == '/missions' && request.method == 'GET') {
+          return _json([
+            {'id': 1, 'title': 'Gestão do Portal'},
+          ]);
+        }
+        if (request.url.path == '/missions/1/tasks' &&
+            request.method == 'POST') {
+          posted = Map<String, dynamic>.from(
+            jsonDecode(utf8.decode(request.bodyBytes)) as Map,
+          );
+          return _json({'id': 99}, 201);
+        }
+        return null;
+      },
+    );
+    _session();
+    await openMonitoring(tester);
+
+    await tester.tap(find.text('Publicações'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('gap-task-50')));
+    await tester.pumpAndSettle();
+    expect(find.text('Criar tarefa a partir da lacuna'), findsOneWidget);
+    expect(find.textContaining('Faltam: Resumo'), findsWidgets);
+
+    await tester.tap(find.byKey(const ValueKey('gap-task-confirm')));
+    await tester.pumpAndSettle();
+
+    expect(posted, isNotNull);
+    expect(posted?['gap_bundle'], 'publicacao_cientifica');
+    expect(posted?['gap_fields'], ['field_resumo']);
+    expect(posted?['public_url'], 'https://portal.example.test/node/50');
+    expect(posted?['edit_url'], 'https://portal.example.test/node/50/edit');
+    expect(posted?['responsible'], 'extensionista.test');
+    expect(
+      find.text('Tarefa criada na missão — acompanhe na aba Inventário.'),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 }

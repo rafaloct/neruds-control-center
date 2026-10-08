@@ -570,3 +570,131 @@ async def test_jsonapi_error_propagates(async_client, extensionista_session):
         "/portal/lacunas?tipo=noticia", headers=_auth(token)
     )
     assert response.status_code == 403
+
+
+@respx.mock
+async def test_node_lacunas_reports_missing_fields(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    route = respx.get(f"{PORTAL}/jsonapi/node/publicacao_cientifica").mock(
+        return_value=Response(
+            200,
+            json=_jsonapi_payload(
+                [
+                    _node_item(
+                        55,
+                        "Pub quase completa",
+                        attrs={
+                            "field_ano_publicacao": 2024,
+                            "field_resumo_publicacao": None,
+                        },
+                    )
+                ]
+            ),
+        )
+    )
+    response = await async_client.get(
+        "/portal/nodes/55/lacunas?tipo=publicacao_cientifica",
+        headers=_auth(token),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["found"] is True
+    assert body["nid"] == 55
+    assert "field_resumo_publicacao" in body["missing_fields"]
+    assert "Resumo" in body["missing_labels"]
+    assert "field_ano_publicacao" not in body["missing_fields"]
+    # the nid filter is sent to Drupal — reconciliation asks about one ficha
+    assert "drupal_internal__nid" in str(route.calls[0].request.url)
+
+
+@respx.mock
+async def test_node_lacunas_not_found(async_client, extensionista_session):
+    token, _ = extensionista_session
+    respx.get(f"{PORTAL}/jsonapi/node/publicacao_cientifica").mock(
+        return_value=Response(200, json=_jsonapi_payload([]))
+    )
+    response = await async_client.get(
+        "/portal/nodes/999/lacunas?tipo=publicacao_cientifica",
+        headers=_auth(token),
+    )
+    assert response.status_code == 200
+    assert response.json()["found"] is False
+
+
+async def test_node_lacunas_rejects_unmonitored_type(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    response = await async_client.get(
+        "/portal/nodes/5/lacunas?tipo=inexistente", headers=_auth(token)
+    )
+    assert response.status_code == 422
+
+
+@respx.mock
+async def test_duplicatas_groups_shared_doi(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    doi = "10.20435/inter.v24i3.3499"
+
+    def item(nid, bundle, title, doi_value=None):
+        node = _node_item(nid, title, attrs={"field_doi": doi_value})
+        node["type"] = f"node--{bundle}"
+        return node
+
+    respx.get(f"{PORTAL}/jsonapi/node/grupo_estudos").mock(
+        return_value=Response(
+            200,
+            json=_jsonapi_payload(
+                [item(11, "grupo_estudos", "Grupo A", doi)]
+            ),
+        )
+    )
+    respx.get(f"{PORTAL}/jsonapi/node/noticia").mock(
+        return_value=Response(
+            200,
+            json=_jsonapi_payload(
+                [
+                    # DOI written with a resolver prefix must still match
+                    item(12, "noticia", "Notícia B", f"https://doi.org/{doi}"),
+                    item(13, "noticia", "Notícia C", "10.9999/unico"),
+                ]
+            ),
+        )
+    )
+    respx.get(f"{PORTAL}/jsonapi/node/publicacao").mock(
+        return_value=Response(
+            200,
+            json=_jsonapi_payload(
+                [item(14, "publicacao", "Publicação D", doi)]
+            ),
+        )
+    )
+    respx.get(f"{PORTAL}/jsonapi/node/publicacao_cientifica").mock(
+        return_value=Response(
+            200,
+            json=_jsonapi_payload(
+                [
+                    item(15, "publicacao_cientifica", "Pub E", doi),
+                    item(16, "publicacao_cientifica", "Pub sem DOI", None),
+                ]
+            ),
+        )
+    )
+    response = await async_client.get("/portal/duplicatas", headers=_auth(token))
+    assert response.status_code == 200
+    groups = response.json()["groups"]
+    assert len(groups) == 1
+    assert groups[0]["doi"] == doi
+    nids = {node["nid"] for node in groups[0]["nodes"]}
+    assert nids == {11, 12, 14, 15}
+    types = {node["type"] for node in groups[0]["nodes"]}
+    assert types == {
+        "grupo_estudos",
+        "noticia",
+        "publicacao",
+        "publicacao_cientifica",
+    }
