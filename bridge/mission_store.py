@@ -1015,10 +1015,19 @@ def create_task(
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         mission = conn.execute(
-            "SELECT id FROM mission WHERE id=?", (mission_id,)
+            "SELECT id, workflow_json FROM mission WHERE id=?", (mission_id,)
         ).fetchone()
         if not mission:
             raise KeyError("mission_not_found")
+        try:
+            mission_workflow = json.loads(mission["workflow_json"] or "[]")
+        except (TypeError, ValueError):
+            mission_workflow = []
+        # The first stage belongs to the mission's own workflow — other
+        # missions may not start at the global Triagem.
+        initial_stage = (
+            mission_workflow[0] if mission_workflow else WORKFLOW[0]
+        )
 
         nids = {
             nid
@@ -1074,7 +1083,7 @@ def create_task(
                 fields.get("status") or "A fazer",
                 fields.get("primary_owner"),
                 fields.get("cross_reviewer"),
-                WORKFLOW[0],
+                initial_stage,
                 fields.get("internal_deadline"),
                 fields.get("observations"),
                 fields.get("gap_bundle"),
@@ -1095,7 +1104,7 @@ def create_task(
                 actor,
                 "task_created",
                 None,
-                WORKFLOW[0],
+                initial_stage,
                 note,
                 _json({}),
                 now,

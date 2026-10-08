@@ -1350,12 +1350,18 @@ async def portal_duplicatas(
         return cached
     groups: dict[str, list[dict[str, Any]]] = {}
     async with drupal_client(session) as client:
-        for bundle in DOI_BUNDLES:
-            # Drafts reusing a DOI are the case worth flagging — JSON:API
-            # already hides unpublished content the session cannot see.
-            fetched = await _jsonapi_items(
-                client, bundle, ["field_doi"], published_only=False
+        # Drafts reusing a DOI are the case worth flagging — JSON:API
+        # already hides unpublished content the session cannot see.
+        # Serially these reads could exceed the app's request timeout.
+        scans = await asyncio.gather(
+            *(
+                _jsonapi_items(
+                    client, bundle, ["field_doi"], published_only=False
+                )
+                for bundle in DOI_BUNDLES
             )
+        )
+        for bundle, fetched in zip(DOI_BUNDLES, scans):
             for item in fetched["data"]:
                 attrs = item.get("attributes") or {}
                 doi = _normalize_doi(attrs.get("field_doi"))

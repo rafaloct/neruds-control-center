@@ -1694,9 +1694,11 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
         publicCheck = data['public_check_ok'] == true;
         _original['public_check_ok'] = publicCheck;
         // A relink targets a different node — drop the previous gap
-        // result so the card never reports node A's state for node B.
+        // result and duplicate matches so neither card reports node A's
+        // state for node B.
         _gapCheck = null;
         _gapCheckError = null;
+        _duplicates = null;
         UnsavedWork.instance.setDirty(this, _dirty);
         _didChange = true;
       });
