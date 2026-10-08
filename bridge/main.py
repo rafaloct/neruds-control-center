@@ -823,19 +823,26 @@ async def _probe_http(name: str, url: str, timeout: float = 5.0) -> dict[str, An
 
 
 async def _probe_tcp(name: str, host: str, port: int, timeout: float = 5.0) -> dict[str, Any]:
+    """Conexão TCP + banner do serviço. Para SMTP, saudável exige greeting
+    220 — um socket aberto sem banner não sustentaria o fluxo de envio."""
     start = time.monotonic()
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port), timeout
         )
-        writer.close()
         try:
-            await writer.wait_closed()
-        except Exception:
-            pass
+            banner = await asyncio.wait_for(reader.readline(), timeout)
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+        ok = banner.startswith(b"220")
         return {
             "name": name,
-            "ok": True,
+            "ok": ok,
+            "error": None if ok else "smtp_banner_invalid",
             "duration_ms": round((time.monotonic() - start) * 1000, 1),
         }
     except Exception as exc:

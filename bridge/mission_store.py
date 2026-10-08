@@ -250,16 +250,22 @@ def list_backups() -> list[dict[str, Any]]:
     if not dest_dir.is_dir():
         return []
     files = sorted(dest_dir.glob("missions-*.zip"), reverse=True)
-    return [
-        {
-            "file": f.name,
-            "size_bytes": f.stat().st_size,
-            "created_at": datetime.fromtimestamp(
-                f.stat().st_mtime, tz=timezone.utc
-            ).isoformat(),
-        }
-        for f in files
-    ]
+    entries: list[dict[str, Any]] = []
+    for f in files:
+        try:
+            stat = f.stat()
+        except FileNotFoundError:
+            continue  # removido por prune concorrente entre glob e stat
+        entries.append(
+            {
+                "file": f.name,
+                "size_bytes": stat.st_size,
+                "created_at": datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc
+                ).isoformat(),
+            }
+        )
+    return entries
 
 
 def prune_backups(keep: int) -> None:
