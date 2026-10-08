@@ -351,6 +351,52 @@ async def test_node_lookup_direct_node_and_rejections(
 
 
 @respx.mock
+async def test_node_lookup_rejects_redirect_outside_portal(
+    async_client, extensionista_session
+):
+    """Redirects are followed manually — leaving the portal is refused
+    before the external host is ever contacted."""
+    token, _ = extensionista_session
+    external = respx.get("https://evil.example/page").mock(
+        return_value=Response(
+            200, text='<link rel="shortlink" href="/node/77">'
+        )
+    )
+    respx.get(f"{PORTAL}/saida").mock(
+        return_value=Response(
+            302, headers={"Location": "https://evil.example/page"}
+        )
+    )
+    response = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": f"{PORTAL}/saida"},
+        headers=_auth(token),
+    )
+    assert response.status_code == 422
+    assert external.call_count == 0
+
+
+@respx.mock
+async def test_node_lookup_follows_same_portal_redirect(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session
+    respx.get(f"{PORTAL}/antigo").mock(
+        return_value=Response(302, headers={"Location": "/node/88"})
+    )
+    respx.get(f"{PORTAL}/node/88").mock(
+        return_value=Response(200, text="<html>node</html>")
+    )
+    response = await async_client.get(
+        "/portal/node-lookup",
+        params={"url": f"{PORTAL}/antigo"},
+        headers=_auth(token),
+    )
+    assert response.status_code == 200
+    assert response.json()["nid"] == "88"
+
+
+@respx.mock
 async def test_projetos_resolve_term_names(async_client, extensionista_session):
     token, _ = extensionista_session
     proj = {

@@ -877,15 +877,19 @@ def update_task(
                 args.append(value)
                 actual_changes[api_field] = {"from": old_value, "to": value}
 
-        if "public_url" in actual_changes:
+        if "public_url" in actual_changes or "edit_url" in actual_changes:
             # Relinked fichas must not inherit verification results recorded
             # for the previous node. Compare node identity, not the URL
             # string: a persisted alias (e.g. /pub/2) canonicalizing to
-            # /node/2 is the same ficha and keeps its checks.
+            # /node/2 is the same ficha and keeps its checks. Either link
+            # may carry the node identity, so resolve old and new nids
+            # across both fields.
+            new_public = allowed.get("public_url", before["public_url"])
+            new_edit = allowed.get("edit_url", before["edit_url"])
             old_nid = _link_nid(before["public_url"]) or _link_nid(
                 before["edit_url"]
             )
-            new_nid = _link_nid(allowed["public_url"])
+            new_nid = _link_nid(new_public) or _link_nid(new_edit)
             relinked = new_nid != old_nid
         else:
             relinked = False

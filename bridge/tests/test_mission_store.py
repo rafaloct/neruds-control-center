@@ -225,6 +225,30 @@ def test_task_relink_same_node_keeps_verification(seeded_mission):
     assert row is not None
 
 
+def test_task_relink_edit_only_resets_verification(seeded_mission):
+    """A legacy task with only an edit_url still loses verification when
+    the linked node changes through that field alone."""
+    tasks = mission_store.list_tasks(1, limit=5)
+    task_id = tasks["items"][0]["id"]
+
+    mission_store.update_task(
+        task_id,
+        actor="extensionista.test",
+        changes={
+            "public_url": None,
+            "edit_url": "https://portal.example.org/node/555/edit",
+            "public_check_ok": True,
+        },
+    )
+    relinked = mission_store.update_task(
+        task_id,
+        actor="extensionista.test",
+        changes={"edit_url": "https://portal.example.org/node/777/edit"},
+    )
+    assert relinked["edit_url"] == "https://portal.example.org/node/777/edit"
+    assert relinked["public_check_ok"] is False
+
+
 def test_task_detail_not_found(temp_db):
     with pytest.raises(KeyError, match="task_not_found"):
         mission_store.task_detail(99999)

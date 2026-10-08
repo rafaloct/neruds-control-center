@@ -1160,19 +1160,36 @@ async def portal_node_lookup(
             "public_url": f"{PORTAL_URL}/node/{nid}",
             "edit_url": f"{PORTAL_URL}/node/{nid}/edit",
         }
-    async with drupal_client(session) as client:
+    async with drupal_client(session, follow_redirects=False) as client:
+        # `path` is portal-relative; httpx appends it to base_url, which
+        # already carries the configured portal base path.
         response = await client.get(path)
+        # Follow redirects manually: every Location must stay inside the
+        # configured portal, otherwise a redirect endpoint could drive the
+        # bridge into fetching arbitrary internal/external hosts.
+        redirects = 0
+        while response.is_redirect:
+            if redirects >= 5:
+                raise HTTPException(
+                    status_code=422,
+                    detail="O endereço passou por redirecionamentos demais.",
+                )
+            target = urljoin(
+                str(response.url), response.headers.get("location", "")
+            )
+            next_path = _portal_url_path(target)
+            if next_path is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="O endereço redireciona para fora do portal "
+                    "configurado.",
+                )
+            response = await client.get(next_path)
+            redirects += 1
     if response.status_code != 200:
         raise HTTPException(
             status_code=response.status_code,
             detail="O portal não respondeu a esta ficha.",
-        )
-    if _portal_url_path(str(response.url)) is None:
-        # Redirect left the configured portal — the body is not ours and
-        # relative shortlinks inside it must not be rebased onto PORTAL_URL.
-        raise HTTPException(
-            status_code=422,
-            detail="O endereço redireciona para fora do portal configurado.",
         )
     candidates = [str(response.url)]
     candidates.extend(
