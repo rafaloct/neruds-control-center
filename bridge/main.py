@@ -1274,19 +1274,30 @@ DOI_BUNDLES = (
 _DOI_SHAPE = re.compile(r"^10\.\d{4,9}/\S+$")
 
 
+_DOI_PREFIXES = (
+    "https://doi.org/",
+    "http://doi.org/",
+    "https://dx.doi.org/",
+    "http://dx.doi.org/",
+    "doi:",
+    "doi ",
+)
+
+
 def _normalize_doi(value: Any) -> str:
     text = str(value or "").strip().lower()
-    for prefix in (
-        "https://doi.org/",
-        "http://doi.org/",
-        "https://dx.doi.org/",
-        "http://dx.doi.org/",
-        "doi:",
-        "doi ",
-    ):
-        if text.startswith(prefix):
-            text = text[len(prefix):]
-    text = text.strip().rstrip(".;,/")
+    # Prefixes may stack ("DOI: https://doi.org/10.x/…") — keep stripping
+    # until none of them match anymore.
+    while True:
+        stripped = text.strip()
+        for prefix in _DOI_PREFIXES:
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):].strip()
+                break
+        if stripped == text:
+            break
+        text = stripped
+    text = text.rstrip(".;,/")
     return text if _DOI_SHAPE.match(text) else ""
 
 

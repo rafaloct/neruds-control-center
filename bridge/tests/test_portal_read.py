@@ -686,6 +686,13 @@ async def test_duplicatas_groups_shared_doi(
                 [
                     item(15, "publicacao_cientifica", "Pub E", doi),
                     item(16, "publicacao_cientifica", "Pub sem DOI", None),
+                    # Stacked prefix spelling still normalizes to the DOI.
+                    item(
+                        19,
+                        "publicacao_cientifica",
+                        "Pub F",
+                        f"doi: https://doi.org/{doi}",
+                    ),
                 ]
             ),
         )
@@ -696,7 +703,7 @@ async def test_duplicatas_groups_shared_doi(
     assert len(groups) == 1
     assert groups[0]["doi"] == doi
     nids = {node["nid"] for node in groups[0]["nodes"]}
-    assert nids == {11, 12, 14, 15}
+    assert nids == {11, 12, 14, 15, 19}
     types = {node["type"] for node in groups[0]["nodes"]}
     assert types == {
         "grupo_estudos",
