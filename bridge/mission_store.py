@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import zipfile
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
@@ -177,6 +178,123 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+def backup_keep() -> int:
+    """Retenção configurável via NERUDS_BACKUP_KEEP; mínimo de 1 arquivo."""
+    try:
+        return max(1, int(os.getenv("NERUDS_BACKUP_KEEP", "14")))
+    except ValueError:
+        return 14
+
+
+def backup_dir() -> Path:
+    return DATA_DIR / "backups"
+
+
+_BACKUP_LOCK = threading.Lock()
+
+
+def evidence_root() -> Path:
+    return DATA_DIR / "evidence"
+
+
+def backup_db(keep: int | None = None) -> Path:
+    """Grava uma cópia consistente do mission store + arquivos de evidência.
+
+    O zip contém `missions.sqlite3` (cópia atômica via sqlite backup API,
+    segura com WAL e leitores ativos) e a árvore `evidence/` onde ficam os
+    bytes dos anexos. Escreve em arquivo temporário e renomeia ao concluir —
+    um backup parcial nunca entra na lista de restauráveis nem suprime
+    novas tentativas. Chamadas concorrentes são serializadas pelo lock.
+    Retorna o caminho final.
+    """
+    with _BACKUP_LOCK:
+        return _backup_db_locked(keep)
+
+
+def _backup_db_locked(keep: int | None) -> Path:
+    dest_dir = backup_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    dest = dest_dir / f"missions-{stamp}.zip"
+    tmp = dest_dir / f"missions-{stamp}.tmp"
+    tmp_db = dest_dir / f".db-{stamp}.tmp"
+    try:
+        source = connect()
+        try:
+            target = sqlite3.connect(tmp_db)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+        finally:
+            source.close()
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(tmp_db, "missions.sqlite3")
+            root = evidence_root()
+            if root.is_dir():
+                for blob in sorted(root.rglob("*")):
+                    if blob.is_file():
+                        zf.write(blob, f"evidence/{blob.relative_to(root).as_posix()}")
+        tmp.replace(dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+        tmp_db.unlink(missing_ok=True)
+    prune_backups(keep if keep is not None else backup_keep())
+    return dest
+
+
+def list_backups() -> list[dict[str, Any]]:
+    dest_dir = backup_dir()
+    if not dest_dir.is_dir():
+        return []
+    files = sorted(dest_dir.glob("missions-*.zip"), reverse=True)
+    entries: list[dict[str, Any]] = []
+    for f in files:
+        try:
+            stat = f.stat()
+        except FileNotFoundError:
+            continue  # removido por prune concorrente entre glob e stat
+        entries.append(
+            {
+                "file": f.name,
+                "size_bytes": stat.st_size,
+                "created_at": datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc
+                ).isoformat(),
+            }
+        )
+    return entries
+
+
+def prune_backups(keep: int) -> None:
+    files = sorted(backup_dir().glob("missions-*.zip"), reverse=True)
+    for stale in files[keep:]:
+        stale.unlink(missing_ok=True)
+
+
+def backup_due(max_age_hours: float = 24.0) -> bool:
+    backups = list_backups()
+    if not backups:
+        return True
+    newest = datetime.fromisoformat(backups[0]["created_at"])
+    return datetime.now(timezone.utc) - newest > timedelta(hours=max_age_hours)
+
+
+def check_ready() -> bool:
+    """Readiness real: o arquivo existe, o schema responde e a missão não
+    está vazia (um banco recriado por init_db com zero tarefas indica
+    perda de dados, não prontidão).
+
+    Abre em modo somente-leitura — um banco ausente não é recriado."""
+    if not DB_PATH.is_file():
+        return False
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    try:
+        return conn.execute("SELECT 1 FROM mission_task LIMIT 1").fetchone() is not None
+    finally:
+        conn.close()
 
 
 def _json(value: Any) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import os
 import re
 import secrets
@@ -10,7 +11,10 @@ import smtplib
 import socket
 import ssl
 import subprocess
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from logging.handlers import TimedRotatingFileHandler
 from email.message import EmailMessage
 from html import escape, unescape
 from html.parser import HTMLParser
@@ -90,9 +94,127 @@ SESSIONS: dict[str, dict[str, Any]] = {}
 # Serialize requests for the same opportunity in this bridge process.
 _OPPORTUNITY_DRAFT_LOCKS: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
+# ---------------------------------------------------------------------------
+# Observabilidade: access log estruturado + backup agendado do mission store
+# ---------------------------------------------------------------------------
+
+_BRIDGE_STARTED_AT = datetime.now(timezone.utc)
+_ACCESS_LOGGER = logging.getLogger("neruds_bridge.access")
+_ACCESS_LOGGER.propagate = False
+
+
+def _access_log_dir():
+    path = mission_store.DATA_DIR / "logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+_ACCESS_LOG_BOUND_DIR: Any = None
+
+
+def _configure_access_log() -> None:
+    global _ACCESS_LOG_BOUND_DIR
+    log_dir = _access_log_dir()
+    if _ACCESS_LOGGER.handlers and _ACCESS_LOG_BOUND_DIR == log_dir:
+        return
+    for handler in list(_ACCESS_LOGGER.handlers):
+        _ACCESS_LOGGER.removeHandler(handler)
+        handler.close()
+    handler = TimedRotatingFileHandler(
+        log_dir / "access.log",
+        when="midnight",
+        backupCount=14,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    _ACCESS_LOGGER.addHandler(handler)
+    _ACCESS_LOGGER.setLevel(logging.INFO)
+    _ACCESS_LOG_BOUND_DIR = log_dir
+
+
+def _access_log(event: str, **fields: Any) -> None:
+    _configure_access_log()
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        **fields,
+    }
+    _ACCESS_LOGGER.info(json.dumps(record, ensure_ascii=False, default=str))
+
+
+class AccessLogMiddleware:
+    """ASGI middleware que registra uma linha JSON por requisição HTTP.
+
+    Nunca registra corpos, query strings, cookies ou cabeçalhos de
+    autorização — somente método, rota, status e duração.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:  # noqa: ANN001
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        start = time.monotonic()
+        status = 500
+
+        async def send_wrapped(message):  # noqa: ANN001
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapped)
+        finally:
+            # Segmentos puramente numéricos são identificadores (uid, nid,
+            # task_id) — redigidos para não persistir PII no log.
+            path = re.sub(r"/\d+(?=/|$)", "/:id", scope.get("path", ""))
+            _access_log(
+                "http_request",
+                method=scope.get("method", ""),
+                path=path,
+                status=status,
+                duration_ms=round((time.monotonic() - start) * 1000, 1),
+            )
+
+
+async def _backup_loop() -> None:
+    while True:
+        try:
+            if not mission_store.check_ready():
+                # Store ausente/vazio = perda de dados; arquivar isso
+                # poderia expulsar o último backup bom pela retenção.
+                _access_log("backup_skipped_store_unready")
+            elif mission_store.backup_due():
+                dest = await asyncio.to_thread(mission_store.backup_db)
+                _access_log("backup_completed", file=dest.name)
+        except Exception as exc:  # backup failure must not kill the service
+            _access_log("backup_failed", error=type(exc).__name__)
+        await asyncio.sleep(3600)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):  # noqa: ARG001
+    _configure_access_log()
+    _access_log("service_started", version="0.5.0")
+    task = asyncio.create_task(_backup_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        _access_log("service_stopped")
+
+
 app = FastAPI(
     title="NERUDS Control Bridge",
-    version="0.4.0",
+    version="0.5.0",
+    lifespan=_lifespan,
     description=(
         "Bridge do NERUDS entre Flutter, Drupal e serviços internos. "
         "Autenticação editorial é delegada ao Drupal."
@@ -106,6 +228,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
+app.add_middleware(AccessLogMiddleware)
 
 
 class HiddenInputParser(HTMLParser):
@@ -627,9 +750,30 @@ def health() -> dict[str, Any]:
         "ok": True,
         "service": "neruds-control-bridge",
         "mode": "editorial-mvp",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "time": datetime.now(timezone.utc).isoformat(),
         "active_sessions": len(SESSIONS),
+    }
+
+
+@app.get("/ready")
+def ready() -> dict[str, Any]:
+    """Readiness: o processo só está pronto se o mission store existir e
+    o schema da missão responder. Liveness simples continua em /health."""
+    try:
+        ok = mission_store.check_ready()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail=f"mission store indisponível: {type(exc).__name__}"
+        ) from exc
+    if not ok:
+        raise HTTPException(
+            status_code=503, detail="mission store ausente ou schema inválido"
+        )
+    return {
+        "ready": True,
+        "db": True,
+        "time": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -642,7 +786,7 @@ def capabilities() -> dict[str, Any]:
         "draft_queue": True,
         "smtp_notifications": bool(SMTP_FROM and SMTP_REVIEW_TO),
         "drush": False,
-        "backup": False,
+        "backup": True,
         "server_update": False,
         "notes": [
             "Identidade e permissões editoriais são delegadas ao Drupal.",
@@ -650,6 +794,141 @@ def capabilities() -> dict[str, Any]:
             "Operações de infraestrutura continuam separadas do fluxo editorial.",
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Operações: probes de dependências e backup sob demanda (somente admin)
+# ---------------------------------------------------------------------------
+
+# URL tailnet do próprio bridge (ex.: https://host.tailnet.ts.net:8443/health).
+# Quando definida, /ops/status prova a cadeia completa Tailscale Serve.
+SELF_HEALTH_URL = os.getenv("NERUDS_SELF_HEALTH_URL", "")
+
+
+async def _probe_http(name: str, url: str, timeout: float = 5.0) -> dict[str, Any]:
+    if not url:
+        return {"name": name, "status": "skipped"}
+    start = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            response = await client.get(url)
+        return {
+            "name": name,
+            # Somente 200 é saudável: um 403/404 do portal também quebraria
+            # o fluxo real de login — não pode ficar verde no painel.
+            "ok": response.status_code == 200,
+            "http_status": response.status_code,
+            "duration_ms": round((time.monotonic() - start) * 1000, 1),
+        }
+    except Exception as exc:
+        return {
+            "name": name,
+            "ok": False,
+            "error": type(exc).__name__,
+            "duration_ms": round((time.monotonic() - start) * 1000, 1),
+        }
+
+
+async def _probe_tcp(name: str, host: str, port: int, timeout: float = 5.0) -> dict[str, Any]:
+    """Conexão TCP + banner do serviço. Para SMTP, saudável exige greeting
+    220 — um socket aberto sem banner não sustentaria o fluxo de envio."""
+    start = time.monotonic()
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout
+        )
+        try:
+            banner = await asyncio.wait_for(reader.readline(), timeout)
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+        ok = banner.startswith(b"220")
+        return {
+            "name": name,
+            "ok": ok,
+            "error": None if ok else "smtp_banner_invalid",
+            "duration_ms": round((time.monotonic() - start) * 1000, 1),
+        }
+    except Exception as exc:
+        return {
+            "name": name,
+            "ok": False,
+            "error": type(exc).__name__,
+            "duration_ms": round((time.monotonic() - start) * 1000, 1),
+        }
+
+
+def _probe_db() -> dict[str, Any]:
+    start = time.monotonic()
+    try:
+        ok = mission_store.check_ready()
+        return {
+            "name": "mission_db",
+            "ok": ok,
+            "duration_ms": round((time.monotonic() - start) * 1000, 1),
+        }
+    except Exception as exc:
+        return {
+            "name": "mission_db",
+            "ok": False,
+            "error": type(exc).__name__,
+        }
+
+
+@app.get("/ops/status")
+async def ops_status(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+    _require_user_admin(session)
+    portal, tailnet, mail, db = await asyncio.gather(
+        _probe_http("drupal_portal", f"{PORTAL_URL}/user/login"),
+        _probe_http("tailscale_serve", SELF_HEALTH_URL),
+        _probe_tcp("posteio_smtp", SMTP_CONNECT_HOST, SMTP_PORT),
+        asyncio.to_thread(_probe_db),
+    )
+    backups = mission_store.list_backups()
+    return {
+        "time": datetime.now(timezone.utc).isoformat(),
+        "version": "0.5.0",
+        "uptime_seconds": round(
+            (datetime.now(timezone.utc) - _BRIDGE_STARTED_AT).total_seconds()
+        ),
+        "probes": [portal, tailnet, mail, db],
+        "backup": {
+            "keep": mission_store.backup_keep(),
+            "count": len(backups),
+            "latest": backups[0] if backups else None,
+        },
+    }
+
+
+@app.post("/ops/backup")
+async def ops_backup(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+    _require_user_admin(session)
+    if not mission_store.check_ready():
+        raise HTTPException(
+            status_code=503,
+            detail="Mission store ausente ou vazio — backup recusado.",
+        )
+    try:
+        dest = await asyncio.to_thread(mission_store.backup_db)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Falha no backup: {type(exc).__name__}"
+        ) from exc
+    _access_log("backup_manual", file=dest.name)
+    return {
+        "ok": True,
+        "file": dest.name,
+        "size_bytes": dest.stat().st_size,
+    }
+
+
+@app.get("/ops/backups")
+def ops_backups(session: dict[str, Any] = Depends(require_session)) -> dict[str, Any]:
+    _require_user_admin(session)
+    return {"backups": mission_store.list_backups()}
 
 
 @app.post("/auth/login")

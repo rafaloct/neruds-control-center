@@ -134,3 +134,55 @@ auditoria.
   com base nas últimas tentativas de atualização.
 - Mesmo uma pauta aprovada cria somente um rascunho não publicado no Drupal;
   o vínculo com a oportunidade é guardado na fila editorial.
+
+## Operações (serviço, logs, backup)
+
+### Serviço Windows
+
+`bridge\tools\install_bridge_service.ps1` (PowerShell elevado) registra a
+tarefa agendada `NERUDSBridge` — gatilho ONSTART como SYSTEM, sem depender de
+logon de usuário. Ela executa `bridge_supervisor.ps1`, que mantém o uvicorn
+em `127.0.0.1:8787` e o reinicia se o processo cair. Remoção:
+
+```powershell
+Unregister-ScheduledTask -TaskName 'NERUDSBridge' -Confirm:$false
+```
+
+### Health vs readiness
+
+- `GET /health` — liveness: o processo responde.
+- `GET /ready` — readiness: mission store abre e responde a `SELECT 1`;
+  retorna 503 quando indisponível. Use `/ready` em monitores externos.
+
+### Logs
+
+`data/logs/access.log` registra uma linha JSON por requisição (método, rota,
+status, duração) — nunca corpos, query strings, cookies ou tokens. Rotaciona
+diariamente com 14 dias de retenção. Quando o serviço roda pelo supervisor,
+o uvicorn usa `tools/uvicorn-logging.json` — erros vão para
+`data/logs/uvicorn.log` (5 MB, 1 geração) e o access log nativo fica
+desligado (`--no-access-log`), pois gravaria query strings sem sanitizar.
+
+### Backup e restore
+
+- Backup automático: no arranque e a cada hora o bridge grava
+  `data/backups/missions-<timestamp>.zip` quando o último backup tem mais
+  de 24 h. O zip contém `missions.sqlite3` (cópia consistente via `sqlite3`
+  backup API, segura com WAL) e a árvore `evidence/` com os anexos.
+- Retenção: 14 arquivos (`NERUDS_BACKUP_KEEP` para ajustar).
+- Sob demanda (sessão com `can_admin_users`): `POST /ops/backup`,
+  `GET /ops/backups`.
+- Restore: pare o bridge, extraia o zip, **apague os sidecars**
+  `data/missions.sqlite3-wal` e `data/missions.sqlite3-shm` se existirem
+  (WAL retido de parada impura), substitua `data/missions.sqlite3` e
+  `data/evidence/` pelo conteúdo extraído e inicie de novo. Valide antes:
+  `python -c "import sqlite3; c=sqlite3.connect('missions.sqlite3'); print(c.execute('PRAGMA integrity_check').fetchone())"`.
+
+### Monitoramento
+
+`GET /ops/status` (somente admin) sonda em paralelo: portal Drupal
+(`/user/login`), Tailscale Serve (quando `NERUDS_SELF_HEALTH_URL` aponta para
+o endpoint tailnet do próprio bridge, ex. `https://host.tailnet:8443/health`),
+Poste.io via conexão TCP ao `NERUDS_SMTP_CONNECT_HOST:NERUDS_SMTP_PORT`, e o
+mission store. A tela "Administração → Saúde do serviço" exibe os probes e o
+último backup.
