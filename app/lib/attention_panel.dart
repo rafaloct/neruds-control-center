@@ -8,63 +8,26 @@ import 'workflow_widgets.dart';
 
 /// Home attention panel: real deadlines, review queue, field gaps and portal
 /// news — every item comes from the bridge read layer with its fetch time.
-class AttentionPanel extends StatefulWidget {
-  const AttentionPanel({super.key, required this.onNavigate});
+/// The parent owns the load so the same data feeds the onboarding card.
+class AttentionPanel extends StatelessWidget {
+  const AttentionPanel({
+    super.key,
+    required this.data,
+    required this.loading,
+    required this.onRefresh,
+    required this.onNavigate,
+  });
+
+  /// Latest attention snapshot; null until the first load finishes.
+  final AttentionData? data;
+
+  /// True while a fresh load is in flight.
+  final bool loading;
+
+  final VoidCallback onRefresh;
 
   /// Tab switcher callback (1 = Conteúdo, 2 = Inventário).
   final ValueChanged<int> onNavigate;
-
-  @override
-  State<AttentionPanel> createState() => _AttentionPanelState();
-}
-
-class _AttentionPanelState extends State<AttentionPanel> {
-  final PortalReadApi _api = PortalReadApi();
-  AttentionData? _data;
-  bool _loading = false;
-
-  @override
-  void initState() {
-    super.initState();
-    AppSession.instance.addListener(_sessionChanged);
-    _reload();
-  }
-
-  @override
-  void dispose() {
-    AppSession.instance.removeListener(_sessionChanged);
-    super.dispose();
-  }
-
-  void _sessionChanged() {
-    if (mounted) _reload();
-  }
-
-  Future<void> _reload() async {
-    final session = AppSession.instance;
-    if (!session.authenticated) {
-      setState(() {
-        _data = null;
-        _loading = false;
-      });
-      return;
-    }
-    final epoch = session.identityEpoch;
-    final token = session.token;
-    setState(() => _loading = true);
-    final data = await _api.loadAttention();
-    // A sign-out/sign-in or same-user reauthentication while the requests
-    // were in flight must not let stale data overwrite the panel.
-    if (!mounted ||
-        AppSession.instance.identityEpoch != epoch ||
-        AppSession.instance.token != token) {
-      return;
-    }
-    setState(() {
-      _data = data;
-      _loading = false;
-    });
-  }
 
   String _when(PortalEvent event) {
     final days = event.daysUntil;
@@ -99,10 +62,7 @@ class _AttentionPanelState extends State<AttentionPanel> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Precisa de atenção',
-                style: theme.textTheme.titleLarge,
-              ),
+              Text('Precisa de atenção', style: theme.textTheme.titleLarge),
               const SizedBox(height: 8),
               const Text(
                 'Entre com sua conta para ver prazos de eventos, a fila de '
@@ -120,7 +80,7 @@ class _AttentionPanelState extends State<AttentionPanel> {
       );
     }
 
-    final data = _data;
+    final attention = data;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -129,19 +89,16 @@ class _AttentionPanelState extends State<AttentionPanel> {
           runSpacing: 8,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Text(
-              'Precisa de atenção',
-              style: theme.textTheme.titleLarge,
-            ),
-            if (data?.fetchedAt != null)
+            Text('Precisa de atenção', style: theme.textTheme.titleLarge),
+            if (attention?.fetchedAt != null)
               Chip(
                 avatar: const Icon(Icons.schedule, size: 16),
-                label: Text(_stamp(data!.fetchedAt)),
+                label: Text(_stamp(attention!.fetchedAt)),
               ),
             IconButton(
               tooltip: 'Atualizar painel',
-              onPressed: _loading ? null : _reload,
-              icon: _loading
+              onPressed: loading ? null : onRefresh,
+              icon: loading
                   ? const SizedBox(
                       width: 18,
                       height: 18,
@@ -152,22 +109,23 @@ class _AttentionPanelState extends State<AttentionPanel> {
           ],
         ),
         const SizedBox(height: 8),
-        if (data == null)
+        if (attention == null)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 24),
             child: Center(child: CircularProgressIndicator()),
           )
         else ...[
-          _eventsSection(data),
-          _reviewSection(data),
-          _gapsSection(data),
-          _feedsSection(data),
+          _eventsSection(context, attention),
+          _reviewSection(context, attention),
+          _gapsSection(context, attention),
+          _feedsSection(context, attention),
         ],
       ],
     );
   }
 
-  Widget _section({
+  Widget _section(
+    BuildContext context, {
     required IconData icon,
     required String title,
     required Widget child,
@@ -197,9 +155,7 @@ class _AttentionPanelState extends State<AttentionPanel> {
             if (error != null)
               Text(
                 error,
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.error,
-                ),
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
               )
             else
               child,
@@ -209,7 +165,7 @@ class _AttentionPanelState extends State<AttentionPanel> {
     );
   }
 
-  Widget _eventsSection(AttentionData data) {
+  Widget _eventsSection(BuildContext context, AttentionData data) {
     final result = data.eventos;
     // Drafts are for monitoring, not for the shared deadline panel.
     final upcoming = (result.data ?? const <PortalEvent>[])
@@ -217,12 +173,14 @@ class _AttentionPanelState extends State<AttentionPanel> {
         .take(3)
         .toList();
     return _section(
+      context,
       icon: Icons.event_outlined,
       title: 'Prazos de eventos',
       error: result.error,
       trailing: PortalLinkButton(
         label: 'Todos os eventos',
-        url: data.eventsListingUrl ??
+        url:
+            data.eventsListingUrl ??
             (AppConfig.portalUrl.isEmpty
                 ? null
                 : '${AppConfig.portalUrl}/eventos'),
@@ -258,10 +216,7 @@ class _AttentionPanelState extends State<AttentionPanel> {
                                 label: 'Submissão',
                                 url: event.submissionUrl,
                               ),
-                            PortalLinkButton(
-                              label: 'Ver',
-                              url: event.viewUrl,
-                            ),
+                            PortalLinkButton(label: 'Ver', url: event.viewUrl),
                           ],
                         ),
                       ],
@@ -272,16 +227,17 @@ class _AttentionPanelState extends State<AttentionPanel> {
     );
   }
 
-  Widget _reviewSection(AttentionData data) {
+  Widget _reviewSection(BuildContext context, AttentionData data) {
     final result = data.pendingReview;
     final count = result.data?.count ?? 0;
     final suffix = result.data?.truncated == true ? '+' : '';
     return _section(
+      context,
       icon: Icons.rate_review_outlined,
       title: 'Revisão editorial',
       error: result.error,
       trailing: TextButton(
-        onPressed: () => widget.onNavigate(1),
+        onPressed: () => onNavigate(1),
         child: const Text('Abrir conteúdo'),
       ),
       child: Text(
@@ -293,9 +249,10 @@ class _AttentionPanelState extends State<AttentionPanel> {
     );
   }
 
-  Widget _gapsSection(AttentionData data) {
+  Widget _gapsSection(BuildContext context, AttentionData data) {
     final result = data.lacunas;
-    final rows = <({String typeLabel, String fieldLabel, int missing, String? url})>[];
+    final rows =
+        <({String typeLabel, String fieldLabel, int missing, String? url})>[];
     for (final type in result.data ?? const <GapType>[]) {
       for (final field in type.fields) {
         rows.add((
@@ -309,11 +266,12 @@ class _AttentionPanelState extends State<AttentionPanel> {
     rows.sort((a, b) => b.missing.compareTo(a.missing));
     final top = rows.take(3).toList();
     return _section(
+      context,
       icon: Icons.fact_check_outlined,
       title: 'Lacunas do inventário',
       error: result.error,
       trailing: TextButton(
-        onPressed: () => widget.onNavigate(2),
+        onPressed: () => onNavigate(2),
         child: const Text('Abrir inventário'),
       ),
       child: top.isEmpty
@@ -339,12 +297,13 @@ class _AttentionPanelState extends State<AttentionPanel> {
     );
   }
 
-  Widget _feedsSection(AttentionData data) {
+  Widget _feedsSection(BuildContext context, AttentionData data) {
     final result = data.feeds;
     final feed = result.data;
     final items = (feed?.items ?? const <FeedItem>[]).take(4).toList();
     final failed = feed?.failedSections ?? const <String>[];
     return _section(
+      context,
       icon: Icons.newspaper_outlined,
       title: 'Novidades do portal',
       error: result.error,
@@ -365,10 +324,7 @@ class _AttentionPanelState extends State<AttentionPanel> {
                     contentPadding: EdgeInsets.zero,
                     dense: true,
                     title: Text(item.title),
-                    trailing: PortalLinkButton(
-                      label: 'Abrir',
-                      url: item.link,
-                    ),
+                    trailing: PortalLinkButton(label: 'Abrir', url: item.link),
                   ),
               ],
             ),
