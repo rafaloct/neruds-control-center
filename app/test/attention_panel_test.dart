@@ -93,7 +93,12 @@ void main() {
               },
             });
           case '/content/news/drafts':
-            return _json({'items': [{'nid': 5}], 'can_review': true});
+            return _json({
+              'items': [
+                {'nid': 5},
+              ],
+              'can_review': true,
+            });
           case '/missions':
             return _json([]);
         }
@@ -112,6 +117,13 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(const NerudsControlApp());
+    await tester.pumpAndSettle();
+    // The prompt follows the onboarding card, below the fold at 800x600.
+    await tester.scrollUntilVisible(
+      find.text('Precisa de atenção'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.pumpAndSettle();
     expect(find.text('Precisa de atenção'), findsOneWidget);
     expect(find.text('Entrar com minha conta'), findsWidgets);

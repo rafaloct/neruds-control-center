@@ -7,8 +7,10 @@ import 'editorial_page.dart';
 import 'identity_page.dart';
 import 'mission_page.dart';
 import 'monitoring_page.dart';
+import 'onboarding_card.dart';
 import 'opportunities_page.dart';
 import 'ops_page.dart';
+import 'portal_read.dart';
 import 'session_widgets.dart';
 import 'workflow_widgets.dart';
 
@@ -109,22 +111,51 @@ class ControlHome extends StatefulWidget {
 
 class _ControlHomeState extends State<ControlHome> {
   final DrupalApi api = DrupalApi();
+  final PortalReadApi _readApi = PortalReadApi();
   final Set<int> _visited = {0};
   int index = 0;
   bool _leaving = false;
   late Future<PortalSnapshot> snapshot;
+  AttentionData? _attention;
+  bool _attentionLoading = false;
 
   @override
   void initState() {
     super.initState();
     snapshot = api.loadSnapshot();
+    if (AppSession.instance.authenticated) _reloadAttention();
     AppSession.instance.addListener(_sessionChanged);
   }
 
   void _sessionChanged() {
     if (!mounted) return;
+    _reloadAttention();
     setState(() {
       if (index == 5 && !AppSession.instance.canAdminUsers) index = 0;
+    });
+  }
+
+  Future<void> _reloadAttention() async {
+    final session = AppSession.instance;
+    if (!session.authenticated) {
+      setState(() {
+        _attention = null;
+        _attentionLoading = false;
+      });
+      return;
+    }
+    final epoch = session.identityEpoch;
+    final token = session.token;
+    setState(() => _attentionLoading = true);
+    final data = await _readApi.loadAttention();
+    // A sign-out/sign-in or same-user reauthentication while the requests
+    // were in flight must not let stale data overwrite the panel.
+    if (!mounted || session.identityEpoch != epoch || session.token != token) {
+      return;
+    }
+    setState(() {
+      _attention = data;
+      _attentionLoading = false;
     });
   }
 
@@ -134,7 +165,10 @@ class _ControlHomeState extends State<ControlHome> {
     super.dispose();
   }
 
-  void refresh() => setState(() => snapshot = api.loadSnapshot());
+  void refresh() {
+    setState(() => snapshot = api.loadSnapshot());
+    _reloadAttention();
+  }
 
   void _select(int value) {
     if (_leaving) return;
@@ -184,7 +218,13 @@ class _ControlHomeState extends State<ControlHome> {
     ];
     // Lazy first visit, retained afterwards. Identity changes create fresh pages.
     final pages = [
-      DashboardPage(snapshot: snapshot, onRefresh: refresh, onSelect: _select),
+      DashboardPage(
+        snapshot: snapshot,
+        attention: _attention,
+        attentionLoading: _attentionLoading,
+        onRefresh: refresh,
+        onSelect: _select,
+      ),
       if (_visited.contains(1))
         EditorialPage(key: ValueKey('editorial-$epoch'))
       else
@@ -354,11 +394,17 @@ class DashboardPage extends StatelessWidget {
   const DashboardPage({
     super.key,
     required this.snapshot,
+    required this.attention,
+    required this.attentionLoading,
     required this.onRefresh,
     required this.onSelect,
   });
 
   final Future<PortalSnapshot> snapshot;
+
+  /// Shared attention snapshot — also feeds the recommended next action.
+  final AttentionData? attention;
+  final bool attentionLoading;
   final VoidCallback onRefresh;
   final ValueChanged<int> onSelect;
 
@@ -386,7 +432,18 @@ class DashboardPage extends StatelessWidget {
                   'claro para quem continua o trabalho.',
                 ),
                 const SizedBox(height: 24),
-                AttentionPanel(onNavigate: onSelect),
+                OnboardingCard(
+                  data: attention,
+                  loading: attentionLoading,
+                  onNavigate: onSelect,
+                ),
+                const SizedBox(height: 24),
+                AttentionPanel(
+                  data: attention,
+                  loading: attentionLoading,
+                  onRefresh: onRefresh,
+                  onNavigate: onSelect,
+                ),
                 const SizedBox(height: 24),
                 Card(
                   color: Theme.of(context).colorScheme.primaryContainer,
