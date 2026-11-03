@@ -42,6 +42,9 @@ dependencies:
   vsc_quill_delta_to_html: ^1.0.5
   flutter_quill_delta_from_html: ^1.5.3
   dart_quill_delta: ^10.8.3
+  flutter_slidable: ^4.0.3
+  shimmer: ^4.0.0
+  flutter_animate: ^4.5.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
