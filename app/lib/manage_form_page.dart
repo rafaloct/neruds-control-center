@@ -24,6 +24,8 @@ class ManageFormPage extends StatefulWidget {
 
 class _ManageFormPageState extends State<ManageFormPage> {
   final _formKey = GlobalKey<FormState>();
+  final _stepKeys = <GlobalKey<FormState>>[];
+  int _step = 0;
   final Map<String, TextEditingController> _controllers = {};
   final Map<String, bool> _bools = {};
   final Map<String, DateTime?> _dates = {};
@@ -270,8 +272,19 @@ class _ManageFormPageState extends State<ManageFormPage> {
     return values;
   }
 
+  bool _validateAll() {
+    if (widget.bundle.steps.isEmpty) {
+      return _formKey.currentState?.validate() ?? false;
+    }
+    var ok = true;
+    for (final key in _stepKeys) {
+      if (!(key.currentState?.validate() ?? true)) ok = false;
+    }
+    return ok;
+  }
+
   Future<void> _save() async {
-    if (_saving || !(_formKey.currentState?.validate() ?? false)) return;
+    if (_saving || !_validateAll()) return;
     // Validação manual dos campos que o Form não alcança (datas, refs).
     for (final f in widget.bundle.fields) {
       if (!f.required) continue;
@@ -319,43 +332,182 @@ class _ManageFormPageState extends State<ManageFormPage> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : Form(
-              key: _formKey,
-              child: ListView(
-                padding: const EdgeInsets.all(20),
-                children: [
-                  if (_error != null) ...[
-                    Card(
-                      color: Theme.of(context).colorScheme.errorContainer,
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Text(_error!),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
+          : widget.bundle.steps.isEmpty
+              ? _listForm()
+              : _wizardForm(),
+    );
+  }
+
+  Widget _listForm() {
+    return Form(
+      key: _formKey,
+      child: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          if (_error != null) ...[_errorCard(), const SizedBox(height: 12)],
+          for (final f in widget.bundle.fields) ...[
+            _buildField(f),
+            const SizedBox(height: 14),
+          ],
+          _publishSwitch(),
+          const SizedBox(height: 20),
+          FilledButton.icon(
+            onPressed: _saving ? null : _save,
+            icon: const Icon(Icons.save_outlined),
+            label: Text(_saving ? 'Salvando…' : 'Salvar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _errorCard() => Card(
+        color: Theme.of(context).colorScheme.errorContainer,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Text(_error!),
+        ),
+      );
+
+  Widget _publishSwitch() => SwitchListTile(
+        value: _published,
+        onChanged: (v) => setState(() => _published = v),
+        title: const Text('Publicado no site'),
+        subtitle: const Text(
+          'Desligado mantém como rascunho — só quem pode revisar publica.',
+        ),
+      );
+
+  List<ManageField> _fieldsOf(String group) =>
+      widget.bundle.fields.where((f) => f.group == group).toList();
+
+  void _continue() {
+    final key = _stepKeys[_step];
+    if (!(key.currentState?.validate() ?? true)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Revise os campos marcados antes de avançar.'),
+        ),
+      );
+      return;
+    }
+    setState(() => _step++);
+  }
+
+  Widget _wizardForm() {
+    final steps = widget.bundle.steps;
+    while (_stepKeys.length < steps.length) {
+      _stepKeys.add(GlobalKey<FormState>());
+    }
+    final last = _step == steps.length - 1;
+    return SingleChildScrollView(
+      child: Stepper(
+        currentStep: _step,
+        onStepContinue: _continue,
+        onStepCancel:
+            _step == 0 ? null : () => setState(() => _step--),
+        controlsBuilder: (context, details) => Padding(
+          padding: const EdgeInsets.only(top: 16),
+          child: Row(
+            children: [
+              FilledButton.icon(
+                onPressed:
+                    last ? (_saving ? null : _save) : details.onStepContinue,
+                icon: Icon(
+                  last ? Icons.save_outlined : Icons.arrow_forward,
+                ),
+                label: Text(
+                  last ? (_saving ? 'Salvando…' : 'Salvar') : 'Avançar',
+                ),
+              ),
+              if (_step > 0) ...[
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: details.onStepCancel,
+                  child: const Text('Voltar'),
+                ),
+              ],
+            ],
+          ),
+        ),
+        steps: [
+          for (var i = 0; i < steps.length - 1; i++)
+            Step(
+              title: Text(steps[i].label),
+              isActive: _step >= i,
+              state: _step > i ? StepState.complete : StepState.indexed,
+              content: Form(
+                key: _stepKeys[i],
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final f in _fieldsOf(steps[i].id)) ...[
+                      _buildField(f),
+                      const SizedBox(height: 14),
+                    ],
                   ],
-                  for (final f in widget.bundle.fields) ...[
-                    _buildField(f),
-                    const SizedBox(height: 14),
-                  ],
-                  SwitchListTile(
-                    value: _published,
-                    onChanged: (v) => setState(() => _published = v),
-                    title: const Text('Publicado no site'),
-                    subtitle: const Text(
-                      'Desligado mantém como rascunho — só quem pode revisar publica.',
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  FilledButton.icon(
-                    onPressed: _saving ? null : _save,
-                    icon: const Icon(Icons.save_outlined),
-                    label: Text(_saving ? 'Salvando…' : 'Salvar'),
-                  ),
-                ],
+                ),
               ),
             ),
+          Step(
+            title: Text(steps.last.label),
+            isActive: true,
+            state: _step >= steps.length - 1
+                ? StepState.editing
+                : StepState.indexed,
+            content: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (_error != null) ...[
+                  _errorCard(),
+                  const SizedBox(height: 12),
+                ],
+                Card(
+                  child: Column(
+                    children: [
+                      for (final f in widget.bundle.fields)
+                        ListTile(
+                          dense: true,
+                          title: Text(f.label),
+                          subtitle: Text(
+                            _preview(f),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                _publishSwitch(),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
+  }
+
+  String _preview(ManageField f) {
+    switch (f.kind) {
+      case 'bool':
+        return (_bools[f.name] ?? false) ? 'Sim' : 'Não';
+      case 'date':
+        return _dateText(_dates[f.name]);
+      case 'reference':
+        final sel = _refSelections[f.name] ?? const [];
+        return sel.isEmpty
+            ? '—'
+            : sel.map((o) => o.label).join(', ');
+      case 'image':
+      case 'file':
+        final uuids = _fileUuids[f.name] ?? const [];
+        return uuids.isEmpty
+            ? '—'
+            : '${uuids.length} arquivo(s) anexado(s)';
+      default:
+        final text = _controllers[f.name]?.text.trim() ?? '';
+        return text.isEmpty ? '—' : text;
+    }
   }
 
   Widget _buildField(ManageField f) {

@@ -283,6 +283,152 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+# Divisão dos formulários em passos de wizard (desenho validado com
+# consulta arquitetural — campos acadêmicos profundos agrupados).
+# ids de grupo: basics | content | details | academic | team | refs | media
+_WIZARD_STEPS: dict[str, list[dict[str, str]]] = {
+    "noticia": [
+        {"id": "basics", "label": "Informações básicas"},
+        {"id": "content", "label": "Conteúdo"},
+        {"id": "refs", "label": "Vínculos e classificação"},
+        {"id": "media", "label": "Mídia e anexos"},
+    ],
+    "evento_cientifico": [
+        {"id": "basics", "label": "Informações básicas"},
+        {"id": "details", "label": "Detalhes do evento"},
+        {"id": "media", "label": "Mídia"},
+    ],
+    "projeto_pesquisa_extensao": [
+        {"id": "basics", "label": "Informações básicas"},
+        {"id": "academic", "label": "Metadados acadêmicos"},
+        {"id": "team", "label": "Equipe e classificação"},
+        {"id": "media", "label": "Mídia e anexos"},
+    ],
+    "perfil_pesquisador": [
+        {"id": "basics", "label": "Identificação"},
+        {"id": "academic", "label": "Curriculo acadêmico"},
+        {"id": "content", "label": "Biografia"},
+        {"id": "media", "label": "Foto"},
+    ],
+    "publicacao_cientifica": [
+        {"id": "basics", "label": "Identificação"},
+        {"id": "academic", "label": "Metadados da publicação"},
+        {"id": "media", "label": "Arquivos"},
+    ],
+    "grupo_estudos": [
+        {"id": "basics", "label": "Informações básicas"},
+        {"id": "team", "label": "Equipe e linha"},
+        {"id": "details", "label": "Descrição"},
+    ],
+    "acao_extensionista": [
+        {"id": "basics", "label": "Informações básicas"},
+        {"id": "details", "label": "Execução e impacto"},
+        {"id": "media", "label": "Anexos"},
+    ],
+    "relatorio": [
+        {"id": "basics", "label": "Identificação"},
+        {"id": "content", "label": "Conteúdo do relatório"},
+        {"id": "media", "label": "Arquivos"},
+    ],
+    "reuniao": [
+        {"id": "basics", "label": "Informações básicas"},
+        {"id": "details", "label": "Pauta e participantes"},
+    ],
+}
+
+_FIELD_GROUPS: dict[str, dict[str, str]] = {
+    "noticia": {
+        "title": "basics", "field_data_noticia": "basics",
+        "field_autor_noticia": "basics",
+        "field_resumo_noticia": "content", "body": "content",
+        "field_link_noticia": "content", "field_fonte_externa": "content",
+        "field_projeto_associado": "refs",
+        "field_linha_pesquisa": "refs", "field_tags": "refs",
+        "field_imagem_destaque": "media", "field_pdf": "media",
+    },
+    "evento_cientifico": {
+        "title": "basics", "field_data_evento": "basics",
+        "field_local_evento": "basics",
+        "field_descricao_evento": "details",
+        "field_organizadores": "details",
+        "field_chamada_trabalhos": "details",
+        "field_link_inscricao": "details",
+        "field_link_submissao": "details",
+        "field_imagem_destaque": "media",
+    },
+    "projeto_pesquisa_extensao": {
+        "title": "basics", "field_coordenador": "basics",
+        "field_data_inicio": "basics", "field_data_fim": "basics",
+        "field_local_execucao": "basics",
+        "field_descricao_projeto": "academic",
+        "field_justificativa": "academic",
+        "field_objetivos": "academic", "field_metodologia": "academic",
+        "field_equipe_pesquisa": "team",
+        "field_linhas_pesquisa": "team",
+        "field_status_projeto": "team", "field_tipo_projeto": "team",
+        "field_imagens_projeto": "media", "field_pdf": "media",
+    },
+    "perfil_pesquisador": {
+        "title": "basics", "field_nome_completo": "basics",
+        "field_email": "basics",
+        "field_instituicao": "basics",
+        "field_lattes": "academic", "field_orcid_id": "academic",
+        "field_google_scholar": "academic", "field_linkedin": "academic",
+        "field_formacao": "academic",
+        "field_linhas_pesquisa": "academic",
+        "field_biografia": "content",
+        "field_foto_perfil": "media",
+    },
+    "publicacao_cientifica": {
+        "title": "basics",
+        "field_titulo_publicacao": "basics",
+        "field_autores": "academic",
+        "field_ano_publicacao": "academic",
+        "field_link_publicacao": "academic", "field_doi": "academic",
+        "field_areas_conhecimento": "academic",
+        "field_pdf": "media",
+    },
+    "grupo_estudos": {
+        "title": "basics", "field_cronograma": "basics",
+        "field_lider": "team", "field_membros": "team",
+        "field_linha_pesquisa": "team",
+        "body": "details",
+    },
+    "acao_extensionista": {
+        "title": "basics", "field_local_acao": "basics",
+        "field_tipo_acao": "basics", "field_municipio": "basics",
+        "body": "details",
+        "field_numero_participantes": "details",
+        "field_impactos_resultados": "details",
+        "field_pdf": "media",
+    },
+    "relatorio": {
+        "title": "basics", "field_periodo_relatorio": "basics",
+        "field_projeto_vinculado": "basics",
+        "field_resumo_executivo": "content",
+        "field_objetivos_alcancados": "content",
+        "field_resultados_obtidos": "content",
+        "field_proximos_passos": "content",
+        "field_arquivo_relatorio": "media",
+    },
+    "reuniao": {
+        "title": "basics", "field_data_reuniao": "basics",
+        "field_pauta": "details", "field_participantes": "details",
+    },
+}
+
+_REVIEW_STEP = {"id": "review", "label": "Revisão e salvar"}
+
+for _bundle, _schema in MANAGE_SCHEMAS.items():
+    _steps = _WIZARD_STEPS.get(_bundle)
+    if not _steps:
+        continue
+    _groups = _FIELD_GROUPS.get(_bundle, {})
+    for _field in _schema["fields"]:
+        _field["group"] = _groups.get(_field["name"], "basics")
+    _schema["steps"] = [*_steps, dict(_REVIEW_STEP)]
+
+
 # Vocabulários de taxonomia gerenciáveis (espelhado de produção, 39 vocabs).
 # Todos compartilham a mesma forma de termo (name/description/weight/parent),
 # então um único schema cobre qualquer vocabulário.

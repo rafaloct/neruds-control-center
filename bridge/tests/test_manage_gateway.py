@@ -758,3 +758,25 @@ async def test_manage_media_unknown_type(async_client, extensionista_session):
         "/manage/media/video", headers={"Authorization": f"Bearer {token}"}
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Wizard steps no schema
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_schemas_include_wizard_steps(async_client, extensionista_session):
+    token, _ = extensionista_session
+    response = await async_client.get(
+        "/manage/schemas", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    schemas = response.json()["schemas"]
+    for bundle in ("noticia", "relatorio", "projeto_pesquisa_extensao"):
+        steps = schemas[bundle].get("steps")
+        assert steps, f"{bundle} sem steps"
+        assert steps[-1]["id"] == "review"
+        groups = {f.get("group") for f in schemas[bundle]["fields"]}
+        step_ids = {s["id"] for s in steps}
+        assert groups <= step_ids

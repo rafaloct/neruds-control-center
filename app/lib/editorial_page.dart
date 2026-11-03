@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import 'app_config.dart';
 import 'app_session.dart';
 import 'bridge_http.dart' as http;
+import 'manage_form_page.dart';
+import 'manage_models.dart';
+import 'manage_service.dart';
 import 'session_widgets.dart';
 import 'unsaved_work.dart';
 import 'workflow_widgets.dart';
@@ -165,6 +168,43 @@ class _EditorialPageState extends State<EditorialPage>
       AppSession.instance.authenticated &&
       AppSession.instance.identityEpoch == epoch &&
       AppSession.instance.token == token;
+
+  /// Edição dentro do app — sem fallback para o painel do Drupal.
+  /// Busca o schema do setor e abre o formulário/wizard dinâmico.
+  Future<void> _editDraftInApp({
+    required String bundle,
+    required int? nid,
+  }) async {
+    if (nid == null) {
+      _message('Não foi possível identificar o registro para edição.');
+      return;
+    }
+    List<ManageBundle> bundles;
+    try {
+      bundles = await ManageService.schemas();
+    } catch (_) {
+      _message('Não foi possível carregar os setores. Confira a conexão.');
+      return;
+    }
+    if (!mounted) return;
+    ManageBundle? match;
+    for (final b in bundles) {
+      if (b.name == bundle) {
+        match = b;
+        break;
+      }
+    }
+    if (match == null) {
+      _message('Este setor ainda não é editável pelo app.');
+      return;
+    }
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ManageFormPage(bundle: match!, nid: nid),
+      ),
+    );
+    if (mounted) _loadDrafts();
+  }
 
   void _message(String value) {
     if (!mounted) return;
@@ -744,10 +784,15 @@ class _EditorialPageState extends State<EditorialPage>
                       style: TextStyle(fontWeight: FontWeight.w600),
                     ),
                     Text(_createdDraft!['title']?.toString() ?? ''),
-                    PortalLinkButton(
-                      label: 'Abrir rascunho no portal',
-                      url: _createdDraft!['edit_url']?.toString(),
-                      editing: true,
+                    OutlinedButton.icon(
+                      onPressed: () => _editDraftInApp(
+                        bundle: _selectedBundle,
+                        nid: int.tryParse(
+                          '${_createdDraft!['drupal_internal_nid'] ?? ''}',
+                        ),
+                      ),
+                      icon: const Icon(Icons.edit_outlined),
+                      label: const Text('Continuar editando no app'),
                     ),
                   ],
                 ),
@@ -882,10 +927,17 @@ class _EditorialPageState extends State<EditorialPage>
               runSpacing: 8,
               children: [
                 if (status != 'published')
-                  PortalLinkButton(
-                    label: 'Editar a ficha existente',
-                    url: item['edit_url']?.toString(),
-                    editing: true,
+                  OutlinedButton.icon(
+                    onPressed: _busy
+                        ? null
+                        : () => _editDraftInApp(
+                            bundle: 'noticia',
+                            nid: int.tryParse(
+                              '${item['nid'] ?? item['id'] ?? ''}',
+                            ),
+                          ),
+                    icon: const Icon(Icons.edit_outlined),
+                    label: const Text('Editar a ficha existente'),
                   ),
                 if (status == 'published')
                   PortalLinkButton(

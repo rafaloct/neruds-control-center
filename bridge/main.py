@@ -1003,6 +1003,111 @@ async def put_app_config(
 
 
 # ---------------------------------------------------------------------------
+# Assistente IA (OpenRouter) — chave fica só no ambiente do servidor.
+# ---------------------------------------------------------------------------
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+_AI_ACTIONS: dict[str, str] = {
+    "improve": (
+        "Reescreva o texto abaixo como redator do portal NERUDS, em "
+        "português claro e direto, sem inventar fatos. Mantenha datas, "
+        "nomes e números exatamente como estão. Responda só com o texto."
+    ),
+    "summarize": (
+        "Resuma o texto abaixo em até 3 frases em português, para uso "
+        "como resumo em cards e listagens do portal NERUDS."
+    ),
+    "title": (
+        "Sugira um título curto e factual (máx. 12 palavras) em português "
+        "para o conteúdo abaixo, no estilo do portal NERUDS."
+    ),
+    "fields": (
+        "Dado o texto de campo abaixo, extraia em JSON as chaves: "
+        "title, summary, data (AAAA-MM-DD ou vazio), local, autores. "
+        "Responda somente o JSON."
+    ),
+}
+
+_AI_RATE: dict[str, list[float]] = {}
+_AI_RATE_MAX = int(os.getenv("NERUDS_AI_RATE_MAX", "20"))
+_AI_RATE_WINDOW = 300.0
+
+
+class AiAssistRequest(BaseModel):
+    action: str
+    text: str = Field(min_length=1, max_length=12000)
+    context: str = Field(default="", max_length=2000)
+
+
+@app.post("/ai/assist")
+async def ai_assist(
+    payload: AiAssistRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Proxy restrito para o OpenRouter — ações fixas, sem chat livre."""
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Assistente IA não configurado no servidor.",
+        )
+    system = _AI_ACTIONS.get(payload.action)
+    if system is None:
+        raise HTTPException(status_code=422, detail="Ação não suportada.")
+
+    user = session.get("username") or "anon"
+    now = time.monotonic()
+    calls = [t for t in _AI_RATE.get(user, []) if now - t < _AI_RATE_WINDOW]
+    if len(calls) >= _AI_RATE_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail="Limite de usos do assistente atingido. Tente em alguns minutos.",
+        )
+    calls.append(now)
+    _AI_RATE[user] = calls
+
+    prompt = payload.text if not payload.context else (
+        f"Contexto: {payload.context}\n\n{payload.text}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "HTTP-Referer": "https://app.neruds.org",
+                    "X-Title": "NERUDS Control Center",
+                },
+                json={
+                    "model": OPENROUTER_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.4,
+                    "max_tokens": 900,
+                },
+            )
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=502, detail="Assistente IA indisponível no momento."
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenRouter respondeu {response.status_code}.",
+        )
+    data = response.json()
+    content = (
+        ((data.get("choices") or [{}])[0].get("message") or {})
+        .get("content") or ""
+    ).strip()
+    return {"ok": True, "action": payload.action, "result": content}
+
+
+# ---------------------------------------------------------------------------
 # Operações: probes de dependências e backup sob demanda (somente admin)
 # ---------------------------------------------------------------------------
 
@@ -2407,6 +2512,7 @@ async def manage_schemas(
                 "label_singular": schema["label_singular"],
                 "icon": schema["icon"],
                 "fields": schema["fields"],
+                "steps": schema.get("steps", []),
             }
             for bundle, schema in manage_schema.MANAGE_SCHEMAS.items()
             if bundle in manage_schema.MANAGE_SCHEMAS
@@ -3018,6 +3124,8 @@ async def manage_list(
     bundle: str,
     status: str | None = None,
     search: str | None = None,
+    rel: str | None = None,
+    rel_id: str | None = None,
     limit: int = 20,
     offset: int = 0,
     session: dict[str, Any] = Depends(require_session),
@@ -3036,6 +3144,8 @@ async def manage_list(
     if search:
         params["filter[title][operator]"] = "CONTAINS"
         params["filter[title][value]"] = search
+    if rel and rel_id:
+        params[f"filter[{rel}.id]"] = rel_id
     async with drupal_client(session) as client:
         response = await client.get(f"/jsonapi/node/{bundle}", params=params)
     if response.status_code != 200:

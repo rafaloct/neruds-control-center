@@ -15,7 +15,9 @@ services:
       dockerfile: deploy/dokploy/bridge.Dockerfile
     image: neruds-control-center/bridge:latest
     restart: unless-stopped
-    env_file: .env
+    # Segredos fora do checkout (sobrevivem a redeploys):
+    # /srv/neruds-secrets.env no host — ex.: OPENROUTER_API_KEY=sk-or-...
+    env_file: [/srv/neruds-secrets.env, .env]
     volumes:
       - neruds-bridge-data:/srv/data
     networks:

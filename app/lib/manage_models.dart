@@ -9,6 +9,7 @@ class ManageField {
     this.target,
     this.multiple = false,
     this.hint,
+    this.group = 'basics',
   });
 
   final String name;
@@ -18,6 +19,7 @@ class ManageField {
   final String? target;
   final bool multiple;
   final String? hint;
+  final String group;
 
   factory ManageField.fromJson(Map<String, dynamic> json) => ManageField(
         name: json['name']?.toString() ?? '',
@@ -27,6 +29,20 @@ class ManageField {
         target: json['target']?.toString(),
         multiple: json['multiple'] == true,
         hint: json['hint']?.toString(),
+        group: json['group']?.toString() ?? 'basics',
+      );
+}
+
+/// Um passo do wizard (grupo de campos) declarado pelo schema.
+class ManageStep {
+  const ManageStep({required this.id, required this.label});
+
+  final String id;
+  final String label;
+
+  factory ManageStep.fromJson(Map<String, dynamic> json) => ManageStep(
+        id: json['id']?.toString() ?? '',
+        label: json['label']?.toString() ?? '',
       );
 }
 
@@ -38,6 +54,7 @@ class ManageBundle {
     required this.icon,
     required this.fields,
     required this.canCreate,
+    this.steps = const [],
   });
 
   final String name;
@@ -46,6 +63,7 @@ class ManageBundle {
   final String icon;
   final List<ManageField> fields;
   final bool canCreate;
+  final List<ManageStep> steps;
 
   factory ManageBundle.fromJson(
     String name,
@@ -62,6 +80,10 @@ class ManageBundle {
                 Map<String, dynamic>.from(f as Map)))
             .toList(),
         canCreate: canCreate,
+        steps: ((json['steps'] as List?) ?? const [])
+            .map((s) => ManageStep.fromJson(
+                Map<String, dynamic>.from(s as Map)))
+            .toList(),
       );
 }
 

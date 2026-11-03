@@ -35,6 +35,8 @@ class ManageService {
     String bundle, {
     String? status,
     String? search,
+    String? rel,
+    String? relId,
     int limit = 30,
     int offset = 0,
   }) async {
@@ -42,6 +44,8 @@ class ManageService {
       'limit': '$limit',
       'offset': '$offset',
       'status': ?status,
+      'rel': ?rel,
+      'rel_id': ?relId,
       if (search != null && search.isNotEmpty) 'search': search,
     };
     final response = await bridge.get(

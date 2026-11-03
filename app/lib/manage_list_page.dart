@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'manage_form_page.dart';
 import 'manage_models.dart';
+import 'project_timeline.dart';
 import 'manage_service.dart';
 
 /// Listagem genérica de um setor — busca, filtro de status e ações por item.
@@ -222,6 +223,16 @@ class _ManageListPageState extends State<ManageListPage> {
                   icon: const Icon(Icons.edit_outlined),
                   onPressed: () => _openForm(item),
                 ),
+                if (widget.bundle.name == 'projeto_pesquisa_extensao')
+                  IconButton(
+                    tooltip: 'Cronograma do projeto',
+                    icon: const Icon(Icons.timeline_outlined),
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => ProjectTimelinePage(project: item),
+                      ),
+                    ),
+                  ),
                 if (item.status)
                   IconButton(
                     tooltip: 'Despublicar',
