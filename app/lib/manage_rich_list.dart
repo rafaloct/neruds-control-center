@@ -262,14 +262,14 @@ class SkeletonSliver extends StatelessWidget {
         ),
       );
     }
-    return SliverList.list(
-      children: [
-        for (var i = 0; i < count; i++)
-          const Padding(
-            padding: EdgeInsets.only(bottom: 10),
-            child: SkeletonCard(),
-          ),
-      ],
+    return SliverList(
+      delegate: SliverChildBuilderDelegate(
+        (_, i) => const Padding(
+          padding: EdgeInsets.only(bottom: 10),
+          child: SkeletonCard(),
+        ),
+        childCount: count,
+      ),
     );
   }
 }

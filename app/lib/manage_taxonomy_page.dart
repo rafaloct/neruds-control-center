@@ -242,34 +242,34 @@ class _ManageTaxonomyPageState extends State<ManageTaxonomyPage> {
         slivers: [
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 88),
-            sliver: SliverList.list(
-              children: [
-                for (var i = 0; i < _terms.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: RichListCard(
-                      title: _terms[i].title,
-                      status: 'Termo',
-                      statusKind: StatusKind.neutral,
-                      subtitle: _vocabLabel,
-                      avatarIcon: Icons.label_outline,
-                      onTap: () => _editTerm(_terms[i]),
-                      actions: [
-                        SlideAction(
-                          icon: Icons.edit_outlined,
-                          label: 'Editar',
-                          onTap: () => _editTerm(_terms[i]),
-                        ),
-                        SlideAction(
-                          icon: Icons.delete_outline,
-                          label: 'Excluir',
-                          onTap: () => _deleteTerm(_terms[i]),
-                          destructive: true,
-                        ),
-                      ],
-                    ),
+            sliver: SliverList(
+              delegate: SliverChildBuilderDelegate(
+                (context, i) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: RichListCard(
+                    title: _terms[i].title,
+                    status: 'Termo',
+                    statusKind: StatusKind.neutral,
+                    subtitle: _vocabLabel,
+                    avatarIcon: Icons.label_outline,
+                    onTap: () => _editTerm(_terms[i]),
+                    actions: [
+                      SlideAction(
+                        icon: Icons.edit_outlined,
+                        label: 'Editar',
+                        onTap: () => _editTerm(_terms[i]),
+                      ),
+                      SlideAction(
+                        icon: Icons.delete_outline,
+                        label: 'Excluir',
+                        onTap: () => _deleteTerm(_terms[i]),
+                        destructive: true,
+                      ),
+                    ],
                   ),
-              ],
+                ),
+                childCount: _terms.length,
+              ),
             ),
           ),
         ],

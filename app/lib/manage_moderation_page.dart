@@ -223,14 +223,14 @@ class _ManageModerationPageState extends State<ManageModerationPage> {
         ),
       );
     }
-    return SliverList.list(
-      children: [
-        for (var i = 0; i < _items.length; i++)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: card(i),
-          ),
-      ],
+    return SliverList(
+      delegate: SliverChildBuilderDelegate(
+        (context, i) => Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: card(i),
+        ),
+        childCount: _items.length,
+      ),
     );
   }
 }

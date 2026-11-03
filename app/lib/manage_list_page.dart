@@ -267,7 +267,9 @@ class _ManageListPageState extends State<ManageListPage> {
     final delegate = SliverChildBuilderDelegate(
       (context, index) {
         final item = _items[index];
-        return RichListCard(
+        return Padding(
+          padding: EdgeInsets.only(bottom: grid ? 0 : 10),
+          child: RichListCard(
           title: item.title,
           status: item.status ? 'Publicado' : 'Rascunho',
           statusKind: item.status
@@ -297,6 +299,7 @@ class _ManageListPageState extends State<ManageListPage> {
                 destructive: true,
               ),
           ],
+          ),
         )
             .animate()
             .fadeIn(duration: 220.ms, delay: ((index % 12) * 30).ms)
@@ -315,15 +318,7 @@ class _ManageListPageState extends State<ManageListPage> {
         delegate: delegate,
       );
     }
-    return SliverList.list(
-      children: [
-        for (var i = 0; i < _items.length; i++)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: delegate.build(context, i)!,
-          ),
-      ],
-    );
+    return SliverList(delegate: delegate);
   }
 }
 

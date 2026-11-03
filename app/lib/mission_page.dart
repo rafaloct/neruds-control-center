@@ -5,6 +5,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'app_config.dart';
 import 'bridge_http.dart' as http;
+import 'manage_form_page.dart';
+import 'manage_models.dart';
+import 'manage_service.dart';
+import 'node_picker_sheet.dart';
 import 'portal_read.dart' show missionBoardChanged;
 import 'session_widgets.dart';
 import 'unsaved_work.dart';
@@ -1603,65 +1607,21 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
   }
 
   Future<void> _linkPortalNode() async {
-    final controller = TextEditingController();
-    final input = await showDialog<String>(
+    // Seletor nativo: busca a ficha no próprio app em vez de colar URL.
+    final picked = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Vincular ficha do portal'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Endereço ou número da ficha',
-            hintText: 'https://portal/node/123 ou 123',
-          ),
-          onSubmitted: (value) => Navigator.pop(context, value.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Vincular'),
-          ),
-        ],
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => NodePickerSheet(
+        initialBundle: task?['gap_bundle']?.toString(),
       ),
     );
-    controller.dispose();
-    if (!mounted || input == null || input.isEmpty) return;
+    if (!mounted || picked == null) return;
+    final nid = '${picked['nid']}';
     final portal = AppConfig.portalUrl;
-    final portalUri = AppConfig.webUri(portal);
-    if (portalUri == null) {
+    if (AppConfig.webUri(portal) == null) {
       _message('O endereço do portal não está configurado nesta estação.');
       return;
-    }
-    String? nid;
-    if (RegExp(r'^\d+$').hasMatch(input)) {
-      nid = input;
-    } else {
-      final parsed = AppConfig.webUri(input);
-      // A configured portal may live under a path prefix (/neruds/node/1);
-      // URLs on the same origin but outside that prefix do not belong to it.
-      final basePath = portalUri.path.replaceAll(RegExp(r'/+$'), '');
-      final path = parsed != null && basePath.isNotEmpty
-          ? (parsed.path.startsWith('$basePath/')
-              ? parsed.path.substring(basePath.length)
-              : null)
-          : parsed?.path;
-      final match = path == null
-          ? null
-          : RegExp(r'^/node/(\d+)(?:/edit)?/?$').firstMatch(path);
-      if (parsed == null || parsed.origin.toLowerCase() != portalUri.origin.toLowerCase() || path == null) {
-        _message('O endereço informado não pertence ao portal configurado.');
-        return;
-      }
-      nid = match?.group(1);
-      // Aliases Pathauto (ex.: /projeto-agrovila) não trazem o nid — o
-      // bridge resolve pelo shortlink da página.
-      nid ??= await _resolvePortalAlias(input);
-      if (nid == null) return;
     }
     final revision = _beginSessionRequest();
     // While a gap re-check is in flight another relink could overlap it —
@@ -1711,26 +1671,56 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     }
   }
 
-  /// Resolve a same-portal alias to its node id via the bridge; returns
-  /// null after messaging the user when the address cannot be resolved.
-  Future<String?> _resolvePortalAlias(String url) async {
+  /// Abre a ficha vinculada no formulário nativo — sem sair do app.
+  Future<void> _editInApp() async {
+    final nid = _taskNid;
+    if (nid == null) {
+      _message('Vincule a ficha do portal primeiro.');
+      return;
+    }
+    List<ManageBundle> schemas;
     try {
-      final response = await http.get(
-        _uri('/portal/node-lookup', {'url': url}),
-        headers: AppSession.instance.authHeaders,
-      );
-      if (!mounted) return null;
-      if (response.statusCode != 200) {
-        _message(_error(response));
-        return null;
-      }
-      final data = Map<String, dynamic>.from(
-        jsonDecode(utf8.decode(response.bodyBytes)),
-      );
-      return data['nid']?.toString();
-    } catch (error) {
-      if (mounted) _message(workflowError(error));
-      return null;
+      schemas = await ManageService.schemas();
+    } catch (e) {
+      _message('O portal recusou a consulta aos setores.');
+      return;
+    }
+    if (!mounted) return;
+    final gapBundle = task?['gap_bundle']?.toString() ?? '';
+    var bundle =
+        schemas.where((s) => s.name == gapBundle).firstOrNull;
+    bundle ??= await showModalBottomSheet<ManageBundle>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Text(
+                'Qual é o setor desta ficha?',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ),
+            for (final s in schemas)
+              ListTile(
+                title: Text(s.label),
+                onTap: () => Navigator.pop(context, s),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || bundle == null) return;
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ManageFormPage(bundle: bundle!, nid: nid),
+      ),
+    );
+    if (changed == true) {
+      // Recarrega a tarefa para refletir a edição na reconciliação.
+      await _recheckGap();
     }
   }
 
@@ -1960,17 +1950,18 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
             label: 'Conferir página pública',
             url: data['public_url']?.toString(),
           ),
-          PortalLinkButton(
-            label: 'Abrir edição no portal',
-            url: data['edit_url']?.toString(),
-            editing: true,
+          FilledButton.tonalIcon(
+            key: const ValueKey('mission-edit-in-app'),
+            icon: const Icon(Icons.edit_outlined, size: 18),
+            onPressed: saving || _taskNid == null ? null : _editInApp,
+            label: const Text('Editar ficha no app'),
           ),
         ],
       ),
       const SizedBox(height: 8),
       const Text(
-        'A edição utiliza sua conta e as permissões do Drupal. '
-        'O registro desta missão permanece disponível para reunir a evidência.',
+        'A edição abre o formulário do app com os campos do setor, '
+        'respeitando as permissões da sua conta no portal.',
       ),
       const SizedBox(height: 8),
       OutlinedButton.icon(
@@ -1984,8 +1975,8 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       ),
       const SizedBox(height: 6),
       const Text(
-        'Quando a ficha for criada pelo formulário do portal, informe o '
-        'endereço ou o número para ligar esta tarefa a ela.',
+        'Escolha a ficha existente em qualquer setor para ligar '
+        'esta tarefa a ela.',
       ),
       if ((data['gap_bundle']?.toString() ?? '').isNotEmpty) ...[
         const SizedBox(height: 12),
