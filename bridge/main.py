@@ -2483,6 +2483,536 @@ async def manage_options(
     raise HTTPException(status_code=404, detail="Tipo de referência não suportado.")
 
 
+# --- Taxonomia: CRUD de termos por vocabulário -------------------------------
+
+
+def _vocab_or_404(vocab: str) -> dict[str, str]:
+    meta = manage_schema.TAXONOMY_VOCABS.get(vocab)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Vocabulário não suportado.")
+    return meta
+
+
+def _term_item(item: dict[str, Any]) -> dict[str, Any]:
+    attrs = item.get("attributes", {})
+    return {
+        "tid": attrs.get("drupal_internal__tid"),
+        "uuid": item.get("id"),
+        "title": attrs.get("name") or "(sem nome)",
+        "status": True,
+        "changed": attrs.get("changed"),
+    }
+
+
+async def _term_uuid(client: httpx.AsyncClient, vocab: str, tid: int) -> str:
+    response = await client.get(
+        f"/jsonapi/taxonomy_term/{vocab}",
+        params={
+            "filter[drupal_internal__tid]": tid,
+            "page[limit]": "1",
+        },
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Drupal não respondeu à consulta do termo.")
+    data = response.json().get("data") or []
+    if not data:
+        raise HTTPException(status_code=404, detail="Termo não encontrado.")
+    return data[0]["id"]
+
+
+async def _build_term_payload(
+    vocab: str,
+    values: dict[str, Any],
+    client: httpx.AsyncClient,
+    *,
+    uuid: str | None = None,
+) -> dict[str, Any]:
+    attrs: dict[str, Any] = {}
+    rels: dict[str, Any] = {}
+    if values.get("name"):
+        attrs["name"] = str(values["name"]).strip()
+    if values.get("description") not in (None, ""):
+        desc = values["description"]
+        attrs["description"] = (
+            desc if isinstance(desc, dict)
+            else {"value": desc, "format": "plain_text"}
+        )
+    if values.get("weight") not in (None, ""):
+        attrs["weight"] = int(values["weight"])
+    if values.get("parent") not in (None, ""):
+        ref = await _resolve_ref_uuid(
+            client, f"taxonomy_term:{vocab}", values["parent"]
+        )
+        rels["parent"] = {"data": ref}
+    data: dict[str, Any] = {
+        "type": f"taxonomy_term--{vocab}", "attributes": attrs
+    }
+    if rels:
+        data["relationships"] = rels
+    if uuid:
+        data["id"] = uuid
+    return {"data": data}
+
+
+@app.get("/manage/taxonomy")
+async def manage_vocabularies(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    return {
+        "vocabularies": [
+            {"vid": vid, "label": meta["label"]}
+            for vid, meta in manage_schema.TAXONOMY_VOCABS.items()
+        ]
+    }
+
+
+@app.get("/manage/taxonomy/{vocab}")
+async def manage_terms(
+    vocab: str,
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _vocab_or_404(vocab)
+    limit = max(1, min(limit, 100))
+    params: dict[str, Any] = {
+        "page[limit]": str(limit),
+        "page[offset]": str(max(0, offset)),
+        "sort": "weight,name",
+    }
+    if search:
+        params["filter[name][operator]"] = "CONTAINS"
+        params["filter[name][value]"] = search
+    async with drupal_client(session) as client:
+        response = await client.get(
+            f"/jsonapi/taxonomy_term/{vocab}", params=params
+        )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta ao vocabulário recusada.")
+    data = response.json()
+    return {
+        "items": [_term_item(it) for it in data.get("data", [])],
+        "has_next": bool((data.get("links") or {}).get("next")),
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+@app.post("/manage/taxonomy/{vocab}")
+async def manage_term_create(
+    vocab: str,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _vocab_or_404(vocab)
+    values = payload.get("values") or {}
+    if not str(values.get("name") or "").strip():
+        raise HTTPException(status_code=422, detail="Informe o nome do termo.")
+    async with drupal_client(session) as client:
+        body = await _build_term_payload(vocab, values, client)
+        response = await client.post(
+            f"/jsonapi/taxonomy_term/{vocab}",
+            json=body,
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 422,
+            detail={"message": "Portal recusou a criação do termo.",
+                    "response": response.text[:600]},
+        )
+    return {"ok": True, **_term_item(response.json().get("data") or {})}
+
+
+@app.patch("/manage/taxonomy/{vocab}/{tid}")
+async def manage_term_update(
+    vocab: str,
+    tid: int,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _vocab_or_404(vocab)
+    async with drupal_client(session) as client:
+        uuid = await _term_uuid(client, vocab, tid)
+        body = await _build_term_payload(
+            vocab, payload.get("values") or {}, client, uuid=uuid
+        )
+        response = await client.patch(
+            f"/jsonapi/taxonomy_term/{vocab}/{uuid}",
+            json=body,
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 422,
+            detail={"message": "Portal recusou a atualização do termo.",
+                    "response": response.text[:600]},
+        )
+    return {"ok": True, **_term_item(response.json().get("data") or {})}
+
+
+@app.delete("/manage/taxonomy/{vocab}/{tid}")
+async def manage_term_delete(
+    vocab: str,
+    tid: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _vocab_or_404(vocab)
+    async with drupal_client(session) as client:
+        uuid = await _term_uuid(client, vocab, tid)
+        response = await client.delete(
+            f"/jsonapi/taxonomy_term/{vocab}/{uuid}",
+            headers={"X-CSRF-Token": session.get("csrf") or ""},
+        )
+    if response.status_code != 204:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Portal recusou excluir o termo.")
+    return {"ok": True, "tid": tid, "deleted": True}
+
+
+# --- Moderação: fila unificada de aprovação ----------------------------------
+
+
+@app.get("/manage/moderation/pending")
+async def manage_moderation_pending(
+    bundle: str | None = None,
+    limit_per_bundle: int = 10,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Rascunhos pendentes por setor — o JSON:API já filtra o que a conta
+    pode enxergar (extensionista vê só os próprios; coordenação vê tudo)."""
+    if not session.get("can_review") and not session.get("can_publish") \
+            and "coordenador" not in (session.get("roles") or []):
+        raise HTTPException(
+            status_code=403,
+            detail="Esta conta não tem permissão de revisão.",
+        )
+    bundles = [bundle] if bundle else list(manage_schema.MANAGE_SCHEMAS)
+    limit = max(1, min(limit_per_bundle, 50))
+    items: list[dict[str, Any]] = []
+    async with drupal_client(session) as client:
+        for b in bundles:
+            if b not in manage_schema.MANAGE_SCHEMAS:
+                raise HTTPException(status_code=404,
+                                    detail="Setor não suportado.")
+            response = await client.get(
+                f"/jsonapi/node/{b}",
+                params={
+                    "filter[status]": "0",
+                    "page[limit]": str(limit),
+                    "sort": "changed",
+                },
+            )
+            if response.status_code != 200:
+                continue
+            for it in response.json().get("data", []):
+                items.append({
+                    "bundle": b,
+                    "bundle_label":
+                        manage_schema.MANAGE_SCHEMAS[b]["label_singular"],
+                    **_manage_item(it),
+                })
+    return {"items": items}
+
+
+@app.post("/manage/moderation/{bundle}/{nid}/approve")
+async def manage_moderation_approve(
+    bundle: str,
+    nid: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Publica o rascunho — o Drupal decide se a conta pode (403 repassado)."""
+    _manage_schema_or_404(bundle)
+    async with drupal_client(session) as client:
+        uuid = await _node_uuid(client, bundle, nid)
+        response = await client.patch(
+            f"/jsonapi/node/{bundle}/{uuid}",
+            json={
+                "data": {
+                    "type": f"node--{bundle}",
+                    "id": uuid,
+                    "attributes": {"status": True},
+                }
+            },
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={
+                "message": "Portal recusou a publicação.",
+                "response": response.text[:600],
+            },
+        )
+    return {
+        "ok": True,
+        **_manage_item(response.json().get("data") or {}),
+        "approved": True,
+    }
+
+
+# --- Usuários e papéis (access control) --------------------------------------
+
+
+def _user_item(item: dict[str, Any], included: list | None = None) -> dict[str, Any]:
+    attrs = item.get("attributes", {})
+    roles_data = (
+        (item.get("relationships", {}).get("roles") or {}).get("data") or []
+    )
+    return {
+        "uid": attrs.get("drupal_internal__uid"),
+        "uuid": item.get("id"),
+        "name": attrs.get("name"),
+        "mail": attrs.get("mail"),
+        "status": bool(attrs.get("status")),
+        "roles": [r.get("id") for r in roles_data if r.get("id")],
+        "changed": attrs.get("changed"),
+    }
+
+
+@app.get("/manage/users/roles")
+async def manage_user_roles(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        response = await client.get("/jsonapi/user_role/user_role")
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta de papéis recusada.")
+    return {
+        "roles": [
+            {
+                "id": it.get("id"),
+                "label": (it.get("attributes") or {}).get("label")
+                or it.get("id"),
+            }
+            for it in response.json().get("data", [])
+        ]
+    }
+
+
+@app.get("/manage/users")
+async def manage_users_list(
+    search: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    limit = max(1, min(limit, 100))
+    params: dict[str, Any] = {
+        "page[limit]": str(limit),
+        "page[offset]": str(max(0, offset)),
+        "sort": "created",
+    }
+    if search:
+        params["filter[name][operator]"] = "CONTAINS"
+        params["filter[name][value]"] = search
+    if status == "active":
+        params["filter[status]"] = "1"
+    elif status == "blocked":
+        params["filter[status]"] = "0"
+    async with drupal_client(session) as client:
+        response = await client.get("/jsonapi/user/user", params=params)
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta de usuários recusada.")
+    data = response.json()
+    return {
+        "items": [_user_item(it) for it in data.get("data", [])],
+        "has_next": bool((data.get("links") or {}).get("next")),
+    }
+
+
+async def _user_uuid(client: httpx.AsyncClient, uid: int) -> str:
+    response = await client.get(
+        "/jsonapi/user/user",
+        params={"filter[drupal_internal__uid]": uid, "page[limit]": "1"},
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Drupal não respondeu à consulta do usuário.")
+    data = response.json().get("data") or []
+    if not data:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    return data[0]["id"]
+
+
+@app.patch("/manage/users/{uid}")
+async def manage_user_update(
+    uid: int,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    attrs: dict[str, Any] = {}
+    for key in ("name", "mail"):
+        if payload.get(key) not in (None, ""):
+            attrs[key] = payload[key]
+    if payload.get("status") is not None:
+        attrs["status"] = bool(payload["status"])
+    rels: dict[str, Any] = {}
+    if payload.get("roles") is not None:
+        rels["roles"] = {
+            "data": [
+                {"type": "user_role--user_role", "id": str(r)}
+                for r in payload["roles"]
+            ]
+        }
+    async with drupal_client(session) as client:
+        uuid = await _user_uuid(client, uid)
+        data: dict[str, Any] = {"type": "user--user", "id": uuid,
+                                "attributes": attrs}
+        if rels:
+            data["relationships"] = rels
+        response = await client.patch(
+            f"/jsonapi/user/user/{uuid}",
+            json={"data": data},
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 422,
+            detail={"message": "Portal recusou a atualização do usuário.",
+                    "response": response.text[:600]},
+        )
+    return {"ok": True, **_user_item(response.json().get("data") or {})}
+
+
+# --- Biblioteca de mídia (media entities) ------------------------------------
+
+MEDIA_TYPES = {"image": "field_media_image",
+               "document": "field_media_document"}
+
+
+@app.get("/manage/media/{media_type}")
+async def manage_media_list(
+    media_type: str,
+    search: str | None = None,
+    limit: int = 30,
+    offset: int = 0,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    field = MEDIA_TYPES.get(media_type)
+    if field is None:
+        raise HTTPException(status_code=404, detail="Tipo de mídia não suportado.")
+    limit = max(1, min(limit, 100))
+    params: dict[str, Any] = {
+        "page[limit]": str(limit),
+        "page[offset]": str(max(0, offset)),
+        "sort": "-created",
+        "include": field,
+    }
+    if search:
+        params["filter[name][operator]"] = "CONTAINS"
+        params["filter[name][value]"] = search
+    async with drupal_client(session) as client:
+        response = await client.get(f"/jsonapi/media/{media_type}", params=params)
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta à biblioteca recusada.")
+    data = response.json()
+    files = {
+        it.get("id"): it
+        for it in data.get("included", [])
+        if it.get("type") == "file--file"
+    }
+    items = []
+    for it in data.get("data", []):
+        attrs = it.get("attributes", {})
+        file_uuid = (
+            (it.get("relationships", {}).get(field) or {}).get("data") or {}
+        ).get("id")
+        file_entity = files.get(file_uuid) or {}
+        file_uri = (file_entity.get("attributes") or {}).get("uri") or {}
+        items.append({
+            "uuid": it.get("id"),
+            "mid": attrs.get("drupal_internal__mid"),
+            "name": attrs.get("name"),
+            "file_uuid": file_uuid,
+            "file_url": file_uri.get("url"),
+        })
+    return {"items": items}
+
+
+@app.post("/manage/media/{media_type}")
+async def manage_media_create(
+    media_type: str,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Cria a entidade media a partir do uuid de arquivo já enviado."""
+    field = MEDIA_TYPES.get(media_type)
+    if field is None:
+        raise HTTPException(status_code=404, detail="Tipo de mídia não suportado.")
+    values = payload.get("values") or {}
+    name = str(values.get("name") or "").strip()
+    file_uuid = str(values.get("file_uuid") or "").strip()
+    if not name or not file_uuid:
+        raise HTTPException(status_code=422,
+                            detail="Informe name e file_uuid.")
+    body = {
+        "data": {
+            "type": f"media--{media_type}",
+            "attributes": {"name": name, "status": True},
+            "relationships": {
+                field: {"data": {"type": "file--file", "id": file_uuid}}
+            },
+        }
+    }
+    async with drupal_client(session) as client:
+        response = await client.post(
+            f"/jsonapi/media/{media_type}",
+            json=body,
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={"message": "Portal recusou a criação da mídia.",
+                    "response": response.text[:600]},
+        )
+    data = response.json().get("data") or {}
+    return {"ok": True, "uuid": data.get("id"), "name": name}
+
+
+@app.post("/manage/media/{media_type}/files")
+async def manage_media_upload(
+    media_type: str,
+    request: Request,
+    filename: str,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Upload direto para o campo da media — devolve o uuid do arquivo."""
+    field = MEDIA_TYPES.get(media_type)
+    if field is None:
+        raise HTTPException(status_code=404, detail="Tipo de mídia não suportado.")
+    content = await request.body()
+    if not content:
+        raise HTTPException(status_code=422, detail="Arquivo vazio.")
+    async with drupal_client(session) as client:
+        response = await client.post(
+            f"/jsonapi/media/{media_type}/{field}",
+            content=content,
+            headers={
+                "X-CSRF-Token": session.get("csrf") or "",
+                "Content-Type": "application/octet-stream",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Accept": "application/vnd.api+json",
+            },
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={"message": "Upload recusado pelo portal.",
+                    "response": response.text[:600]},
+        )
+    data = response.json().get("data") or {}
+    return {"ok": True, "id": data.get("id"), "name": filename}
+
+
 @app.get("/manage/{bundle}")
 async def manage_list(
     bundle: str,

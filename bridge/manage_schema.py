@@ -283,6 +283,66 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+# Vocabulários de taxonomia gerenciáveis (espelhado de produção, 39 vocabs).
+# Todos compartilham a mesma forma de termo (name/description/weight/parent),
+# então um único schema cobre qualquer vocabulário.
+TAXONOMY_VOCABS: dict[str, dict[str, str]] = {
+    v: {"label": label}
+    for v, label in {
+        "apoiadores_financiadores": "Apoiadores e Financiadores",
+        "area_conhecimento": "Área de Conhecimento",
+        "areas_conhecimento": "Áreas de Conhecimento",
+        "biomas": "Biomas",
+        "boletins_periodicos": "Boletins Periódicos",
+        "comunidade_atendida": "Comunidade Atendida",
+        "eixos_tematicos": "Eixos Temáticos",
+        "formacao_academica": "Formação Acadêmica",
+        "geografia_estados": "Geografia - Estados",
+        "instituicao_ensino": "Instituição de Ensino",
+        "linha_pesquisa": "Linha de Pesquisa",
+        "linhas_pesquisa": "Linhas de Pesquisa",
+        "metodologias_pesquisa": "Metodologias de Pesquisa",
+        "microrregiao_tocantins": "Microrregião Tocantins",
+        "microrregioes": "Microrregiões",
+        "municipio": "Município",
+        "municipios": "Municípios",
+        "natureza_pesquisa": "Natureza da Pesquisa",
+        "ods": "ODS - Objetivos de Desenvolvimento Sustentável",
+        "ods_interesse": "ODS de Interesse",
+        "palavras_chave": "Palavras-chave",
+        "produtos_projeto": "Produtos do Projeto",
+        "setor_produtivo": "Setor Produtivo",
+        "setor_produtivo_cadeia": "Setor Produtivo/Cadeia",
+        "setores_produtivos": "Setores Produtivos",
+        "status_projeto": "Status do Projeto",
+        "tags": "Tags",
+        "temas_pesquisa": "Temas de Pesquisa",
+        "territorios": "Territorios",
+        "tipo_acao_extensionista": "Tipo de Ação Extensionista",
+        "tipo_boletim": "Tipo de Boletim",
+        "tipo_producao": "Tipo de Produção Científica",
+        "tipo_projeto": "Tipo de Projeto",
+        "tipo_publicacao": "Tipo de Publicação",
+        "tipo_vinculo": "Tipo de Vínculo",
+        "unidade_conservacao": "Unidades de Conservação",
+        "unidade_local_extensao_ule": "Unidade Local de Extensão (ULE)",
+        "unidades_conservacao": "Unidades de Conservação",
+    }.items()
+}
+
+
+def taxonomy_fields(vocab: str) -> list[dict[str, Any]]:
+    """Termos compartilham sempre a mesma forma — só o alvo do pai varia."""
+    return [
+        _f("name", "Nome", required=True),
+        _f("description", "Descrição", "longtext"),
+        _f("weight", "Peso (ordem)", "number",
+           hint="Menor aparece primeiro nas listagens"),
+        _f("parent", "Termo pai", "reference",
+           target=f"taxonomy_term:{vocab}"),
+    ]
+
+
 def schema_for(bundle: str) -> dict[str, Any] | None:
     return MANAGE_SCHEMAS.get(bundle)
 

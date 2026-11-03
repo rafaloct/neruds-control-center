@@ -376,3 +376,385 @@ def re_escape(s: str) -> str:
     import re as _re
 
     return _re.escape(s)
+
+
+# ---------------------------------------------------------------------------
+# Fase 1 — Taxonomia
+# ---------------------------------------------------------------------------
+
+
+def _term(tid: int, uuid: str, name: str):
+    return {
+        "id": uuid,
+        "type": "taxonomy_term--tags",
+        "attributes": {
+            "drupal_internal__tid": tid,
+            "name": name,
+            "changed": "2026-11-03T12:00:00+00:00",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_manage_vocabularies_listed(async_client, extensionista_session):
+    token, _ = extensionista_session
+    response = await async_client.get(
+        "/manage/taxonomy", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    vids = {v["vid"] for v in response.json()["vocabularies"]}
+    assert "linhas_pesquisa" in vids
+    assert "tags" in vids
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_manage_terms_list(async_client, extensionista_session, respx_mock):
+    token, _ = extensionista_session
+    respx_mock.get("https://neruds.org/jsonapi/taxonomy_term/tags").mock(
+        return_value=Response(
+            200, json={"data": [_term(7, "t-7", "agroecologia")], "links": {}}
+        )
+    )
+    response = await async_client.get(
+        "/manage/taxonomy/tags", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["items"][0]["title"] == "agroecologia"
+    assert response.json()["items"][0]["tid"] == 7
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_manage_term_create(async_client, extensionista_session, respx_mock):
+    token, _ = extensionista_session
+    post = respx_mock.post("https://neruds.org/jsonapi/taxonomy_term/tags").mock(
+        return_value=Response(201, json={"data": _term(9, "t-9", "novo")})
+    )
+    response = await async_client.post(
+        "/manage/taxonomy/tags",
+        json={"values": {"name": "novo", "weight": 3}},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["tid"] == 9
+    sent = json.loads(post.calls.last.request.content)
+    assert sent["data"]["type"] == "taxonomy_term--tags"
+    assert sent["data"]["attributes"]["name"] == "novo"
+    assert sent["data"]["attributes"]["weight"] == 3
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_manage_term_update(async_client, extensionista_session, respx_mock):
+    token, _ = extensionista_session
+    respx_mock.get("https://neruds.org/jsonapi/taxonomy_term/tags").mock(
+        return_value=Response(200, json={"data": [_term(7, "t-7", "old")]})
+    )
+    patch = respx_mock.patch(
+        "https://neruds.org/jsonapi/taxonomy_term/tags/t-7"
+    ).mock(return_value=Response(200, json={"data": _term(7, "t-7", "novo")}))
+    response = await async_client.patch(
+        "/manage/taxonomy/tags/7",
+        json={"values": {"name": "novo"}},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    sent = json.loads(patch.calls.last.request.content)
+    assert sent["data"]["id"] == "t-7"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_manage_term_delete(async_client, extensionista_session, respx_mock):
+    token, _ = extensionista_session
+    respx_mock.get("https://neruds.org/jsonapi/taxonomy_term/tags").mock(
+        return_value=Response(200, json={"data": [_term(7, "t-7", "x")]})
+    )
+    respx_mock.delete(
+        "https://neruds.org/jsonapi/taxonomy_term/tags/t-7"
+    ).mock(return_value=Response(204))
+    response = await async_client.delete(
+        "/manage/taxonomy/tags/7", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_manage_taxonomy_unknown_vocab(async_client, extensionista_session):
+    token, _ = extensionista_session
+    response = await async_client.get(
+        "/manage/taxonomy/inexistente",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Fase 2 — Moderação
+# ---------------------------------------------------------------------------
+
+
+def _review_session():
+    return {
+        "username": "coord.test",
+        "uid": "1",
+        "roles": ["authenticated", "coordenador"],
+        "can_review": True,
+        "can_publish": True,
+        "csrf": "csrf-coord",
+        "token": "tok-coord",
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_moderation_pending_aggregates(
+    async_client, extensionista_session, respx_mock
+):
+    token, session = extensionista_session
+    session.update(_review_session())
+    session["token"] = token
+    main.SESSIONS[token] = session
+    respx_mock.get(url__regex=re_escape("https://neruds.org/jsonapi/node/")).mock(
+        return_value=Response(
+            200,
+            json={
+                "data": [_node_jsonapi_item(10, "u-10", "Rascunho X", False)],
+                "links": {},
+            },
+        )
+    )
+    response = await async_client.get(
+        "/manage/moderation/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) >= 1
+    assert items[0]["bundle_label"]
+
+
+@pytest.mark.asyncio
+async def test_moderation_pending_denied_for_extensionista(
+    async_client, extensionista_session
+):
+    token, _ = extensionista_session  # can_review=False
+    response = await async_client.get(
+        "/manage/moderation/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_moderation_approve_publishes(
+    async_client, extensionista_session, respx_mock
+):
+    token, session = extensionista_session
+    session.update(_review_session())
+    session["token"] = token
+    main.SESSIONS[token] = session
+    respx_mock.get("https://neruds.org/jsonapi/node/noticia").mock(
+        return_value=Response(
+            200, json={"data": [_node_jsonapi_item(10, "u-10", "X", False)]}
+        )
+    )
+    patch = respx_mock.patch(
+        "https://neruds.org/jsonapi/node/noticia/u-10"
+    ).mock(
+        return_value=Response(
+            200, json={"data": _node_jsonapi_item(10, "u-10", "X", True)}
+        )
+    )
+    response = await async_client.post(
+        "/manage/moderation/noticia/10/approve",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    sent = json.loads(patch.calls.last.request.content)
+    assert sent["data"]["attributes"]["status"] is True
+
+
+# ---------------------------------------------------------------------------
+# Fase 3 — Usuários
+# ---------------------------------------------------------------------------
+
+
+def _user(uid: int, uuid: str, name: str, roles: list[str]):
+    return {
+        "id": uuid,
+        "type": "user--user",
+        "attributes": {
+            "drupal_internal__uid": uid,
+            "name": name,
+            "mail": f"{name}@x.org",
+            "status": True,
+        },
+        "relationships": {
+            "roles": {
+                "data": [
+                    {"type": "user_role--user_role", "id": r} for r in roles
+                ]
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_manage_users_list(async_client, extensionista_session, respx_mock):
+    token, _ = extensionista_session
+    respx_mock.get("https://neruds.org/jsonapi/user/user").mock(
+        return_value=Response(
+            200,
+            json={
+                "data": [_user(2, "u-2", "extensionista.1", ["authenticated", "extensionista"])],
+                "links": {},
+            },
+        )
+    )
+    response = await async_client.get(
+        "/manage/users", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["uid"] == 2
+    assert item["roles"] == ["authenticated", "extensionista"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_manage_user_update_roles_and_block(
+    async_client, extensionista_session, respx_mock
+):
+    token, _ = extensionista_session
+    respx_mock.get("https://neruds.org/jsonapi/user/user").mock(
+        return_value=Response(
+            200, json={"data": [_user(2, "u-2", "ext", ["extensionista"])]}
+        )
+    )
+    patch = respx_mock.patch("https://neruds.org/jsonapi/user/user/u-2").mock(
+        return_value=Response(
+            200, json={"data": _user(2, "u-2", "ext", ["extensionista"])}
+        )
+    )
+    response = await async_client.patch(
+        "/manage/users/2",
+        json={"status": False, "roles": ["authenticated", "extensionista"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    sent = json.loads(patch.calls.last.request.content)
+    assert sent["data"]["attributes"]["status"] is False
+    assert sent["data"]["relationships"]["roles"]["data"] == [
+        {"type": "user_role--user_role", "id": "authenticated"},
+        {"type": "user_role--user_role", "id": "extensionista"},
+    ]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_manage_user_roles_options(
+    async_client, extensionista_session, respx_mock
+):
+    token, _ = extensionista_session
+    respx_mock.get("https://neruds.org/jsonapi/user_role/user_role").mock(
+        return_value=Response(
+            200,
+            json={
+                "data": [
+                    {"id": "extensionista", "attributes": {"label": "Extensionista"}},
+                    {"id": "coordenador", "attributes": {"label": "Coordenador"}},
+                ]
+            },
+        )
+    )
+    response = await async_client.get(
+        "/manage/users/roles", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    assert {r["id"] for r in response.json()["roles"]} == {
+        "extensionista", "coordenador"
+    }
+
+
+# ---------------------------------------------------------------------------
+# Fase 4 — Mídia
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_manage_media_list_resolves_file(
+    async_client, extensionista_session, respx_mock
+):
+    token, _ = extensionista_session
+    respx_mock.get("https://neruds.org/jsonapi/media/image").mock(
+        return_value=Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "m-1",
+                        "type": "media--image",
+                        "attributes": {
+                            "drupal_internal__mid": 3,
+                            "name": "foto.png",
+                        },
+                        "relationships": {
+                            "field_media_image": {
+                                "data": {"type": "file--file", "id": "f-1"}
+                            }
+                        },
+                    }
+                ],
+                "included": [
+                    {
+                        "id": "f-1",
+                        "type": "file--file",
+                        "attributes": {"uri": {"url": "files/foto.png"}},
+                    }
+                ],
+                "links": {},
+            },
+        )
+    )
+    response = await async_client.get(
+        "/manage/media/image", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["file_uuid"] == "f-1"
+    assert item["file_url"] == "files/foto.png"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_manage_media_create_links_file(
+    async_client, extensionista_session, respx_mock
+):
+    token, _ = extensionista_session
+    post = respx_mock.post("https://neruds.org/jsonapi/media/image").mock(
+        return_value=Response(201, json={"data": {"id": "m-9"}})
+    )
+    response = await async_client.post(
+        "/manage/media/image",
+        json={"values": {"name": "nova", "file_uuid": "f-9"}},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    sent = json.loads(post.calls.last.request.content)
+    rel = sent["data"]["relationships"]["field_media_image"]["data"]
+    assert rel == {"type": "file--file", "id": "f-9"}
+
+
+@pytest.mark.asyncio
+async def test_manage_media_unknown_type(async_client, extensionista_session):
+    token, _ = extensionista_session
+    response = await async_client.get(
+        "/manage/media/video", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 404

@@ -123,6 +123,165 @@ class ManageService {
     }
   }
 
+  // --- Taxonomia ------------------------------------------------------------
+
+  static Future<List<Map<String, String>>> vocabularies() async {
+    final response = await bridge.get(
+      AppConfig.endpoint('/manage/taxonomy'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) return const [];
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+    return ((data['vocabularies'] as List?) ?? const [])
+        .map((v) => {
+              'vid': v['vid']?.toString() ?? '',
+              'label': v['label']?.toString() ?? '',
+            })
+        .toList();
+  }
+
+  static Future<List<ManageItem>> terms(String vocab,
+      {String? search}) async {
+    final query = <String, String>{
+      'limit': '100',
+      'search': ?search,
+    };
+    final response = await bridge.get(
+      AppConfig.endpoint('/manage/taxonomy/$vocab')
+          .replace(queryParameters: query),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('terms ${response.statusCode}');
+    }
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+    return ((data['items'] as List?) ?? const [])
+        .map((it) => ManageItem.fromJson(Map<String, dynamic>.from(it as Map)))
+        .toList();
+  }
+
+  static Future<void> saveTerm(
+    String vocab, {
+    int? tid,
+    required Map<String, dynamic> values,
+  }) async {
+    final body = jsonEncode({'values': values});
+    final response = tid == null
+        ? await bridge.post(
+            AppConfig.endpoint('/manage/taxonomy/$vocab'),
+            headers: AppSession.instance.authHeaders,
+            body: body,
+          )
+        : await bridge.patch(
+            AppConfig.endpoint('/manage/taxonomy/$vocab/$tid'),
+            headers: AppSession.instance.authHeaders,
+            body: body,
+          );
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      throw Exception('term ${response.statusCode}: ${response.body}');
+    }
+  }
+
+  static Future<void> deleteTerm(String vocab, int tid) async {
+    final response = await bridge.delete(
+      AppConfig.endpoint('/manage/taxonomy/$vocab/$tid'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('delete term ${response.statusCode}');
+    }
+  }
+
+  // --- Moderação --------------------------------------------------------------
+
+  static Future<List<Map<String, dynamic>>> moderationPending() async {
+    final response = await bridge.get(
+      AppConfig.endpoint('/manage/moderation/pending'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('pending ${response.statusCode}');
+    }
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+    return ((data['items'] as List?) ?? const [])
+        .map((it) => Map<String, dynamic>.from(it as Map))
+        .toList();
+  }
+
+  static Future<void> approve(String bundle, int nid) async {
+    final response = await bridge.post(
+      AppConfig.endpoint('/manage/moderation/$bundle/$nid/approve'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('approve ${response.statusCode}: ${response.body}');
+    }
+  }
+
+  // --- Usuários ----------------------------------------------------------------
+
+  static Future<List<Map<String, dynamic>>> users({String? search}) async {
+    final query = <String, String>{'limit': '100', 'search': ?search};
+    final response = await bridge.get(
+      AppConfig.endpoint('/manage/users').replace(queryParameters: query),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('users ${response.statusCode}');
+    }
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+    return ((data['items'] as List?) ?? const [])
+        .map((it) => Map<String, dynamic>.from(it as Map))
+        .toList();
+  }
+
+  static Future<List<Map<String, String>>> userRoles() async {
+    final response = await bridge.get(
+      AppConfig.endpoint('/manage/users/roles'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) return const [];
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+    return ((data['roles'] as List?) ?? const [])
+        .map((r) => {
+              'id': r['id']?.toString() ?? '',
+              'label': r['label']?.toString() ?? '',
+            })
+        .toList();
+  }
+
+  static Future<void> updateUser(int uid, Map<String, dynamic> patch) async {
+    final response = await bridge.patch(
+      AppConfig.endpoint('/manage/users/$uid'),
+      headers: AppSession.instance.authHeaders,
+      body: jsonEncode(patch),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('user ${response.statusCode}: ${response.body}');
+    }
+  }
+
+  // --- Mídia -------------------------------------------------------------------
+
+  static Future<List<Map<String, dynamic>>> media(
+    String type, {
+    String? search,
+  }) async {
+    final query = <String, String>{'limit': '60', 'search': ?search};
+    final response = await bridge.get(
+      AppConfig.endpoint('/manage/media/$type')
+          .replace(queryParameters: query),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('media ${response.statusCode}');
+    }
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+    return ((data['items'] as List?) ?? const [])
+        .map((it) => Map<String, dynamic>.from(it as Map))
+        .toList();
+  }
+
   static Future<String> upload(
     String bundle,
     String field, {

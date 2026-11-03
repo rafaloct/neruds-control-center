@@ -531,6 +531,24 @@ class _ManageFormPageState extends State<ManageFormPage> {
     );
   }
 
+  Future<void> _pickFromLibrary(ManageField field) async {
+    final mediaType = field.kind == 'image' ? 'image' : 'document';
+    final picked = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => _MediaLibraryDialog(mediaType: mediaType),
+    );
+    if (picked == null || !mounted) return;
+    final uuid = picked['file_uuid']?.toString() ?? '';
+    if (uuid.isEmpty) return;
+    setState(() {
+      if (field.multiple) {
+        _fileUuids[field.name]!.add(uuid);
+      } else {
+        _fileUuids[field.name] = [uuid];
+      }
+    });
+  }
+
   Widget _fileField(ManageField f) {
     final uuids = _fileUuids[f.name] ?? const [];
     return Column(
@@ -549,12 +567,123 @@ class _ManageFormPageState extends State<ManageFormPage> {
                 setState(() => _fileUuids[f.name]!.remove(uuid)),
           ),
         const SizedBox(height: 6),
-        OutlinedButton.icon(
-          onPressed: () => _pickFile(f),
-          icon: const Icon(Icons.upload_file_outlined),
-          label: Text(
-            f.multiple ? 'Adicionar ${f.label}' : 'Escolher ${f.label}',
-          ),
+        Wrap(
+          spacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: () => _pickFile(f),
+              icon: const Icon(Icons.upload_file_outlined),
+              label: Text(
+                f.multiple ? 'Enviar ${f.label}' : 'Escolher ${f.label}',
+              ),
+            ),
+            OutlinedButton.icon(
+              onPressed: () => _pickFromLibrary(f),
+              icon: const Icon(Icons.photo_library_outlined),
+              label: const Text('Biblioteca'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Modal da biblioteca de mídia — lista mídias existentes (media entities)
+/// e devolve o file_uuid do item escolhido.
+class _MediaLibraryDialog extends StatefulWidget {
+  const _MediaLibraryDialog({required this.mediaType});
+
+  final String mediaType;
+
+  @override
+  State<_MediaLibraryDialog> createState() => _MediaLibraryDialogState();
+}
+
+class _MediaLibraryDialogState extends State<_MediaLibraryDialog> {
+  List<Map<String, dynamic>> _items = const [];
+  bool _loading = true;
+  final _search = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final items = await ManageService.media(
+        widget.mediaType,
+        search: _search.text.trim(),
+      );
+      if (!mounted) return;
+      setState(() {
+        _items = items;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        widget.mediaType == 'image'
+            ? 'Biblioteca de imagens'
+            : 'Biblioteca de documentos',
+      ),
+      content: SizedBox(
+        width: 480,
+        height: 420,
+        child: Column(
+          children: [
+            TextField(
+              controller: _search,
+              decoration: const InputDecoration(
+                hintText: 'Buscar por nome',
+                prefixIcon: Icon(Icons.search),
+                isDense: true,
+              ),
+              onSubmitted: (_) => _load(),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: _loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _items.isEmpty
+                      ? const Center(child: Text('Nenhuma mídia encontrada.'))
+                      : ListView.builder(
+                          itemCount: _items.length,
+                          itemBuilder: (context, i) {
+                            final item = _items[i];
+                            return ListTile(
+                              leading: widget.mediaType == 'image'
+                                  ? const Icon(Icons.image_outlined)
+                                  : const Icon(Icons.insert_drive_file_outlined),
+                              title: Text(item['name']?.toString() ?? ''),
+                              onTap: () => Navigator.pop(context, item),
+                            );
+                          },
+                        ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
         ),
       ],
     );
