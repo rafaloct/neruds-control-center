@@ -2558,9 +2558,41 @@ async def manage_create(
             status_code=403,
             detail="Esta conta não pode criar itens neste setor.",
         )
+    values = payload.get("values") or {}
+    if not payload.get("published"):
+        # Via formulário nativo: nasce rascunho (status=0) e entra na fila
+        # de revisão — o guard do Drupal limita status no JSON:API.
+        created = await _create_bundle_draft_internal(
+            bundle,
+            title=str(values.get("title") or ""),
+            summary=str(values.get("field_resumo_noticia") or ""),
+            body=str(values.get("body") or ""),
+            extras={
+                (
+                    f"{f['name']}[0][value][date]"
+                    if f["kind"] == "date"
+                    else f"{f['name']}[0][uri]"
+                    if f["kind"] == "link"
+                    else f"{f['name']}[0][value]"
+                ): str(values[f["name"]])
+                for f in (_manage_schema_or_404(bundle)["fields"])
+                if f["kind"] in ("text", "date", "number", "email", "link")
+                and f["name"] != "title"
+                and f["name"].startswith("field_")
+                and values.get(f["name"]) not in (None, "")
+            },
+            session=session,
+        )
+        return {
+            "ok": True,
+            "nid": int(created.get("drupal_internal_nid") or 0),
+            "uuid": created.get("jsonapi_id") or "",
+            "title": created.get("title") or values.get("title") or "",
+            "status": False,
+        }
     async with drupal_client(session) as client:
-        body = await _build_node_payload(bundle, payload.get("values") or {}, client)
-        body["data"]["attributes"]["status"] = bool(payload.get("published", False))
+        body = await _build_node_payload(bundle, values, client)
+        body["data"]["attributes"]["status"] = True
         response = await client.post(
             f"/jsonapi/node/{bundle}",
             json=body,

@@ -102,17 +102,15 @@ async def test_manage_list_passes_filters(
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_manage_create_posts_jsonapi_with_csrf(
+async def test_manage_create_unpublished_uses_native_form(
     async_client, extensionista_session, respx_mock
 ):
+    """published=false creates via the Drupal form (born unpublished)."""
     token, _ = extensionista_session
     _allow_forms(respx_mock, {"grupo_estudos"})
-    respx_mock.get("https://neruds.org/jsonapi/node/grupo_estudos").mock(
-        return_value=Response(200, json={"data": [], "links": {}})
-    )
-    post = respx_mock.post("https://neruds.org/jsonapi/node/grupo_estudos").mock(
+    respx_mock.post("https://neruds.org/node/add/grupo_estudos").mock(
         return_value=Response(
-            201, json={"data": _node_jsonapi_item(99, "u-99", "Novo Grupo", False)}
+            302, headers={"location": "https://neruds.org/node/99"}
         )
     )
     response = await async_client.post(
@@ -122,10 +120,31 @@ async def test_manage_create_posts_jsonapi_with_csrf(
     )
     assert response.status_code == 200
     assert response.json()["nid"] == 99
+    assert response.json()["status"] is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_manage_create_published_posts_jsonapi(
+    async_client, extensionista_session, respx_mock
+):
+    token, _ = extensionista_session
+    _allow_forms(respx_mock, {"grupo_estudos"})
+    post = respx_mock.post("https://neruds.org/jsonapi/node/grupo_estudos").mock(
+        return_value=Response(
+            201, json={"data": _node_jsonapi_item(99, "u-99", "Novo Grupo", True)}
+        )
+    )
+    response = await async_client.post(
+        "/manage/grupo_estudos",
+        json={"values": {"title": "Novo Grupo"}, "published": True},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
     sent = json.loads(post.calls.last.request.content)
     assert sent["data"]["type"] == "node--grupo_estudos"
     assert sent["data"]["attributes"]["title"] == "Novo Grupo"
-    assert sent["data"]["attributes"]["status"] is False
+    assert sent["data"]["attributes"]["status"] is True
     assert post.calls.last.request.headers["X-CSRF-Token"] == "fake-csrf-token-ext"
 
 
