@@ -3253,6 +3253,18 @@ async def manage_create(
     return {"ok": True, **_manage_item(data)}
 
 
+def _strip_longtext_formats(body: dict[str, Any]) -> bool:
+    """Remove a chave `format` de campos texto longo — sem ela o Drupal
+    mantém o formato que já estava no registro. Retorna True se mudou."""
+    attrs = (body.get("data") or {}).get("attributes") or {}
+    changed = False
+    for name, value in list(attrs.items()):
+        if isinstance(value, dict) and "format" in value:
+            attrs[name] = {k: v for k, v in value.items() if k != "format"}
+            changed = True
+    return changed
+
+
 @app.patch("/manage/{bundle}/{nid}")
 async def manage_update(
     bundle: str,
@@ -3273,6 +3285,18 @@ async def manage_update(
             json=body,
             headers=_jsonapi_write_headers(session),
         )
+        if (
+            response.status_code == 422
+            and '"format"' in response.text
+            and _strip_longtext_formats(body)
+        ):
+            # A conta não pode usar o formato pedido (ex.: basic_html) —
+            # retenta deixando o Drupal preservar o formato existente.
+            response = await client.patch(
+                f"/jsonapi/node/{bundle}/{uuid}",
+                json=body,
+                headers=_jsonapi_write_headers(session),
+            )
     if response.status_code != 200:
         raise HTTPException(
             status_code=response.status_code if response.status_code >= 400 else 422,

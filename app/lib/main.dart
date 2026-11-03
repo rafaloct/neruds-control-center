@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 
 import 'app_session.dart';
 import 'attention_panel.dart';
@@ -49,6 +50,9 @@ class NerudsControlApp extends StatelessWidget {
     return MaterialApp(
       title: 'NERUDS · Portal e inventário',
       debugShowCheckedModeBanner: false,
+      localizationsDelegates: const [
+        FlutterQuillLocalizations.delegate,
+      ],
       theme: ThemeData(
         colorScheme: scheme,
         useMaterial3: true,

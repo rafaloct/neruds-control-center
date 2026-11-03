@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -186,7 +187,12 @@ void main() {
       canCreate: true,
     );
     await tester.pumpWidget(
-      MaterialApp(home: ManageFormPage(bundle: bundle, nid: 42)),
+      MaterialApp(
+        localizationsDelegates: const [
+          FlutterQuillLocalizations.delegate,
+        ],
+        home: ManageFormPage(bundle: bundle, nid: 42),
+      ),
     );
     await tester.pumpAndSettle();
     expect(find.text('Informações básicas'), findsWidgets);

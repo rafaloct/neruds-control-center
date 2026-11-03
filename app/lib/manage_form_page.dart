@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 
 import 'manage_models.dart';
+import 'manage_rich_text.dart';
 import 'manage_service.dart';
 
 /// Formulário universal de criação/edição — renderiza os campos do schema
@@ -27,6 +29,7 @@ class _ManageFormPageState extends State<ManageFormPage> {
   final _stepKeys = <GlobalKey<FormState>>[];
   int _step = 0;
   final Map<String, TextEditingController> _controllers = {};
+  final Map<String, QuillController> _richControllers = {};
   final Map<String, bool> _bools = {};
   final Map<String, DateTime?> _dates = {};
   final Map<String, List<ManageOption>> _refSelections = {};
@@ -59,6 +62,8 @@ class _ManageFormPageState extends State<ManageFormPage> {
           _refSelections[f.name] = [];
         case 'image' || 'file':
           _fileUuids[f.name] = [];
+        case 'longtext':
+          _richControllers[f.name] = QuillController.basic();
         default:
           _controllers[f.name] = TextEditingController();
       }
@@ -68,6 +73,9 @@ class _ManageFormPageState extends State<ManageFormPage> {
   @override
   void dispose() {
     for (final c in _controllers.values) {
+      c.dispose();
+    }
+    for (final c in _richControllers.values) {
       c.dispose();
     }
     super.dispose();
@@ -102,8 +110,10 @@ class _ManageFormPageState extends State<ManageFormPage> {
                 end.text = _dateText(_parseDate(raw['end_value']));
               }
             case 'longtext':
-              _controllers[f.name]?.text =
+              final html =
                   raw is Map ? (raw['value']?.toString() ?? '') : '${raw ?? ''}';
+              _richControllers[f.name]?.document =
+                  Document.fromDelta(ManageRichTextField.htmlToDelta(html));
             case 'link':
               _controllers[f.name]?.text =
                   raw is Map ? (raw['uri']?.toString() ?? '') : '${raw ?? ''}';
@@ -267,6 +277,13 @@ class _ManageFormPageState extends State<ManageFormPage> {
           if (uuids.isNotEmpty) {
             values[f.name] = f.multiple ? uuids : uuids.first;
           }
+        case 'longtext':
+          final html = ManageRichTextField.deltaToHtml(
+            _richControllers[f.name]!,
+          );
+          if (html.trim().isNotEmpty) {
+            values[f.name] = {'value': html, 'format': 'basic_html'};
+          }
         default:
           final text = _controllers[f.name]?.text.trim() ?? '';
           if (text.isNotEmpty) values[f.name] = text;
@@ -295,6 +312,11 @@ class _ManageFormPageState extends State<ManageFormPage> {
         'date' => _dates[f.name] == null,
         'reference' => (_refSelections[f.name] ?? const []).isEmpty,
         'image' || 'file' => (_fileUuids[f.name] ?? const []).isEmpty,
+        'longtext' => (_richControllers[f.name]?.document
+                    .toPlainText()
+                    .trim() ??
+                '')
+            .isEmpty,
         _ => false,
       };
       if (missing) {
@@ -523,6 +545,10 @@ class _ManageFormPageState extends State<ManageFormPage> {
         return uuids.isEmpty
             ? '—'
             : '${uuids.length} arquivo(s) anexado(s)';
+      case 'longtext':
+        final text =
+            _richControllers[f.name]?.document.toPlainText().trim() ?? '';
+        return text.isEmpty ? '—' : text;
       default:
         final text = _controllers[f.name]?.text.trim() ?? '';
         return text.isEmpty ? '—' : text;
@@ -605,14 +631,10 @@ class _ManageFormPageState extends State<ManageFormPage> {
               : null,
           decoration: _decoration(f, hint: f.hint ?? 'https://…'),
         ),
-      'longtext' => TextFormField(
-          controller: _controllers[f.name],
-          minLines: 4,
-          maxLines: 12,
-          validator: (v) => f.required && (v?.trim().isEmpty ?? true)
-              ? 'Informe ${f.label}.'
-              : null,
-          decoration: _decoration(f),
+      'longtext' => ManageRichTextField(
+          controller: _richControllers[f.name]!,
+          label: f.required ? '${f.label} *' : f.label,
+          hint: f.hint,
         ),
       'reference' => _referenceField(f),
       'image' || 'file' => _fileField(f),

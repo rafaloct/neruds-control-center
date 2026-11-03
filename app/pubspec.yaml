@@ -38,7 +38,10 @@ dependencies:
   http: ^1.6.0
   url_launcher: ^6.3.3
   shared_preferences: ^2.5.6
-
+  flutter_quill: ^11.6.0
+  vsc_quill_delta_to_html: ^1.0.5
+  flutter_quill_delta_from_html: ^1.5.3
+  dart_quill_delta: ^10.8.3
 dev_dependencies:
   flutter_test:
     sdk: flutter
