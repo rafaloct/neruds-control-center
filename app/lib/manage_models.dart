@@ -103,7 +103,11 @@ class ManageItem {
   final String? changed;
 
   factory ManageItem.fromJson(Map<String, dynamic> json) => ManageItem(
-        nid: json['nid'] is int ? json['nid'] : int.tryParse('${json['nid']}') ?? 0,
+        nid: () {
+          // Termos de taxonomia chegam com "tid" em vez de "nid".
+          final raw = json['nid'] ?? json['tid'];
+          return raw is int ? raw : int.tryParse('$raw') ?? 0;
+        }(),
         uuid: json['uuid']?.toString() ?? '',
         title: json['title']?.toString() ?? '',
         status: json['status'] == true,

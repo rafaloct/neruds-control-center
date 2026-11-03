@@ -174,6 +174,9 @@ class _ManageFormPageState extends State<ManageFormPage> {
 
   DateTime? _parseDate(dynamic raw) {
     if (raw == null) return null;
+    // JSON:API datetime vem como {"value": "AAAA-MM-DD"}.
+    if (raw is Map) raw = raw['value'];
+    if (raw == null) return null;
     final s = raw.toString();
     return DateTime.tryParse(s.length > 10 ? s : '${s}T00:00:00');
   }
@@ -400,90 +403,106 @@ class _ManageFormPageState extends State<ManageFormPage> {
       _stepKeys.add(GlobalKey<FormState>());
     }
     final last = _step == steps.length - 1;
-    return SingleChildScrollView(
-      child: Stepper(
-        currentStep: _step,
-        onStepContinue: _continue,
-        onStepCancel:
-            _step == 0 ? null : () => setState(() => _step--),
-        controlsBuilder: (context, details) => Padding(
-          padding: const EdgeInsets.only(top: 16),
-          child: Row(
-            children: [
-              FilledButton.icon(
-                onPressed:
-                    last ? (_saving ? null : _save) : details.onStepContinue,
-                icon: Icon(
-                  last ? Icons.save_outlined : Icons.arrow_forward,
-                ),
-                label: Text(
-                  last ? (_saving ? 'Salvando…' : 'Salvar') : 'Avançar',
-                ),
-              ),
-              if (_step > 0) ...[
-                const SizedBox(width: 8),
-                TextButton(
-                  onPressed: details.onStepCancel,
-                  child: const Text('Voltar'),
-                ),
-              ],
-            ],
-          ),
-        ),
-        steps: [
-          for (var i = 0; i < steps.length - 1; i++)
-            Step(
-              title: Text(steps[i].label),
-              isActive: _step >= i,
-              state: _step > i ? StepState.complete : StepState.indexed,
-              content: Form(
-                key: _stepKeys[i],
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (final f in _fieldsOf(steps[i].id)) ...[
-                      _buildField(f),
-                      const SizedBox(height: 14),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-          Step(
-            title: Text(steps.last.label),
-            isActive: true,
-            state: _step >= steps.length - 1
-                ? StepState.editing
-                : StepState.indexed,
-            content: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (_error != null) ...[
-                  _errorCard(),
-                  const SizedBox(height: 12),
-                ],
-                Card(
-                  child: Column(
+    // Controles fora do Stepper: na área interna do Stepper eles ficavam
+    // encobertos pelo conteúdo da etapa e não recebiam toque em telas reais.
+    return Column(
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            child: Stepper(
+              currentStep: _step,
+              controlsBuilder: (context, details) => const SizedBox.shrink(),
+              onStepTapped: (i) {
+                if (i < _step) setState(() => _step = i);
+              },
+              steps: [
+                for (var i = 0; i < steps.length - 1; i++)
+                  Step(
+                    title: Text(steps[i].label),
+                    isActive: _step >= i,
+                    state:
+                        _step > i ? StepState.complete : StepState.indexed,
+                    content: Form(
+                      key: _stepKeys[i],
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final f in _fieldsOf(steps[i].id)) ...[
+                            _buildField(f),
+                            const SizedBox(height: 14),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                Step(
+                  title: Text(steps.last.label),
+                  isActive: true,
+                  state: _step >= steps.length - 1
+                      ? StepState.editing
+                      : StepState.indexed,
+                  content: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      for (final f in widget.bundle.fields)
-                        ListTile(
-                          dense: true,
-                          title: Text(f.label),
-                          subtitle: Text(
-                            _preview(f),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                      if (_error != null) ...[
+                        _errorCard(),
+                        const SizedBox(height: 12),
+                      ],
+                      Card(
+                        child: Column(
+                          children: [
+                            for (final f in widget.bundle.fields)
+                              ListTile(
+                                dense: true,
+                                title: Text(f.label),
+                                subtitle: Text(
+                                  _preview(f),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                          ],
                         ),
+                      ),
+                      _publishSwitch(),
                     ],
                   ),
                 ),
-                _publishSwitch(),
               ],
             ),
           ),
-        ],
-      ),
+        ),
+        SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            child: Row(
+              children: [
+                if (_step > 0)
+                  TextButton.icon(
+                    onPressed: () => setState(() => _step--),
+                    icon: const Icon(Icons.arrow_back),
+                    label: const Text('Voltar'),
+                  ),
+                const Spacer(),
+                Text(
+                  'Passo ${_step + 1} de ${steps.length}',
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+                const Spacer(),
+                FilledButton.icon(
+                  onPressed: last ? (_saving ? null : _save) : _continue,
+                  icon: Icon(
+                    last ? Icons.save_outlined : Icons.arrow_forward,
+                  ),
+                  label: Text(
+                    last ? (_saving ? 'Salvando…' : 'Salvar') : 'Avançar',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 

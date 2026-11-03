@@ -36,14 +36,22 @@ class _ManageTaxonomyPageState extends State<ManageTaxonomyPage> {
       _loading = true;
       _error = null;
     });
-    final vocabs = await ManageService.vocabularies();
-    if (!mounted) return;
-    setState(() {
-      _vocabs = vocabs;
-      _vocab = vocabs.isEmpty ? null : vocabs.first['vid'];
-      _loading = false;
-    });
-    if (_vocab != null) _loadTerms();
+    try {
+      final vocabs = await ManageService.vocabularies();
+      if (!mounted) return;
+      setState(() {
+        _vocabs = vocabs;
+        _vocab = vocabs.isEmpty ? null : vocabs.first['vid'];
+        _loading = false;
+      });
+      if (_vocab != null) _loadTerms();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'O portal recusou a consulta aos vocabulários.';
+        _loading = false;
+      });
+    }
   }
 
   Future<void> _loadTerms() async {

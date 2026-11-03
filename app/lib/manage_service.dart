@@ -134,7 +134,9 @@ class ManageService {
       AppConfig.endpoint('/manage/taxonomy'),
       headers: AppSession.instance.authHeaders,
     );
-    if (response.statusCode != 200) return const [];
+    if (response.statusCode != 200) {
+      throw Exception('vocabularies ${response.statusCode}');
+    }
     final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
     return ((data['vocabularies'] as List?) ?? const [])
         .map((v) => {

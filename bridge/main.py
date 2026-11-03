@@ -2601,8 +2601,11 @@ def _vocab_or_404(vocab: str) -> dict[str, str]:
 
 def _term_item(item: dict[str, Any]) -> dict[str, Any]:
     attrs = item.get("attributes", {})
+    tid = attrs.get("drupal_internal__tid")
     return {
-        "tid": attrs.get("drupal_internal__tid"),
+        "tid": tid,
+        # ManageItem genérico do app lê "nid" — termos reaproveitam o shape.
+        "nid": tid,
         "uuid": item.get("id"),
         "title": attrs.get("name") or "(sem nome)",
         "status": True,
