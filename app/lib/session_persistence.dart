@@ -51,7 +51,7 @@ Future<bool> restoreStoredSession() async {
   if (token == null || token.isEmpty) return false;
   try {
     final response = await http.get(
-      AppConfig.endpoint('/me'),
+      AppConfig.endpoint('/auth/me'),
       headers: {'Authorization': 'Bearer $token'},
     );
     if (response.statusCode == 200) {

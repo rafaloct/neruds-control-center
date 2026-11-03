@@ -21,6 +21,14 @@ export 'package:http/http.dart'
 upstream.Client _client = upstream.Client();
 const requestTimeout = Duration(seconds: 25);
 
+/// Cloudflare's managed bot rules challenge default library user agents on
+/// POST (e.g. Dart/3.x, Python-urllib). A stable product UA keeps native
+/// clients working through the public edge.
+const productUserAgent = 'NERUDS-Control-Center/1.0';
+
+Map<String, String> _withUa(Map<String, String>? headers) =>
+    {'User-Agent': productUserAgent, ...?headers};
+
 void _checkSession(int statusCode, Map<String, String>? headers) {
   if (statusCode != 401 || headers == null) return;
   String? authorization;
@@ -47,7 +55,7 @@ Future<upstream.Response> _response(
 }
 
 Future<upstream.Response> get(Uri url, {Map<String, String>? headers}) =>
-    _response(_client.get(url, headers: headers), headers);
+    _response(_client.get(url, headers: _withUa(headers)), headers);
 
 Future<upstream.Response> post(
   Uri url, {
@@ -56,7 +64,12 @@ Future<upstream.Response> post(
   Encoding? encoding,
   Duration? timeout,
 }) => _response(
-  _client.post(url, headers: headers, body: body, encoding: encoding),
+  _client.post(
+    url,
+    headers: _withUa(headers),
+    body: body,
+    encoding: encoding,
+  ),
   headers,
   timeout,
 );
@@ -67,7 +80,12 @@ Future<upstream.Response> patch(
   Object? body,
   Encoding? encoding,
 }) => _response(
-  _client.patch(url, headers: headers, body: body, encoding: encoding),
+  _client.patch(
+    url,
+    headers: _withUa(headers),
+    body: body,
+    encoding: encoding,
+  ),
   headers,
 );
 
@@ -77,11 +95,17 @@ Future<upstream.Response> delete(
   Object? body,
   Encoding? encoding,
 }) => _response(
-  _client.delete(url, headers: headers, body: body, encoding: encoding),
+  _client.delete(
+    url,
+    headers: _withUa(headers),
+    body: body,
+    encoding: encoding,
+  ),
   headers,
 );
 
 Future<upstream.StreamedResponse> send(upstream.BaseRequest request) async {
+  request.headers.putIfAbsent('User-Agent', () => productUserAgent);
   final response = await _client.send(request).timeout(requestTimeout);
   _checkSession(response.statusCode, request.headers);
   return upstream.StreamedResponse(
