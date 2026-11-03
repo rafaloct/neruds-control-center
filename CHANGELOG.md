@@ -6,6 +6,26 @@ Todas as mudanças relevantes serão registradas neste arquivo.
 
 ### Added
 
+- gateway de gestão genérico `/manage` (schema-driven):
+  - `bridge/manage_schema.py`: 9 setores (notícia, evento, projeto,
+    pesquisador, publicação, grupo de estudos, ação extensionista,
+    relatório, reunião) com campos/tipos/relações — setor novo no
+    schema aparece no app sem rebuild;
+  - `GET /manage/schemas` (schema + `can_create` por sessão, o Drupal
+    decide via `/node/add` probe com cache de 10min);
+  - `GET /manage/{bundle}` lista via JSON:API (busca, filtro
+    publicado/rascunho, paginação); `GET /manage/{bundle}/{nid}` detalhe;
+  - `POST /manage/{bundle}` cria — rascunho vai pelo formulário nativo
+    (status=0; o guard limita `status` no JSON:API), `published:true`
+    usa POST JSON:API com CSRF;
+  - `PATCH`/`DELETE` por nid (resolve uuid; delete despublica por padrão,
+    `?hard=1` exclui); referências aceitam nid/tid e resolvem uuid;
+  - `GET /manage/options/{entity}/{target}` p/ dropdowns de referência;
+  - `POST /manage/{bundle}/files/{field}` upload binário → file uuid;
+- app: aba **Gestão** (grid de setores → lista genérica com busca/filtro/
+  ações → formulário dinâmico por schema: texto, longo, número, data,
+  intervalo, bool, referência, imagem/arquivo). Feature flag `manage` no
+  config remoto esconde a aba sem rebuild;
 - criação de rascunho por tipo de conteúdo (`GET /content/types` +
   `POST /content/{bundle}/draft`):
   - o app passa a oferecer todos os tipos que a sessão pode criar no
