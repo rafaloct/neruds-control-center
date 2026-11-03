@@ -2359,7 +2359,10 @@ async def _build_node_payload(
         elif kind == "link":
             attrs[name] = {"uri": value if isinstance(value, str) else value.get("uri", "")}
         elif kind == "longtext":
-            attrs[name] = {"value": value, "format": "basic_html"}
+            if isinstance(value, dict):
+                attrs[name] = value
+            else:
+                attrs[name] = {"value": value, "format": "plain_text"}
         elif kind == "daterange":
             period = value if isinstance(value, dict) else {}
             attrs[name] = {
