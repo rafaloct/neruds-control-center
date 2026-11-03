@@ -36,13 +36,38 @@ class _EditorialPageState extends State<EditorialPage>
   List<Map<String, dynamic>> _drafts = const [];
   Map<String, dynamic>? _createdDraft;
 
+  /// Content types the session may create, from GET /content/types.
+  List<Map<String, dynamic>> _contentTypes = const [];
+  String _selectedBundle = 'noticia';
+  bool _typesLoading = false;
+  final Map<String, TextEditingController> _extraControllers = {};
+
   List<TextEditingController> get _controllers => [
     _title,
     _summary,
     _body,
     _opportunityItemId,
     _missionTaskId,
+    ..._extraControllers.values,
   ];
+
+  Map<String, dynamic>? get _selectedType {
+    for (final type in _contentTypes) {
+      if (type['bundle'] == _selectedBundle) return type;
+    }
+    return null;
+  }
+
+  List<Map<String, dynamic>> get _requiredSpecs =>
+      ((_selectedType?['required']) as List? ?? const [])
+          .cast<Map<String, dynamic>>();
+
+  TextEditingController _extraController(String key) =>
+      _extraControllers.putIfAbsent(key, () {
+        final controller = TextEditingController();
+        controller.addListener(_trackChanges);
+        return controller;
+      });
 
   @override
   void initState() {
@@ -53,7 +78,10 @@ class _EditorialPageState extends State<EditorialPage>
       controller.addListener(_trackChanges);
     }
     AppSession.instance.addListener(_sessionChanged);
-    if (AppSession.instance.authenticated) _loadDrafts();
+    if (AppSession.instance.authenticated) {
+      _loadDrafts();
+      _loadContentTypes();
+    }
   }
 
   @override
@@ -82,6 +110,34 @@ class _EditorialPageState extends State<EditorialPage>
     UnsavedWork.instance.setDirty(this, false);
   }
 
+  Future<void> _loadContentTypes() async {
+    if (!AppSession.instance.authenticated || _typesLoading) return;
+    _typesLoading = true;
+    try {
+      final response = await http.get(
+        AppConfig.endpoint('/content/types'),
+        headers: AppSession.instance.authHeaders,
+      );
+      if (!mounted || response.statusCode != 200) return;
+      final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+      setState(() {
+        _contentTypes = ((data['types'] as List?) ?? const [])
+            .cast<Map>()
+            .map((item) => Map<String, dynamic>.from(item))
+            .toList();
+        if (_contentTypes.isNotEmpty &&
+            _selectedType == null) {
+          _selectedBundle =
+              _contentTypes.first['bundle']?.toString() ?? 'noticia';
+        }
+      });
+    } catch (_) {
+      // Sem lista remota: o formulário de notícia segue disponível.
+    } finally {
+      _typesLoading = false;
+    }
+  }
+
   void _sessionChanged() {
     if (!mounted) return;
     final session = AppSession.instance;
@@ -95,8 +151,13 @@ class _EditorialPageState extends State<EditorialPage>
       _drafts = const [];
       _loadError = null;
       _loadingDrafts = false;
+      _contentTypes = const [];
+      _selectedBundle = 'noticia';
     });
-    if (session.authenticated) _loadDrafts();
+    if (session.authenticated) {
+      _loadDrafts();
+      _loadContentTypes();
+    }
   }
 
   bool _sameSession(int epoch, String? token) =>
@@ -182,13 +243,23 @@ class _EditorialPageState extends State<EditorialPage>
     final token = session.token;
     setState(() => _busy = true);
     try {
+      final bundle = _selectedType != null ? _selectedBundle : 'noticia';
+      final extras = <String, String>{
+        for (final spec in _requiredSpecs)
+          spec['key'].toString(): _extraController(
+            spec['key'].toString(),
+          ).text.trim(),
+      };
       final response = await http.post(
-        AppConfig.endpoint('/content/news/draft'),
+        AppConfig.endpoint(
+          bundle == 'noticia' ? '/content/news/draft' : '/content/$bundle/draft',
+        ),
         headers: session.authHeaders,
         body: jsonEncode({
           'title': _title.text.trim(),
           'summary': _summary.text.trim(),
           'body': _body.text.trim(),
+          ...extras,
           if (int.tryParse(_opportunityItemId.text.trim()) != null)
             'opportunity_item_id': int.parse(_opportunityItemId.text.trim()),
           if (int.tryParse(_missionTaskId.text.trim()) != null)
@@ -353,20 +424,67 @@ class _EditorialPageState extends State<EditorialPage>
     );
   }
 
+  /// Renders one required field declared by /content/types — currently
+  /// "date" (calendar picker) and "text" kinds are understood.
+  Widget _requiredField(BuildContext context, Map<String, dynamic> spec) {
+    final key = spec['key']?.toString() ?? '';
+    final controller = _extraController(key);
+    final label = spec['label']?.toString() ?? key;
+    if (spec['kind'] == 'date') {
+      return TextFormField(
+        key: Key('required-$key'),
+        controller: controller,
+        enabled: !_busy,
+        readOnly: true,
+        validator: (value) => (value?.trim().isEmpty ?? true)
+            ? 'Informe $label no formato AAAA-MM-DD.'
+            : null,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: 'AAAA-MM-DD',
+          suffixIcon: const Icon(Icons.calendar_month_outlined),
+        ),
+        onTap: _busy
+            ? null
+            : () async {
+                final now = DateTime.now();
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: now,
+                  firstDate: DateTime(now.year - 5),
+                  lastDate: DateTime(now.year + 5),
+                );
+                if (picked != null) {
+                  controller.text = picked.toIso8601String().substring(0, 10);
+                }
+              },
+      );
+    }
+    return TextFormField(
+      key: Key('required-$key'),
+      controller: controller,
+      enabled: !_busy,
+      validator: (value) =>
+          (value?.trim().isEmpty ?? true) ? 'Informe $label.' : null,
+      decoration: InputDecoration(labelText: label),
+    );
+  }
+
   Widget _draftForm(BuildContext context) {
     const steps = ['Conteúdo', 'Conferir texto', 'Enviar rascunho'];
+    final typeLabel = _selectedType?['label']?.toString() ?? 'notícia';
     return ListView(
       key: const PageStorageKey('editorial-compose-scroll'),
       padding: const EdgeInsets.all(24),
       children: [
         Text(
-          'Preparar uma notícia',
+          'Preparar ${typeLabel.toLowerCase()}',
           style: Theme.of(context).textTheme.headlineSmall,
         ),
         const SizedBox(height: 8),
         const Text(
           'Conte uma atividade, divulgue uma chamada ou apresente uma vaga. '
-          'Antes de criar, confira na fila se essa notícia já existe.',
+          'Antes de criar, confira na fila se esse conteúdo já existe.',
         ),
         const SizedBox(height: 16),
         Wrap(
@@ -392,6 +510,33 @@ class _EditorialPageState extends State<EditorialPage>
             key: _formKey,
             child: Column(
               children: [
+                if (_contentTypes.length > 1)
+                  DropdownButtonFormField<String>(
+                    key: const Key('content-type-picker'),
+                    initialValue: _selectedBundle,
+                    decoration: const InputDecoration(
+                      labelText: 'Tipo de conteúdo',
+                      helperText:
+                          'O formulário pede só os campos exigidos pelo portal.',
+                    ),
+                    items: [
+                      for (final type in _contentTypes)
+                        DropdownMenuItem(
+                          value: type['bundle']?.toString() ?? '',
+                          child: Text(type['label']?.toString() ?? ''),
+                        ),
+                    ],
+                    onChanged: _busy
+                        ? null
+                        : (value) => setState(
+                            () => _selectedBundle = value ?? 'noticia',
+                          ),
+                  ),
+                if (_contentTypes.length > 1) const SizedBox(height: 16),
+                for (final spec in _requiredSpecs) ...[
+                  _requiredField(context, spec),
+                  const SizedBox(height: 12),
+                ],
                 TextFormField(
                   key: const Key('news-title'),
                   controller: _title,
@@ -401,8 +546,8 @@ class _EditorialPageState extends State<EditorialPage>
                   validator: (value) => (value?.trim().length ?? 0) < 3
                       ? 'Escreva um título com pelo menos 3 caracteres.'
                       : null,
-                  decoration: const InputDecoration(
-                    labelText: 'Título da notícia',
+                  decoration: InputDecoration(
+                    labelText: 'Título $typeLabel',
                     hintText: 'Apresente o fato ou a oportunidade com clareza',
                   ),
                 ),

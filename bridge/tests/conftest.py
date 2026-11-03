@@ -42,6 +42,7 @@ def temp_db(tmp_path, monkeypatch):
     main.SESSIONS.clear()
     main._PORTAL_READ_CACHE.clear()
     main._LOGIN_ATTEMPTS.clear()
+    main._CREATE_ACCESS_CACHE.clear()
 
     yield db_file
 

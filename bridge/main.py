@@ -326,6 +326,71 @@ class NewsDraftRequest(BaseModel):
     mission_task_id: int | None = None
 
 
+# Tipos de conteúdo criáveis pelo app. `required` descreve os campos
+# obrigatórios do Drupal para que o cliente monte o formulário guiado;
+# `drupal` é a chave POST esperada pelo formulário nativo /node/add/{bundle}.
+CONTENT_BUNDLES: dict[str, dict[str, Any]] = {
+    "noticia": {
+        "label": "Notícia",
+        "required": [
+            {
+                "key": "data",
+                "label": "Data da notícia",
+                "kind": "date",
+                "drupal": "field_data_noticia[0][value][date]",
+            }
+        ],
+    },
+    "relatorio": {"label": "Relatório", "required": []},
+    "acao_extensionista": {"label": "Ação Extensionista", "required": []},
+    "publicacao": {"label": "Publicação", "required": []},
+    "evento_cientifico": {
+        "label": "Evento Científico",
+        "required": [
+            {
+                "key": "data",
+                "label": "Data do evento",
+                "kind": "date",
+                "drupal": "field_data_evento[0][value][date]",
+            },
+            {
+                "key": "local",
+                "label": "Local do evento",
+                "kind": "text",
+                "drupal": "field_local_evento[0][value]",
+            },
+        ],
+    },
+    "grupo_estudos": {"label": "Grupo de Estudos", "required": []},
+    "projeto_pesquisa_extensao": {
+        "label": "Projeto de Pesquisa e Extensão",
+        "required": [
+            {
+                "key": "coordenador",
+                "label": "Coordenador",
+                "kind": "text",
+                "drupal": "field_coordenador[0][value]",
+            }
+        ],
+    },
+}
+
+# Cache curto de permissão de criação por token (o formulário Drupal decide).
+_CREATE_ACCESS_CACHE: dict[str, tuple[float, dict[str, bool]]] = {}
+_CREATE_ACCESS_TTL = 600.0
+
+
+class ContentDraftRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=255)
+    summary: str = Field(default="", max_length=4000)
+    body: str = Field(default="")
+    data: str | None = None
+    local: str | None = None
+    coordenador: str | None = None
+    opportunity_item_id: int | None = None
+    mission_task_id: int | None = None
+
+
 class MissionTaskPatch(BaseModel):
     priority: str | None = None
     status: str | None = None
@@ -642,22 +707,24 @@ async def _authorized_news_item(nid: int, session: dict[str, Any]) -> dict[str, 
     raise HTTPException(status_code=404, detail="Rascunho não encontrado no portal.")
 
 
-async def _create_news_draft_internal(
+async def _create_bundle_draft_internal(
+    bundle: str,
     *,
     title: str,
     summary: str,
     body: str,
-    publication_date: str | None,
+    extras: dict[str, str] | None = None,
     session: dict[str, Any],
     opportunity_item_id: int | None = None,
     mission_task_id: int | None = None,
 ) -> dict[str, Any]:
+    label = CONTENT_BUNDLES.get(bundle, {}).get("label", bundle)
     async with drupal_client(session) as client:
-        form = await client.get("/node/add/noticia")
+        form = await client.get(f"/node/add/{bundle}")
         if form.status_code != 200:
             raise HTTPException(
                 status_code=form.status_code,
-                detail="Drupal recusou o acesso ao formulário de Notícia.",
+                detail=f"Drupal recusou o acesso ao formulário de {label}.",
             )
 
         parser = HiddenInputParser()
@@ -665,31 +732,30 @@ async def _create_news_draft_internal(
         text_format = parser.body_format
         fields = parser.fields
         use_html = text_format is not None and text_format != "plain_text"
+        has_body = "body[0][value]" in fields
         fields.update(
             {
                 "title[0][value]": title,
-                "body[0][summary]": plain_to_basic_html(summary)
-                if use_html
-                else summary,
-                "body[0][value]": plain_to_basic_html(body)
-                if use_html
-                else body,
                 "status[value]": "0",
-                "field_data_noticia[0][value][date]": publication_date
-                or datetime.now().date().isoformat(),
-                "form_id": fields.get("form_id", "node_noticia_form"),
+                "form_id": fields.get("form_id", f"node_{bundle}_form"),
                 "op": fields.get("op", "Salvar"),
             }
         )
-        if text_format is None:
-            fields.pop("body[0][format]", None)
-        else:
-            fields["body[0][format]"] = text_format
-        if publication_date:
-            fields["field_data_publicacao[0][value][date]"] = publication_date
+        if has_body:
+            fields["body[0][summary]"] = (
+                plain_to_basic_html(summary) if use_html else summary
+            )
+            fields["body[0][value]"] = (
+                plain_to_basic_html(body) if use_html else body
+            )
+            if text_format is None:
+                fields.pop("body[0][format]", None)
+            else:
+                fields["body[0][format]"] = text_format
+        fields.update({k: v for k, v in (extras or {}).items() if v != ""})
 
         response = await client.post(
-            "/node/add/noticia",
+            f"/node/add/{bundle}",
             data=fields,
             follow_redirects=False,
         )
@@ -709,7 +775,7 @@ async def _create_news_draft_internal(
 
         if not node_id:
             lookup = await client.get(
-                "/jsonapi/node/noticia",
+                f"/jsonapi/node/{bundle}",
                 params={
                     "filter[title]": title,
                     "sort": "-created",
@@ -752,12 +818,43 @@ async def _create_news_draft_internal(
             "id": draft_id,
             "drupal_internal_nid": node_id,
             "jsonapi_id": jsonapi_id,
-            "type": "node--noticia",
+            "type": f"node--{bundle}",
             "location": location,
             **_node_urls(node_id),
             "owner_uid": str(session["uid"]) if session.get("uid") is not None else None,
             "is_owner": True,
         }
+
+
+async def _create_news_draft_internal(
+    *,
+    title: str,
+    summary: str,
+    body: str,
+    publication_date: str | None,
+    session: dict[str, Any],
+    opportunity_item_id: int | None = None,
+    mission_task_id: int | None = None,
+) -> dict[str, Any]:
+    return await _create_bundle_draft_internal(
+        "noticia",
+        title=title,
+        summary=summary,
+        body=body,
+        extras={
+            "field_data_noticia[0][value][date]": (
+                publication_date or datetime.now().date().isoformat()
+            ),
+            **(
+                {"field_data_publicacao[0][value][date]": publication_date}
+                if publication_date
+                else {}
+            ),
+        },
+        session=session,
+        opportunity_item_id=opportunity_item_id,
+        mission_task_id=mission_task_id,
+    )
 
 
 @app.get("/health")
@@ -2024,6 +2121,110 @@ async def create_news_draft(
     return {
         "ok": True,
         "id": created.get("id"),
+        "type": created.get("type"),
+        "title": payload.title,
+        "published": False,
+        "notification": notification,
+        "public_url": created.get("public_url"),
+        "edit_url": created.get("edit_url"),
+        "owner_uid": created.get("owner_uid"),
+        "is_owner": created.get("is_owner", False),
+    }
+
+
+async def _create_access_map(session: dict[str, Any]) -> dict[str, bool]:
+    """Quais bundles a sessão pode criar — decidido pelo próprio Drupal.
+
+    Cache de 10 min por token: montar a lista custa um GET por tipo."""
+    token = session.get("token") or ""
+    now = time.monotonic()
+    cached = _CREATE_ACCESS_CACHE.get(token)
+    if cached and now - cached[0] < _CREATE_ACCESS_TTL:
+        return cached[1]
+    access: dict[str, bool] = {}
+    async with drupal_client(session) as client:
+        for bundle in CONTENT_BUNDLES:
+            try:
+                probe = await client.get(
+                    f"/node/add/{bundle}", follow_redirects=False
+                )
+                access[bundle] = probe.status_code == 200
+            except Exception:
+                access[bundle] = False
+    _CREATE_ACCESS_CACHE[token] = (now, access)
+    return access
+
+
+@app.get("/content/types")
+async def content_types(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Tipos de conteúdo que a sessão pode criar, com metadados do formulário."""
+    access = await _create_access_map(session)
+    types = [
+        {
+            "bundle": bundle,
+            "label": meta["label"],
+            "required": meta["required"],
+        }
+        for bundle, meta in CONTENT_BUNDLES.items()
+        if access.get(bundle)
+    ]
+    return {"types": types}
+
+
+@app.post("/content/{bundle}/draft")
+async def create_bundle_draft(
+    bundle: str,
+    payload: ContentDraftRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    meta = CONTENT_BUNDLES.get(bundle)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Tipo de conteúdo não suportado.")
+
+    missing = [
+        spec["label"]
+        for spec in meta["required"]
+        if not (getattr(payload, spec["key"], None) or "").strip()
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Campos obrigatórios de {meta['label']}: {', '.join(missing)}.",
+        )
+    access = await _create_access_map(session)
+    if not access.get(bundle):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Esta conta não pode criar {meta['label']} no portal.",
+        )
+
+    extras = {
+        spec["drupal"]: (getattr(payload, spec["key"], None) or "").strip()
+        for spec in meta["required"]
+    }
+    if bundle == "noticia":
+        extras.setdefault(
+            "field_data_noticia[0][value][date]",
+            payload.data or datetime.now().date().isoformat(),
+        )
+    body = payload.body.strip() or (payload.summary.strip() or payload.title)
+    created = await _create_bundle_draft_internal(
+        bundle,
+        title=payload.title,
+        summary=payload.summary,
+        body=body,
+        extras=extras,
+        session=session,
+        opportunity_item_id=payload.opportunity_item_id,
+        mission_task_id=payload.mission_task_id,
+    )
+    notification = await notify_review(payload.title, session["username"])
+    return {
+        "ok": True,
+        "id": created.get("id"),
+        "bundle": bundle,
         "type": created.get("type"),
         "title": payload.title,
         "published": False,
