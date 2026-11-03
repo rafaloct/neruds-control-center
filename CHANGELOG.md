@@ -6,6 +6,26 @@ Todas as mudanças relevantes serão registradas neste arquivo.
 
 ### Added
 
+- expansão estrutural do gateway `/manage` (fases 1–4):
+  - **taxonomias**: 39 vocabulários em `TAXONOMY_VOCABS`; CRUD de termos
+    via `/manage/taxonomy/{vocab}` (criar, renomear, peso, excluir) —
+    forma de termo única cobre qualquer vocab;
+  - **moderação**: `GET /manage/moderation/pending` agrega rascunhos de
+    todos os setores (o JSON:API filtra o que cada conta enxerga) e
+    `POST /manage/moderation/{bundle}/{nid}/approve` publica via PATCH —
+    403 do Drupal é repassado para o app exibir;
+  - **usuários**: `/manage/users` lista contas (nome, e-mail, status,
+    papéis), `PATCH /manage/users/{uid}` edita/bloqueia/promove papéis,
+    `/manage/users/roles` opções de papel;
+  - **mídia**: `media--image`/`media--document` — listagem com
+    `include=field_media_*` resolvendo uuid+url do arquivo, criação de
+    entidade e upload direto para o campo;
+- app na aba Gestão:
+  - cards de ação: **Aprovações** (contas com revisão), **Categorias e
+    Tags** (vocabulário → termos com diálogo CRUD), **Equipe** (admin:
+    lista com badges de papel + edição de conta);
+  - campo de arquivo/imagem do formulário ganha botão "Biblioteca" —
+    modal que pesquisa mídias existentes e devolve o `file_uuid`;
 - gateway de gestão genérico `/manage` (schema-driven):
   - `bridge/manage_schema.py`: 9 setores (notícia, evento, projeto,
     pesquisador, publicação, grupo de estudos, ação extensionista,
