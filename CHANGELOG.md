@@ -6,6 +6,29 @@ Todas as mudanças relevantes serão registradas neste arquivo.
 
 ### Added
 
+- formulários em **wizard** (schema-driven): `manage_schema.py` ganhou
+  `_WIZARD_STEPS` + `_FIELD_GROUPS` — campos agrupados em passos
+  lógicos por setor (basics/content/details/academic/team/refs/media)
+  + passo final "Revisão e salvar". Desenho validado por consulta
+  arquitetural ao OpenRouter (campos acadêmicos Lattes/ORCID/DOI já
+  existentes consolidados no passo "Metadados acadêmicos").
+  `/manage/schemas` expõe `steps` e `field.group`;
+- app: `ManageFormPage` vira Stepper quando o schema traz steps —
+  validação por etapa, passo de revisão com resumo de todos os valores;
+- edição de rascunhos **dentro do app**: "Abrir rascunho no portal" e
+  "Editar a ficha existente" (aba Editorial) passam a abrir
+  `ManageFormPage` — sem fallback para o painel Drupal;
+- `project_timeline.dart`: Gantt sem dependências — projeto +
+  relatórios e reuniões vinculados num eixo temporal; botão
+  "Cronograma" nos itens de `projeto_pesquisa_extensao`;
+- `/manage/{bundle}` aceita `rel`/`rel_id` (filtro JSON:API por
+  relacionamento — base do cronograma);
+- `/ai/assist`: proxy restrito ao OpenRouter (improve/summarize/title/
+  fields, rate-limit por conta, chave só no servidor);
+- `POST /manage/{bundle}` segue criando rascunho pelo formulário nativo
+  (o guard bloqueia `status` no JSON:API p/ extensionista);
+- compose: `env_file` aponta também para `/srv/neruds-secrets.env`
+  (segredos fora do checkout, sobrevivem a redeploys);
 - expansão estrutural do gateway `/manage` (fases 1–4):
   - **taxonomias**: 39 vocabulários em `TAXONOMY_VOCABS`; CRUD de termos
     via `/manage/taxonomy/{vocab}` (criar, renomear, peso, excluir) —
