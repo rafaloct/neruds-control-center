@@ -6,6 +6,17 @@ Todas as mudanças relevantes serão registradas neste arquivo.
 
 ### Added
 
+- editor **rich text WYSIWYG** (`ManageRichTextField`) nos campos
+  `longtext` do schema — flutter_quill 11 com toolbar essencial
+  (negrito/itálico/sublinhado/listas/link) scrollável horizontalmente;
+  conversão bidirecional HTML↔Delta (`flutter_quill_delta_from_html` +
+  `vsc_quill_delta_to_html`) — edição hidrata o HTML do portal e o save
+  envia `{value: html, format: basic_html}`; HTML malformado vira texto
+  plano em vez de quebrar o form; `FlutterQuillLocalizations.delegate`
+  registrado no MaterialApp;
+- bridge: PATCH com formato recusado (422, ex.: conta sem permissão para
+  `basic_html`) retenta automaticamente sem a chave `format` — o Drupal
+  preserva o formato já existente no registro;
 - formulários em **wizard** (schema-driven): `manage_schema.py` ganhou
   `_WIZARD_STEPS` + `_FIELD_GROUPS` — campos agrupados em passos
   lógicos por setor (basics/content/details/academic/team/refs/media)
