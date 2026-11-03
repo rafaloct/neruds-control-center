@@ -166,3 +166,39 @@ async def test_put_app_config_rejects_non_object(async_client, admin_session):
         },
     )
     assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Login rate limiting
+# ---------------------------------------------------------------------------
+
+
+def test_login_rate_limit_blocks_after_cap(temp_db):
+    import main
+
+    class _Client:
+        host = "203.0.113.10"
+
+    class _Req:
+        headers = {}
+        client = _Client()
+
+    req = _Req()
+    for _ in range(main.LOGIN_RATE_MAX):
+        main._enforce_login_rate(req)
+    with pytest.raises(Exception) as exc:
+        main._enforce_login_rate(req)
+    assert getattr(exc.value, "status_code", None) == 429
+
+
+def test_login_rate_limit_uses_cf_connecting_ip(temp_db):
+    import main
+
+    class _Client:
+        host = "10.0.0.1"
+
+    class _Req:
+        headers = {"cf-connecting-ip": "198.51.100.7"}
+        client = _Client()
+
+    assert main._client_ip(_Req()) == "198.51.100.7"

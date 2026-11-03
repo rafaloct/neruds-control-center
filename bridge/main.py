@@ -1039,8 +1039,39 @@ def ops_backups(session: dict[str, Any] = Depends(require_session)) -> dict[str,
     return {"backups": mission_store.list_backups()}
 
 
+# Rate limit em memória para /auth/login: o bridge é público e cada tentativa
+# bate no Drupal — sem teto, vira vetor de brute-force no portal.
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+LOGIN_RATE_MAX = int(os.getenv("NERUDS_LOGIN_RATE_MAX", "10"))
+LOGIN_RATE_WINDOW = float(os.getenv("NERUDS_LOGIN_RATE_WINDOW_SECONDS", "300"))
+
+
+def _client_ip(request: Request) -> str:
+    cf_ip = request.headers.get("cf-connecting-ip", "").strip()
+    if cf_ip:
+        return cf_ip
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _enforce_login_rate(request: Request) -> None:
+    ip = _client_ip(request)
+    now = time.monotonic()
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(ip, []) if now - t < LOGIN_RATE_WINDOW]
+    if len(attempts) >= LOGIN_RATE_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail="Muitas tentativas de login. Aguarde alguns minutos.",
+        )
+    attempts.append(now)
+    _LOGIN_ATTEMPTS[ip] = attempts
+
+
 @app.post("/auth/login")
-async def login(payload: LoginRequest) -> dict[str, Any]:
+async def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
+    _enforce_login_rate(request)
     async with httpx.AsyncClient(
         base_url=PORTAL_URL,
         timeout=15,
