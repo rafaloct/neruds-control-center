@@ -31,8 +31,19 @@ import mission_store
 import portal_links
 import review_store
 import rss_store
+import session_store
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -87,10 +98,12 @@ SMTP_FROM = os.getenv("NERUDS_SMTP_FROM", SMTP_USER)
 SMTP_REVIEW_TO = os.getenv("NERUDS_SMTP_REVIEW_TO", "")
 SMTP_STARTTLS = os.getenv("NERUDS_SMTP_STARTTLS", "true").lower() == "true"
 
-# Sessions live only in memory and disappear when the bridge restarts.
-# Passwords are never stored. Drupal remains the source of truth for identity/permissions.
+# Sessions persist in SQLite (data/sessions.sqlite3) with Drupal cookies and
+# CSRF encrypted at rest, so logins survive restarts and work across web,
+# desktop and mobile clients. Passwords are never stored. Drupal remains the
+# source of truth for identity/permissions.
 SESSION_IDLE_TTL = timedelta(hours=int(os.getenv("NERUDS_SESSION_IDLE_HOURS", "8")))
-SESSIONS: dict[str, dict[str, Any]] = {}
+SESSIONS = session_store.SESSIONS
 # Serialize requests for the same opportunity in this bridge process.
 _OPPORTUNITY_DRAFT_LOCKS: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
@@ -198,7 +211,9 @@ async def _backup_loop() -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # noqa: ARG001
     _configure_access_log()
-    _access_log("service_started", version="0.5.0")
+    session_store.init_db()
+    purged = session_store.purge_idle(SESSION_IDLE_TTL)
+    _access_log("service_started", version="0.6.0", sessions_purged=purged)
     task = asyncio.create_task(_backup_loop())
     try:
         yield
@@ -213,7 +228,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="NERUDS Control Bridge",
-    version="0.5.0",
+    version="0.6.0",
     lifespan=_lifespan,
     description=(
         "Bridge do NERUDS entre Flutter, Drupal e serviços internos. "
@@ -461,6 +476,7 @@ def require_session(authorization: str | None = Header(default=None)) -> dict[st
         SESSIONS.pop(token, None)
         raise HTTPException(status_code=401, detail="Sessão expirada por inatividade.")
 
+    SESSIONS.touch(token, now.isoformat())
     session["last_seen"] = now.isoformat()
     return session
 
@@ -750,7 +766,7 @@ def health() -> dict[str, Any]:
         "ok": True,
         "service": "neruds-control-bridge",
         "mode": "editorial-mvp",
-        "version": "0.5.0",
+        "version": "0.6.0",
         "time": datetime.now(timezone.utc).isoformat(),
         "active_sessions": len(SESSIONS),
     }
@@ -794,6 +810,98 @@ def capabilities() -> dict[str, Any]:
             "Operações de infraestrutura continuam separadas do fluxo editorial.",
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Config remota do aplicativo — atualizável sem rebuild/redeploy do cliente
+# ---------------------------------------------------------------------------
+
+# data/app_config.json é mesclado sobre os defaults; também pode ser editado
+# diretamente no servidor. Não colocar segredos aqui: o GET é público.
+APP_CONFIG_PATH = mission_store.DATA_DIR / "app_config.json"
+
+_DEFAULT_APP_CONFIG: dict[str, Any] = {
+    "schema_version": 1,
+    "app_name": "NERUDS Control Center",
+    "portal_url": PORTAL_URL,
+    "min_app_version": "1.0.0",
+    "features": {
+        "missions": True,
+        "opportunities": True,
+        "monitoring": True,
+        "editorial": True,
+        "identity_admin": True,
+    },
+    "onboarding": {
+        "enabled": True,
+        "steps": [
+            "Conheça sua missão na aba Missão.",
+            "Registre evidências e peça revisão cruzada.",
+            "Acompanhe pendências no painel de atenção.",
+        ],
+    },
+    "links": {
+        "portal": PORTAL_URL,
+        "support_mail": "admin@neruds.org",
+    },
+}
+
+
+def _load_app_config() -> dict[str, Any]:
+    merged = json.loads(json.dumps(_DEFAULT_APP_CONFIG))
+    try:
+        if APP_CONFIG_PATH.exists():
+            stored = json.loads(APP_CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(stored, dict):
+                _deep_merge(merged, stored)
+    except (OSError, ValueError) as exc:
+        _access_log("app_config_load_error", error=type(exc).__name__)
+    return merged
+
+
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    for key, value in overlay.items():
+        if (
+            key in base
+            and isinstance(base[key], dict)
+            and isinstance(value, dict)
+        ):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+@app.get("/config/app")
+def get_app_config() -> dict[str, Any]:
+    """Config remota consumida pelos clientes na inicialização."""
+    return _load_app_config()
+
+
+@app.put("/config/app")
+async def put_app_config(
+    request: Request,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _require_user_admin(session)
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="JSON inválido.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=422, detail="O corpo deve ser um objeto JSON."
+        )
+    payload.pop("schema_version", None)
+    APP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = APP_CONFIG_PATH.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(APP_CONFIG_PATH)
+    _access_log("app_config_updated", actor=session["username"])
+    return _load_app_config()
 
 
 # ---------------------------------------------------------------------------
@@ -890,7 +998,7 @@ async def ops_status(session: dict[str, Any] = Depends(require_session)) -> dict
     backups = mission_store.list_backups()
     return {
         "time": datetime.now(timezone.utc).isoformat(),
-        "version": "0.5.0",
+        "version": "0.6.0",
         "uptime_seconds": round(
             (datetime.now(timezone.utc) - _BRIDGE_STARTED_AT).total_seconds()
         ),

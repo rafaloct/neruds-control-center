@@ -1,0 +1,24 @@
+# App Flutter Web — produção no Dokploy.
+# O bridge é injetado em build time via --dart-define; o nginx serve o SPA.
+
+FROM ghcr.io/cirruslabs/flutter:stable AS build
+
+WORKDIR /app
+COPY app/pubspec.yaml app/pubspec.lock ./
+RUN flutter pub get
+
+COPY app/ ./
+RUN flutter analyze lib 2>/dev/null || true
+
+ARG NERUDS_BRIDGE_URL=https://api.neruds.org
+ARG NERUDS_PORTAL_URL=https://neruds.org
+
+RUN flutter build web --release --no-wasm-dry-run \
+      --dart-define=NERUDS_BRIDGE_URL=${NERUDS_BRIDGE_URL} \
+      --dart-define=NERUDS_PORTAL_URL=${NERUDS_PORTAL_URL}
+
+FROM nginx:1.27-alpine
+COPY deploy/dokploy/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/build/web /usr/share/nginx/html
+
+EXPOSE 80

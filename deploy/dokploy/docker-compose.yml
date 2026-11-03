@@ -1,0 +1,63 @@
+# NERUDS Control Center — stack de produção (Dokploy em srv1533541).
+#
+# Roteamento via Traefik do Dokploy (rede externa dokploy-network):
+#   api.neruds.org -> bridge:8787   (FastAPI, sessões persistentes)
+#   app.neruds.org -> web:80        (Flutter Web + nginx)
+#
+# TLS: Let's Encrypt automático (resolver "letsencrypt" do dokploy-traefik).
+# DNS na Cloudflare: A app/api -> 46.202.150.132 (proxied OK: CF encaminha
+# o desafio HTTP-01; manter SSL mode "Full (strict)").
+
+services:
+  bridge:
+    build:
+      context: ../..
+      dockerfile: deploy/dokploy/bridge.Dockerfile
+    image: neruds-control-center/bridge:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - neruds-bridge-data:/srv/data
+    networks:
+      - internal
+      - dokploy-network
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.neruds-api.rule=Host(`api.neruds.org`)
+      - traefik.http.routers.neruds-api.entrypoints=websecure
+      - traefik.http.routers.neruds-api.tls=true
+      - traefik.http.routers.neruds-api.tls.certresolver=letsencrypt
+      - traefik.http.services.neruds-api.loadbalancer.server.port=8787
+      - traefik.http.routers.neruds-api-http.rule=Host(`api.neruds.org`)
+      - traefik.http.routers.neruds-api-http.entrypoints=web
+      - traefik.http.routers.neruds-api-http.middlewares=redirect-to-https
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/dokploy/web.Dockerfile
+      args:
+        NERUDS_BRIDGE_URL: ${NERUDS_BRIDGE_URL:-https://api.neruds.org}
+        NERUDS_PORTAL_URL: ${NERUDS_PORTAL_URL:-https://neruds.org}
+    image: neruds-control-center/web:latest
+    restart: unless-stopped
+    networks:
+      - dokploy-network
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.neruds-app.rule=Host(`app.neruds.org`)
+      - traefik.http.routers.neruds-app.entrypoints=websecure
+      - traefik.http.routers.neruds-app.tls=true
+      - traefik.http.routers.neruds-app.tls.certresolver=letsencrypt
+      - traefik.http.services.neruds-app.loadbalancer.server.port=80
+      - traefik.http.routers.neruds-app-http.rule=Host(`app.neruds.org`)
+      - traefik.http.routers.neruds-app-http.entrypoints=web
+      - traefik.http.routers.neruds-app-http.middlewares=redirect-to-https
+
+networks:
+  internal:
+  dokploy-network:
+    external: true
+
+volumes:
+  neruds-bridge-data:

@@ -16,6 +16,7 @@ import main
 import mission_store
 import review_store
 import rss_store
+import session_store
 
 
 @pytest.fixture(autouse=True)
@@ -26,14 +27,18 @@ def temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(mission_store, "DATA_DIR", tmp_path)
     monkeypatch.setattr(identity_store, "DB_PATH", tmp_path / "test_identity.sqlite3")
     monkeypatch.setattr(identity_store, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(session_store, "DB_PATH", tmp_path / "test_sessions.sqlite3")
+    monkeypatch.setattr(session_store, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "APP_CONFIG_PATH", tmp_path / "app_config.json")
 
     # Initialize all database schemas
     mission_store.init_db()
     rss_store.init_rss_db()
     review_store.init_review_db()
     identity_store.init_db()
+    session_store.init_db()
 
-    # Clear main.py in-memory sessions and portal read cache
+    # Clear persisted sessions and portal read cache
     main.SESSIONS.clear()
     main._PORTAL_READ_CACHE.clear()
 
