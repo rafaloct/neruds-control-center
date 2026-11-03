@@ -9,6 +9,7 @@ import 'package:http/testing.dart';
 import 'package:neruds_control_center/app_config.dart';
 import 'package:neruds_control_center/app_session.dart';
 import 'package:neruds_control_center/bridge_http.dart' as bridge;
+import 'package:neruds_control_center/manage_detail_page.dart';
 import 'package:neruds_control_center/manage_form_page.dart';
 import 'package:neruds_control_center/manage_list_page.dart';
 import 'package:neruds_control_center/manage_models.dart';
@@ -205,6 +206,47 @@ void main() {
     await tester.tap(find.text('Avançar').first);
     await tester.pumpAndSettle();
     expect(find.text('Salvar'), findsOneWidget);
+  });
+
+  testWidgets('ficha interna exibe valores do detail e ações',
+      (tester) async {
+    bridge.setClientForTesting(MockClient((request) async {
+      if (request.url.path == '/manage/noticia/42') {
+        return json_({
+          'nid': 42,
+          'uuid': 'u-42',
+          'title': 'Oficina de agroecologia',
+          'status': true,
+          'values': {
+            'title': 'Oficina de agroecologia',
+            'field_data_noticia': '2026-10-15',
+            'field_resumo_noticia': {
+              'value': '<p>Resumo com <b>negrito</b>.</p>'
+            },
+            'field_autor_noticia': 'Maria',
+          },
+          'relationships': {},
+        });
+      }
+      return http.Response('nf', 404);
+    }));
+    final bundle = ManageBundle.fromJson(
+      'noticia',
+      noticiaSchema(),
+      canCreate: true,
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: ManageDetailPage(bundle: bundle, nid: 42)),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Publicado'), findsOneWidget);
+    expect(find.text('Maria'), findsOneWidget);
+    expect(find.text('15/10/2026'), findsOneWidget);
+    // longtext renderiza como texto limpo, não HTML cru
+    expect(find.textContaining('negrito'), findsOneWidget);
+    expect(find.text('Editar'), findsOneWidget);
+    expect(find.text('Ver página pública'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('taxonomia lista termos e usa tid para ações',

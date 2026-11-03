@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
+import 'manage_detail_page.dart';
 import 'manage_form_page.dart';
 import 'manage_models.dart';
 import 'manage_rich_list.dart';
@@ -103,6 +104,10 @@ class _ManageModerationPageState extends State<ManageModerationPage> {
     }
   }
 
+  int? _itemNid(Map<String, dynamic> item) => item['nid'] is int
+      ? item['nid']
+      : int.tryParse('${item['nid']}');
+
   Future<void> _openEdit(Map<String, dynamic> item) async {
     final bundle = _bundleOf(item);
     if (bundle == null) return;
@@ -110,13 +115,23 @@ class _ManageModerationPageState extends State<ManageModerationPage> {
       MaterialPageRoute(
         builder: (_) => ManageFormPage(
           bundle: bundle,
-          nid: item['nid'] is int
-              ? item['nid']
-              : int.tryParse('${item['nid']}'),
+          nid: _itemNid(item),
         ),
       ),
     );
     if (changed == true) _load();
+  }
+
+  Future<void> _openDetail(Map<String, dynamic> item) async {
+    final bundle = _bundleOf(item);
+    final nid = _itemNid(item);
+    if (bundle == null || nid == null) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ManageDetailPage(bundle: bundle, nid: nid),
+      ),
+    );
+    _load();
   }
 
   @override
@@ -190,7 +205,7 @@ class _ManageModerationPageState extends State<ManageModerationPage> {
         subtitle: '${item['bundle_label'] ?? item['bundle']}',
         avatarIcon: Icons.rate_review_outlined,
         showChevron: false,
-        onTap: () => _openEdit(item),
+        onTap: () => _openDetail(item),
         actions: [
           SlideAction(
             icon: Icons.edit_outlined,

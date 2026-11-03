@@ -489,7 +489,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         ),
                       ),
                     _linkRow([
-                      PortalLinkButton(label: 'Ver', url: p.viewUrl),
+                      _viewInAppButton(nid: p.nid, bundleName: 'projeto_pesquisa_extensao'),
                       _editInAppButton(
                         nid: p.nid,
                         bundleName: 'projeto_pesquisa_extensao',
@@ -527,7 +527,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                     ),
                     _gapsLine(gaps[a.nid]),
                     _linkRow([
-                      PortalLinkButton(label: 'Ver', url: a.viewUrl),
+                      _viewInAppButton(nid: a.nid, bundleName: 'acao_extensionista'),
                       _editInAppButton(
                         nid: a.nid,
                         bundleName: 'acao_extensionista',
@@ -926,7 +926,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
             if ((event.submissionUrl ?? '').isNotEmpty &&
                 event.callOpen != false)
               PortalLinkButton(label: 'Submissão', url: event.submissionUrl),
-            PortalLinkButton(label: 'Ver', url: event.viewUrl),
+            _viewInAppButton(nid: event.nid, bundleName: 'evento_cientifico'),
             _editInAppButton(
               nid: event.nid,
               bundleName: 'evento_cientifico',
@@ -946,6 +946,17 @@ class _MonitoringPageState extends State<MonitoringPage> {
       onPressed: nid == null
           ? null
           : () => openManageEditor(context, nid: nid, bundleName: bundleName),
+    );
+  }
+
+  /// Botão "Ver" nativo — abre a ficha interna do item.
+  Widget _viewInAppButton({required int? nid, required String? bundleName}) {
+    return OutlinedButton.icon(
+      icon: const Icon(Icons.visibility_outlined, size: 18),
+      label: const Text('Ver'),
+      onPressed: nid == null
+          ? null
+          : () => openManageDetail(context, nid: nid, bundleName: bundleName),
     );
   }
 
@@ -1011,7 +1022,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                   children: [
                     Text('Faltam: ${node.missing.join(', ')}'),
                     _linkRow([
-                      PortalLinkButton(label: 'Ver', url: node.viewUrl),
+                      _viewInAppButton(nid: node.nid, bundleName: node.type),
                       _editInAppButton(
                         nid: node.nid,
                         bundleName: node.type,

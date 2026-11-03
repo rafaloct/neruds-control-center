@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
+import 'manage_detail_page.dart';
 import 'manage_form_page.dart';
 import 'manage_models.dart';
 import 'manage_rich_list.dart';
@@ -147,6 +148,17 @@ class _ManageListPageState extends State<ManageListPage> {
     }
   }
 
+  Future<void> _openDetail(ManageItem item) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            ManageDetailPage(bundle: widget.bundle, nid: item.nid),
+      ),
+    );
+    // A edição/despublicação dentro da ficha pode ter mudado o item.
+    _load();
+  }
+
   Future<void> _openForm([ManageItem? item]) async {
     final changed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
@@ -278,7 +290,7 @@ class _ManageListPageState extends State<ManageListPage> {
           subtitle:
               item.changed == null ? null : _changedText(item.changed!),
           showChevron: !grid,
-          onTap: () => _openForm(item),
+          onTap: () => _openDetail(item),
           actions: [
             SlideAction(
               icon: Icons.edit_outlined,
