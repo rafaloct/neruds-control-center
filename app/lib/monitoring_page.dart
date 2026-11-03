@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'app_config.dart';
 import 'app_session.dart';
+import 'manage_navigation.dart';
 import 'portal_read.dart';
 import 'session_widgets.dart';
 import 'workflow_widgets.dart';
@@ -489,10 +490,9 @@ class _MonitoringPageState extends State<MonitoringPage> {
                       ),
                     _linkRow([
                       PortalLinkButton(label: 'Ver', url: p.viewUrl),
-                      PortalLinkButton(
-                        label: 'Editar',
-                        url: p.editUrl,
-                        editing: true,
+                      _editInAppButton(
+                        nid: p.nid,
+                        bundleName: 'projeto_pesquisa_extensao',
                       ),
                       if (gaps[p.nid] != null) _gapTaskButton(gaps[p.nid]!),
                     ]),
@@ -528,10 +528,9 @@ class _MonitoringPageState extends State<MonitoringPage> {
                     _gapsLine(gaps[a.nid]),
                     _linkRow([
                       PortalLinkButton(label: 'Ver', url: a.viewUrl),
-                      PortalLinkButton(
-                        label: 'Editar',
-                        url: a.editUrl,
-                        editing: true,
+                      _editInAppButton(
+                        nid: a.nid,
+                        bundleName: 'acao_extensionista',
                       ),
                       if (gaps[a.nid] != null) _gapTaskButton(gaps[a.nid]!),
                     ]),
@@ -928,10 +927,9 @@ class _MonitoringPageState extends State<MonitoringPage> {
                 event.callOpen != false)
               PortalLinkButton(label: 'Submissão', url: event.submissionUrl),
             PortalLinkButton(label: 'Ver', url: event.viewUrl),
-            PortalLinkButton(
-              label: 'Editar',
-              url: event.editUrl,
-              editing: true,
+            _editInAppButton(
+              nid: event.nid,
+              bundleName: 'evento_cientifico',
             ),
             if (gaps[event.nid] != null) _gapTaskButton(gaps[event.nid]!),
           ]),
@@ -939,6 +937,17 @@ class _MonitoringPageState extends State<MonitoringPage> {
       ),
     ),
   );
+
+  /// Botão "Editar" nativo — abre o formulário do app em vez do portal.
+  Widget _editInAppButton({required int? nid, required String? bundleName}) {
+    return OutlinedButton.icon(
+      icon: const Icon(Icons.edit_outlined, size: 18),
+      label: const Text('Editar'),
+      onPressed: nid == null
+          ? null
+          : () => openManageEditor(context, nid: nid, bundleName: bundleName),
+    );
+  }
 
   Widget _gapsTab(
     MonitoringData data, {
@@ -1003,10 +1012,9 @@ class _MonitoringPageState extends State<MonitoringPage> {
                     Text('Faltam: ${node.missing.join(', ')}'),
                     _linkRow([
                       PortalLinkButton(label: 'Ver', url: node.viewUrl),
-                      PortalLinkButton(
-                        label: 'Editar',
-                        url: node.editUrl,
-                        editing: true,
+                      _editInAppButton(
+                        nid: node.nid,
+                        bundleName: node.type,
                       ),
                       _gapTaskButton(node),
                     ]),

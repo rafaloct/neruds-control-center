@@ -118,13 +118,13 @@ class _ManageFormPageState extends State<ManageFormPage> {
               _controllers[f.name]?.text =
                   raw is Map ? (raw['uri']?.toString() ?? '') : '${raw ?? ''}';
             case 'number':
-              _controllers[f.name]?.text = '${raw ?? ''}';
+              _controllers[f.name]?.text = _scalarText(raw);
             case 'reference':
               _prefillRefs(f, rels[f.name]);
             case 'image' || 'file':
               _fileUuids[f.name] = _relUuids(rels[f.name]);
             default:
-              _controllers[f.name]?.text = '${raw ?? ''}';
+              _controllers[f.name]?.text = _scalarText(raw);
           }
         }
         _loading = false;
@@ -180,6 +180,18 @@ class _ManageFormPageState extends State<ManageFormPage> {
       });
     }
     return options;
+  }
+
+  /// Atributos multivalorados do JSON:API chegam como lista — une os
+  /// valores em texto em vez de exibir "[]" literal no campo.
+  String _scalarText(dynamic raw) {
+    if (raw == null) return '';
+    if (raw is List) {
+      return raw
+          .map((e) => e is Map ? '${e['value'] ?? e}' : '$e')
+          .join(', ');
+    }
+    return '$raw';
   }
 
   DateTime? _parseDate(dynamic raw) {

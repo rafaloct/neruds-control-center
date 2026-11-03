@@ -27,11 +27,27 @@ class ManageRichTextField extends StatefulWidget {
   static Delta htmlToDelta(String html) {
     if (html.trim().isEmpty) return Delta()..insert('\n');
     try {
-      return HtmlToDelta().convert(html);
+      return _withoutEmbeds(HtmlToDelta().convert(html));
     } catch (_) {
       // HTML malformado: preserva como texto plano em vez de quebrar o form.
       return Delta()..insert('$html\n');
     }
+  }
+
+  /// Substitui embeds (imagens, vídeos) por um marcador de texto — o
+  /// editor configurado não tem embed builders e travaria sem isso.
+  static Delta _withoutEmbeds(Delta delta) {
+    final clean = Delta();
+    for (final op in delta.toList()) {
+      if (op.key != Operation.insertKey || op.data is String) {
+        clean.push(op);
+      } else {
+        // Embed (imagem/vídeo/anexo) — o editor não tem embed builders.
+        clean.insert('[conteúdo incorporado]\n');
+      }
+    }
+    if (clean.isEmpty) clean.insert('\n');
+    return clean;
   }
 
   /// Delta -> HTML (valor a enviar ao bridge no save).

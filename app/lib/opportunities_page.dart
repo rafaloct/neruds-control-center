@@ -5,6 +5,7 @@ import 'bridge_http.dart' as http;
 
 import 'app_config.dart';
 import 'app_session.dart';
+import 'manage_navigation.dart';
 import 'session_widgets.dart';
 import 'unsaved_work.dart';
 import 'workflow_widgets.dart';
@@ -1297,11 +1298,15 @@ class _OpportunityDialogState extends State<OpportunityDialog> {
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        PortalLinkButton(
-                          label: 'Abrir ficha para revisão',
-                          url: data['edit_url']?.toString(),
-                          editing: true,
-                        ),
+                        if (data['drupal_draft_id'] is int)
+                          FilledButton.tonalIcon(
+                            icon: const Icon(Icons.edit_outlined, size: 18),
+                            label: const Text('Abrir ficha para revisão'),
+                            onPressed: () => openManageEditor(
+                              context,
+                              nid: data['drupal_draft_id'] as int,
+                            ),
+                          ),
                         PortalLinkButton(
                           label: 'Consultar página no portal',
                           url: data['public_url']?.toString(),
