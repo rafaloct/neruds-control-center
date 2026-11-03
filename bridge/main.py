@@ -3287,7 +3287,7 @@ async def manage_update(
         )
         if (
             response.status_code == 422
-            and '"format"' in response.text
+            and 'format' in response.text
             and _strip_longtext_formats(body)
         ):
             # A conta não pode usar o formato pedido (ex.: basic_html) —
