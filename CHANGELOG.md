@@ -6,6 +6,29 @@ Todas as mudanças relevantes serão registradas neste arquivo.
 
 ### Added
 
+- criação de rascunho por tipo de conteúdo (`GET /content/types` +
+  `POST /content/{bundle}/draft`):
+  - o app passa a oferecer todos os tipos que a sessão pode criar no
+    Drupal — o próprio `/node/add/{bundle}` decide o acesso (extensionista
+    vê notícia/relatório; coordenação vê os demais);
+  - campos obrigatórios por tipo descritos no `CONTENT_BUNDLES` (ex.:
+    evento científico pede data + local; projeto pede coordenador) e o
+    formulário do app os exige antes de enviar — sem depender de rebuild
+    para aparecer novos tipos permitidos;
+  - Editorial: seletor "Tipo de conteúdo" com campos dinâmicos (data com
+    calendário, texto livre), título e instruções adaptados ao tipo;
+  - `/content/news/draft` preservado como caminho compatível;
+- migração de idioma do portal (executada em produção, fora do código):
+  - 337 nodes, 441 termos de taxonomia, 31 itens de menu e 12 mídias com
+    `langcode=en` migrados para `pt-br` — as URLs canônicas deixam de ter
+    prefixo `/en/` e os aliases antigos `/en/*` continuam resolvendo;
+- automação n8n (`deploy/n8n/`):
+  - workflow "Planilha de acompanhamento" ativo no n8n existente: cron
+    diário 07h BRT + webhook `POST /webhook/neruds-planilha-export`;
+    login `servico.neruds` → export XLSX do bridge → grava em
+    `~/.n8n-files/neruds/` e envia por e-mail com a planilha anexada;
+  - README com procedimento de importação e credencial SMTP;
+
 - produção pública via Dokploy + Cloudflare (`srv1533541`):
   - projeto dedicado `neruds-control-center` no Dokploy, isolado dos demais;
   - `deploy/dokploy/`: Dockerfile do bridge (uvicorn), Dockerfile do app web
