@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 
 import 'manage_form_page.dart';
 import 'manage_models.dart';
+import 'manage_rich_list.dart';
 import 'manage_service.dart';
 
 /// Painel de moderação — fila unificada de rascunhos pendentes em todos
@@ -120,77 +122,115 @@ class _ManageModerationPageState extends State<ManageModerationPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Aprovações')),
-      body: _buildBody(),
-    );
-  }
-
-  Widget _buildBody() {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(_error!),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: _load,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Tentar novamente'),
+      body: RefreshIndicator(
+        onRefresh: _load,
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            const SliverAppBar(
+              floating: true,
+              snap: true,
+              title: Text('Aprovações'),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 88),
+              sliver: _buildContent(),
             ),
           ],
         ),
-      );
+      ),
+    );
+  }
+
+  Widget _buildContent() {
+    if (_loading) {
+      return const SkeletonSliver();
     }
-    if (_items.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(32),
-          child: Text(
-            'Nenhum rascunho aguardando aprovação.\n'
-            'Quando extensionistas salvarem conteúdo, aparece aqui.',
-            textAlign: TextAlign.center,
+    if (_error != null) {
+      return SliverFillRemaining(
+        hasScrollBody: false,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(_error!),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Tentar novamente'),
+              ),
+            ],
           ),
         ),
       );
     }
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView.builder(
-        padding: const EdgeInsets.only(bottom: 24),
-        itemCount: _items.length,
-        itemBuilder: (context, index) {
-          final item = _items[index];
-          return Card(
-            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: ListTile(
-              leading: const Icon(Icons.rate_review_outlined),
-              title: Text(item['title']?.toString() ?? ''),
-              subtitle: Text(
-                '${item['bundle_label'] ?? item['bundle']} · rascunho',
-              ),
-              trailing: Wrap(
-                spacing: 4,
-                children: [
-                  IconButton(
-                    tooltip: 'Abrir/editar',
-                    icon: const Icon(Icons.edit_outlined),
-                    onPressed: () => _openEdit(item),
-                  ),
-                  IconButton.filled(
-                    tooltip: 'Aprovar e publicar',
-                    icon: const Icon(Icons.check_circle_outline),
-                    onPressed: () => _approve(item),
-                  ),
-                ],
-              ),
+    if (_items.isEmpty) {
+      return const SliverFillRemaining(
+        hasScrollBody: false,
+        child: Center(
+          child: Padding(
+            padding: EdgeInsets.all(32),
+            child: Text(
+              'Nenhum rascunho aguardando aprovação.\n'
+              'Quando extensionistas salvarem conteúdo, aparece aqui.',
+              textAlign: TextAlign.center,
             ),
-          );
-        },
-      ),
+          ),
+        ),
+      );
+    }
+    final grid = MediaQuery.sizeOf(context).width >= 720;
+    Widget card(int index) {
+      final item = _items[index];
+      return RichListCard(
+        title: item['title']?.toString() ?? '',
+        status: 'Pendente',
+        statusKind: StatusKind.pending,
+        subtitle: '${item['bundle_label'] ?? item['bundle']}',
+        avatarIcon: Icons.rate_review_outlined,
+        showChevron: false,
+        onTap: () => _openEdit(item),
+        actions: [
+          SlideAction(
+            icon: Icons.edit_outlined,
+            label: 'Editar',
+            onTap: () => _openEdit(item),
+          ),
+          SlideAction(
+            icon: Icons.check_circle_outline,
+            label: 'Aprovar',
+            onTap: () => _approve(item),
+          ),
+        ],
+      )
+          .animate()
+          .fadeIn(duration: 220.ms, delay: ((index % 12) * 30).ms)
+          .slideY(begin: .04, end: 0, duration: 220.ms);
+    }
+
+    if (grid) {
+      return SliverGrid(
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2,
+          mainAxisExtent: 128,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+        ),
+        delegate: SliverChildBuilderDelegate(
+          (_, i) => card(i),
+          childCount: _items.length,
+        ),
+      );
+    }
+    return SliverList.list(
+      children: [
+        for (var i = 0; i < _items.length; i++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: card(i),
+          ),
+      ],
     );
   }
 }

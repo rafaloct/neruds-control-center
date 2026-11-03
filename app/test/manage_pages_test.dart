@@ -233,8 +233,9 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('agroecologia'), findsOneWidget);
-    // Editar o termo deve chamar PATCH no tid real (não em 0).
-    await tester.tap(find.byTooltip('Editar'));
+    // Tap no cartão abre o diálogo; salvar deve chamar PATCH no tid
+    // real (não em 0).
+    await tester.tap(find.text('agroecologia'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Salvar'));
     await tester.pumpAndSettle();

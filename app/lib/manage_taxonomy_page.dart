@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'manage_models.dart';
+import 'manage_rich_list.dart';
 import 'manage_service.dart';
 
 /// Gestão de taxonomias — vocabulário → lista de termos → diálogo CRUD.
@@ -214,7 +215,7 @@ class _ManageTaxonomyPageState extends State<ManageTaxonomyPage> {
 
   Widget _buildBody() {
     if (_loading) {
-      return const Center(child: CircularProgressIndicator());
+      return const SkeletonList();
     }
     if (_error != null) {
       return Center(
@@ -237,29 +238,41 @@ class _ManageTaxonomyPageState extends State<ManageTaxonomyPage> {
     }
     return RefreshIndicator(
       onRefresh: _loadTerms,
-      child: ListView.builder(
-        itemCount: _terms.length,
-        itemBuilder: (context, index) {
-          final term = _terms[index];
-          return ListTile(
-            title: Text(term.title),
-            trailing: Wrap(
-              spacing: 4,
+      child: CustomScrollView(
+        slivers: [
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 88),
+            sliver: SliverList.list(
               children: [
-                IconButton(
-                  tooltip: 'Editar',
-                  icon: const Icon(Icons.edit_outlined),
-                  onPressed: () => _editTerm(term),
-                ),
-                IconButton(
-                  tooltip: 'Excluir',
-                  icon: const Icon(Icons.delete_outline),
-                  onPressed: () => _deleteTerm(term),
-                ),
+                for (var i = 0; i < _terms.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: RichListCard(
+                      title: _terms[i].title,
+                      status: 'Termo',
+                      statusKind: StatusKind.neutral,
+                      subtitle: _vocabLabel,
+                      avatarIcon: Icons.label_outline,
+                      onTap: () => _editTerm(_terms[i]),
+                      actions: [
+                        SlideAction(
+                          icon: Icons.edit_outlined,
+                          label: 'Editar',
+                          onTap: () => _editTerm(_terms[i]),
+                        ),
+                        SlideAction(
+                          icon: Icons.delete_outline,
+                          label: 'Excluir',
+                          onTap: () => _deleteTerm(_terms[i]),
+                          destructive: true,
+                        ),
+                      ],
+                    ),
+                  ),
               ],
             ),
-          );
-        },
+          ),
+        ],
       ),
     );
   }

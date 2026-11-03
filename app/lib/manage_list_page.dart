@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:flutter_slidable/flutter_slidable.dart';
-import 'package:shimmer/shimmer.dart';
 
 import 'manage_form_page.dart';
 import 'manage_models.dart';
+import 'manage_rich_list.dart';
 import 'manage_service.dart';
 import 'project_timeline.dart';
 
@@ -231,7 +230,7 @@ class _ManageListPageState extends State<ManageListPage> {
 
   Widget _buildContent() {
     if (_loading) {
-      return const _SkeletonSliver();
+      return const SkeletonSliver();
     }
     if (_error != null) {
       return SliverFillRemaining(
@@ -268,17 +267,36 @@ class _ManageListPageState extends State<ManageListPage> {
     final delegate = SliverChildBuilderDelegate(
       (context, index) {
         final item = _items[index];
-        return _RichCard(
-          item: item,
-          bundleName: widget.bundle.name,
-          isGrid: grid,
-          onEdit: () => _openForm(item),
-          onUnpublish:
-              item.status ? () => _confirmUnpublish(item) : null,
-          onTimeline: widget.bundle.name == 'projeto_pesquisa_extensao'
-              ? () => _openTimeline(item)
-              : null,
+        return RichListCard(
+          title: item.title,
+          status: item.status ? 'Publicado' : 'Rascunho',
+          statusKind: item.status
+              ? StatusKind.published
+              : StatusKind.draft,
+          subtitle:
+              item.changed == null ? null : _changedText(item.changed!),
+          showChevron: !grid,
           onTap: () => _openForm(item),
+          actions: [
+            SlideAction(
+              icon: Icons.edit_outlined,
+              label: 'Editar',
+              onTap: () => _openForm(item),
+            ),
+            if (widget.bundle.name == 'projeto_pesquisa_extensao')
+              SlideAction(
+                icon: Icons.timeline_outlined,
+                label: 'Cronograma',
+                onTap: () => _openTimeline(item),
+              ),
+            if (item.status)
+              SlideAction(
+                icon: Icons.unpublished_outlined,
+                label: 'Despublicar',
+                onTap: () => _confirmUnpublish(item),
+                destructive: true,
+              ),
+          ],
         )
             .animate()
             .fadeIn(duration: 220.ms, delay: ((index % 12) * 30).ms)
@@ -309,226 +327,9 @@ class _ManageListPageState extends State<ManageListPage> {
   }
 }
 
-/// Card rico: avatar com inicial, título, status em chip, data e ações
-/// por deslize (slidable) — sem abrir o detalhe para editar/despublicar.
-class _RichCard extends StatelessWidget {
-  const _RichCard({
-    required this.item,
-    required this.bundleName,
-    required this.isGrid,
-    this.onEdit,
-    this.onUnpublish,
-    this.onTimeline,
-    this.onTap,
-  });
-
-  final ManageItem item;
-  final String bundleName;
-  final bool isGrid;
-  final VoidCallback? onEdit;
-  final VoidCallback? onUnpublish;
-  final VoidCallback? onTimeline;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final published = item.status;
-    final card = Card(
-      clipBehavior: Clip.antiAlias,
-      margin: EdgeInsets.zero,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              CircleAvatar(
-                backgroundColor: published
-                    ? scheme.primaryContainer
-                    : scheme.surfaceContainerHighest,
-                foregroundColor: published
-                    ? scheme.onPrimaryContainer
-                    : scheme.onSurfaceVariant,
-                child: Text(
-                  item.title.isEmpty
-                      ? '?'
-                      : item.title.characters.first.toUpperCase(),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      item.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleSmall
-                          ?.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 4,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        _StatusChip(published: published),
-                        if (item.changed != null)
-                          Text(
-                            _changedText(item.changed!),
-                            style: Theme.of(context)
-                                .textTheme
-                                .labelSmall
-                                ?.copyWith(
-                                  color: scheme.onSurfaceVariant,
-                                ),
-                          ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              if (!isGrid)
-                Icon(
-                  Icons.chevron_right,
-                  color: scheme.onSurfaceVariant,
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-    return Slidable(
-      key: ValueKey('item-${item.nid}'),
-      endActionPane: ActionPane(
-        motion: const DrawerMotion(),
-        children: [
-          if (onEdit != null)
-            SlidableAction(
-              onPressed: (_) => onEdit!(),
-              icon: Icons.edit_outlined,
-              label: 'Editar',
-              backgroundColor: scheme.primaryContainer,
-              foregroundColor: scheme.onPrimaryContainer,
-            ),
-          if (onTimeline != null)
-            SlidableAction(
-              onPressed: (_) => onTimeline!(),
-              icon: Icons.timeline_outlined,
-              label: 'Cronograma',
-              backgroundColor: scheme.tertiaryContainer,
-              foregroundColor: scheme.onTertiaryContainer,
-            ),
-          if (onUnpublish != null)
-            SlidableAction(
-              onPressed: (_) => onUnpublish!(),
-              icon: Icons.unpublished_outlined,
-              label: 'Despublicar',
-              backgroundColor: scheme.errorContainer,
-              foregroundColor: scheme.onErrorContainer,
-            ),
-        ],
-      ),
-      child: card,
-    );
-  }
-
-  String _changedText(String iso) {
-    final dt = DateTime.tryParse(iso);
-    if (dt == null) return '';
-    return '${dt.day.toString().padLeft(2, '0')}/'
-        '${dt.month.toString().padLeft(2, '0')}/${dt.year}';
-  }
-}
-
-class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.published});
-
-  final bool published;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: published
-            ? scheme.primaryContainer
-            : scheme.tertiaryContainer,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Text(
-        published ? 'Publicado' : 'Rascunho',
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: published
-                  ? scheme.onPrimaryContainer
-                  : scheme.onTertiaryContainer,
-              fontWeight: FontWeight.w600,
-            ),
-      ),
-    );
-  }
-}
-
-/// Skeletons pulsantes imitando os cards reais enquanto a lista carrega.
-class _SkeletonSliver extends StatelessWidget {
-  const _SkeletonSliver();
-
-  @override
-  Widget build(BuildContext context) {
-    final grid = MediaQuery.sizeOf(context).width >= 720;
-    final card = Shimmer.fromColors(
-      baseColor:
-          Theme.of(context).colorScheme.surfaceContainerHighest,
-      highlightColor: Theme.of(context).colorScheme.surface,
-      child: Card(
-        margin: EdgeInsets.zero,
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Row(
-            children: [
-              const CircleAvatar(radius: 20),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      height: 14,
-                      width: double.infinity,
-                      color: Colors.white,
-                    ),
-                    const SizedBox(height: 8),
-                    Container(height: 10, width: 120, color: Colors.white),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (grid) {
-      return SliverGrid(
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 2,
-          mainAxisExtent: 128,
-          mainAxisSpacing: 10,
-          crossAxisSpacing: 10,
-        ),
-        delegate: SliverChildBuilderDelegate((_, i) => card, childCount: 6),
-      );
-    }
-    return SliverList.list(
-      children: [
-        for (var i = 0; i < 6; i++)
-          Padding(padding: const EdgeInsets.only(bottom: 10), child: card),
-      ],
-    );
-  }
+String _changedText(String iso) {
+  final dt = DateTime.tryParse(iso);
+  if (dt == null) return '';
+  return '${dt.day.toString().padLeft(2, '0')}/'
+      '${dt.month.toString().padLeft(2, '0')}/${dt.year}';
 }
