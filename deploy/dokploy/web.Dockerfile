@@ -8,7 +8,6 @@ COPY app/pubspec.yaml app/pubspec.lock ./
 RUN flutter pub get
 
 COPY app/ ./
-RUN flutter analyze lib 2>/dev/null || true
 
 ARG NERUDS_BRIDGE_URL=https://api.neruds.org
 ARG NERUDS_PORTAL_URL=https://neruds.org

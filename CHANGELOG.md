@@ -6,6 +6,34 @@ Todas as mudanças relevantes serão registradas neste arquivo.
 
 ### Added
 
+- produção pública via Dokploy + Cloudflare (`srv1533541`):
+  - projeto dedicado `neruds-control-center` no Dokploy, isolado dos demais;
+  - `deploy/dokploy/`: Dockerfile do bridge (uvicorn), Dockerfile do app web
+    (Flutter Web → nginx), docker-compose com labels Traefik para
+    `api.neruds.org` + `app.neruds.org` (Let's Encrypt via `dokploy-network`);
+  - DNS `app`/`api` na Cloudflare → `46.202.150.132` (proxied, Full strict);
+- sessões persistentes no bridge:
+  - `session_store` (SQLite `data/sessions.sqlite3`) substitui o dict em
+    memória — login sobrevive a restart e a mesma conta opera em web,
+    desktop e mobile simultaneamente;
+  - cookies Drupal + CSRF criptografados em repouso via Fernet
+    (`NERUDS_SESSION_KEY`); sem a chave, cai no comportamento antigo
+    (sessões efêmeras) com aviso;
+  - expurgo automático de sessões inativas além do TTL no boot;
+- config remota do aplicativo (`GET/PUT /config/app`):
+  - features (`monitoring`, `opportunities`), `onboarding.enabled`,
+    `announcement`, `app_name` e links ajustáveis sem rebuild/redeploy —
+    arquivo `data/app_config.json` também editável direto no servidor;
+- persistência de sessão no app (web/desktop/mobile):
+  - token salvo via `shared_preferences` e revalidado em `/me` na abertura;
+    sessão contínua sem depender de estado local de máquina.
+
+### Changed
+
+- bridge `0.5.0` → `0.6.0`.
+
+### Added
+
 - identidade e ciclo de vida de extensionistas (Onda 5 do roadmap):
   - módulo Drupal `neruds_extensionista_guard` ganha rotas
     `/neruds-control/extensionistas*` (roster, criação, bloqueio e link de
