@@ -26,6 +26,7 @@ import httpx
 
 import content_map
 import identity_store
+import manage_schema
 import mission_automation
 import mission_store
 import portal_links
@@ -34,6 +35,7 @@ import rss_store
 import session_store
 from dotenv import load_dotenv
 from fastapi import (
+    Body,
     Depends,
     FastAPI,
     File,
@@ -732,26 +734,24 @@ async def _create_bundle_draft_internal(
         text_format = parser.body_format
         fields = parser.fields
         use_html = text_format is not None and text_format != "plain_text"
-        has_body = "body[0][value]" in fields
         fields.update(
             {
                 "title[0][value]": title,
+                "body[0][summary]": plain_to_basic_html(summary)
+                if use_html
+                else summary,
+                "body[0][value]": plain_to_basic_html(body)
+                if use_html
+                else body,
                 "status[value]": "0",
                 "form_id": fields.get("form_id", f"node_{bundle}_form"),
                 "op": fields.get("op", "Salvar"),
             }
         )
-        if has_body:
-            fields["body[0][summary]"] = (
-                plain_to_basic_html(summary) if use_html else summary
-            )
-            fields["body[0][value]"] = (
-                plain_to_basic_html(body) if use_html else body
-            )
-            if text_format is None:
-                fields.pop("body[0][format]", None)
-            else:
-                fields["body[0][format]"] = text_format
+        if text_format is None:
+            fields.pop("body[0][format]", None)
+        else:
+            fields["body[0][format]"] = text_format
         fields.update({k: v for k, v in (extras or {}).items() if v != ""})
 
         response = await client.post(
@@ -928,6 +928,7 @@ _DEFAULT_APP_CONFIG: dict[str, Any] = {
         "monitoring": True,
         "editorial": True,
         "identity_admin": True,
+        "manage": True,
     },
     "onboarding": {
         "enabled": True,
@@ -2233,6 +2234,459 @@ async def create_bundle_draft(
         "edit_url": created.get("edit_url"),
         "owner_uid": created.get("owner_uid"),
         "is_owner": created.get("is_owner", False),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Gateway de gestão genérico (/manage) — schema-driven, ver manage_schema.py.
+# ---------------------------------------------------------------------------
+
+_JSONAPI_TYPES = {"Content-Type": "application/vnd.api+json",
+                  "Accept": "application/vnd.api+json"}
+
+
+def _manage_schema_or_404(bundle: str) -> dict[str, Any]:
+    schema = manage_schema.schema_for(bundle)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Setor não suportado.")
+    return schema
+
+
+def _jsonapi_write_headers(session: dict[str, Any]) -> dict[str, str]:
+    headers = dict(_JSONAPI_TYPES)
+    if session.get("csrf"):
+        headers["X-CSRF-Token"] = session["csrf"]
+    return headers
+
+
+def _entity_ref_type(target: str) -> tuple[str, str]:
+    """'node:perfil_pesquisador' -> ('node', 'perfil_pesquisador')."""
+    entity, _, bundle = (target or "").partition(":")
+    return entity or "node", bundle
+
+
+async def _resolve_ref_uuid(
+    client: httpx.AsyncClient, target: str, raw_id: Any
+) -> dict[str, str] | None:
+    """Resolve um id numérico (nid/tid) ou uuid para o item JSON:API."""
+    entity, bundle = _entity_ref_type(target)
+    if isinstance(raw_id, dict) and raw_id.get("id"):
+        return {
+            "type": f"{entity}--{bundle}",
+            "id": str(raw_id["id"]),
+        }
+    raw = str(raw_id or "").strip()
+    if not raw:
+        return None
+    if not raw.isdecimal():
+        return {"type": f"{entity}--{bundle}", "id": raw}
+    if entity == "node":
+        response = await client.get(
+            f"/jsonapi/node/{bundle}",
+            params={
+                "filter[drupal_internal__nid]": raw,
+                "page[limit]": "1",
+            },
+        )
+    else:
+        response = await client.get(
+            f"/jsonapi/taxonomy_term/{bundle}",
+            params={
+                "filter[drupal_internal__tid]": raw,
+                "page[limit]": "1",
+            },
+        )
+    if response.status_code != 200:
+        return None
+    data = response.json().get("data") or []
+    if not data:
+        return None
+    return {"type": f"{entity}--{bundle}", "id": data[0]["id"]}
+
+
+async def _node_uuid(client: httpx.AsyncClient, bundle: str, nid: int) -> str:
+    response = await client.get(
+        f"/jsonapi/node/{bundle}",
+        params={
+            "filter[drupal_internal__nid]": nid,
+            "page[limit]": "1",
+        },
+    )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Drupal não respondeu à consulta do registro.",
+        )
+    data = response.json().get("data") or []
+    if not data:
+        raise HTTPException(status_code=404, detail="Registro não encontrado.")
+    return data[0]["id"]
+
+
+async def _build_node_payload(
+    bundle: str,
+    values: dict[str, Any],
+    client: httpx.AsyncClient,
+    *,
+    uuid: str | None = None,
+) -> dict[str, Any]:
+    schema = _manage_schema_or_404(bundle)
+    attrs: dict[str, Any] = {}
+    rels: dict[str, Any] = {}
+    for spec in schema["fields"]:
+        name = spec["name"]
+        if name not in values:
+            continue
+        value = values[name]
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        kind = spec["kind"]
+        if kind == "reference":
+            items = value if isinstance(value, list) else [value]
+            refs = []
+            for item in items:
+                ref = await _resolve_ref_uuid(client, spec.get("target", ""), item)
+                if ref:
+                    refs.append(ref)
+            rels[name] = {"data": refs if spec.get("multiple") else (refs[0] if refs else None)}
+        elif kind in ("image", "file"):
+            items = value if isinstance(value, list) else [value]
+            refs = [
+                {"type": "file--file", "id": str(item["id"] if isinstance(item, dict) else item)}
+                for item in items
+            ]
+            rels[name] = {"data": refs if spec.get("multiple") else (refs[0] if refs else None)}
+        elif kind == "link":
+            attrs[name] = {"uri": value if isinstance(value, str) else value.get("uri", "")}
+        elif kind == "longtext":
+            attrs[name] = {"value": value, "format": "basic_html"}
+        elif kind == "daterange":
+            period = value if isinstance(value, dict) else {}
+            attrs[name] = {
+                "value": period.get("start") or None,
+                "end_value": period.get("end") or None,
+            }
+        elif kind == "number":
+            attrs[name] = int(value)
+        elif kind == "bool":
+            attrs[name] = bool(value)
+        else:
+            attrs[name] = value
+    data: dict[str, Any] = {"type": f"node--{bundle}", "attributes": attrs}
+    if rels:
+        data["relationships"] = rels
+    if uuid:
+        data["id"] = uuid
+    return {"data": data}
+
+
+def _manage_item(item: dict[str, Any]) -> dict[str, Any]:
+    attrs = item.get("attributes", {})
+    return {
+        "nid": attrs.get("drupal_internal__nid"),
+        "uuid": item.get("id"),
+        "title": attrs.get("title") or "(sem título)",
+        "status": bool(attrs.get("status")),
+        "changed": attrs.get("changed"),
+    }
+
+
+@app.get("/manage/schemas")
+async def manage_schemas(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Schemas dos setores + o que a sessão pode criar (Drupal decide)."""
+    access = await _create_access_map(session)
+    return {
+        "schemas": {
+            bundle: {
+                "label": schema["label"],
+                "label_singular": schema["label_singular"],
+                "icon": schema["icon"],
+                "fields": schema["fields"],
+            }
+            for bundle, schema in manage_schema.MANAGE_SCHEMAS.items()
+            if bundle in manage_schema.MANAGE_SCHEMAS
+        },
+        "can_create": {
+            bundle: bool(access.get(bundle))
+            for bundle in manage_schema.MANAGE_SCHEMAS
+        },
+    }
+
+
+@app.get("/manage/options/{entity}/{target}")
+async def manage_options(
+    entity: str,
+    target: str,
+    limit: int = 50,
+    search: str | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Opções para campos de referência (dropdowns dinâmicos no app)."""
+    if entity == "node" and target not in manage_schema.MANAGE_SCHEMAS:
+        raise HTTPException(status_code=404, detail="Tipo de referência não suportado.")
+    limit = max(1, min(limit, 100))
+    async with drupal_client(session) as client:
+        if entity == "node":
+            params: dict[str, Any] = {
+                "page[limit]": str(limit),
+                "filter[status]": "1",
+                "sort": "title",
+                f"fields[node--{target}]": "title,drupal_internal__nid",
+            }
+            if search:
+                params["filter[title][operator]"] = "CONTAINS"
+                params["filter[title][value]"] = search
+            response = await client.get(f"/jsonapi/node/{target}", params=params)
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code,
+                                    detail="Consulta de opções recusada.")
+            return {
+                "options": [
+                    {
+                        "id": it.get("attributes", {}).get("drupal_internal__nid"),
+                        "uuid": it.get("id"),
+                        "label": it.get("attributes", {}).get("title") or "",
+                    }
+                    for it in response.json().get("data", [])
+                ]
+            }
+        if entity == "taxonomy_term":
+            params = {
+                "page[limit]": str(limit),
+                "sort": "name",
+                f"fields[taxonomy_term--{target}]": "name,drupal_internal__tid",
+            }
+            if search:
+                params["filter[name][operator]"] = "CONTAINS"
+                params["filter[name][value]"] = search
+            response = await client.get(
+                f"/jsonapi/taxonomy_term/{target}", params=params
+            )
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code,
+                                    detail="Consulta de opções recusada.")
+            return {
+                "options": [
+                    {
+                        "id": it.get("attributes", {}).get("drupal_internal__tid"),
+                        "uuid": it.get("id"),
+                        "label": it.get("attributes", {}).get("name") or "",
+                    }
+                    for it in response.json().get("data", [])
+                ]
+            }
+    raise HTTPException(status_code=404, detail="Tipo de referência não suportado.")
+
+
+@app.get("/manage/{bundle}")
+async def manage_list(
+    bundle: str,
+    status: str | None = None,
+    search: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _manage_schema_or_404(bundle)
+    limit = max(1, min(limit, 50))
+    params: dict[str, Any] = {
+        "page[limit]": str(limit),
+        "page[offset]": str(max(0, offset)),
+        "sort": "-changed",
+    }
+    if status == "published":
+        params["filter[status]"] = "1"
+    elif status == "draft":
+        params["filter[status]"] = "0"
+    if search:
+        params["filter[title][operator]"] = "CONTAINS"
+        params["filter[title][value]"] = search
+    async with drupal_client(session) as client:
+        response = await client.get(f"/jsonapi/node/{bundle}", params=params)
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Consulta ao setor recusada pelo portal.",
+        )
+    data = response.json()
+    items = [_manage_item(it) for it in data.get("data", [])]
+    has_next = bool((data.get("links") or {}).get("next"))
+    return {"items": items, "has_next": has_next, "offset": offset, "limit": limit}
+
+
+@app.get("/manage/{bundle}/{nid}")
+async def manage_detail(
+    bundle: str,
+    nid: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    schema = _manage_schema_or_404(bundle)
+    field_names = ",".join(
+        [f["name"] for f in schema["fields"]] + ["status", "changed"]
+    )
+    async with drupal_client(session) as client:
+        uuid = await _node_uuid(client, bundle, nid)
+        response = await client.get(
+            f"/jsonapi/node/{bundle}/{uuid}",
+            params={f"fields[node--{bundle}]": field_names},
+        )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Registro não acessível.")
+    item = response.json().get("data") or {}
+    result = _manage_item(item)
+    result["values"] = item.get("attributes", {})
+    result["relationships"] = item.get("relationships", {})
+    return result
+
+
+@app.post("/manage/{bundle}")
+async def manage_create(
+    bundle: str,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _manage_schema_or_404(bundle)
+    access = await _create_access_map(session)
+    if not access.get(bundle):
+        raise HTTPException(
+            status_code=403,
+            detail="Esta conta não pode criar itens neste setor.",
+        )
+    async with drupal_client(session) as client:
+        body = await _build_node_payload(bundle, payload.get("values") or {}, client)
+        body["data"]["attributes"]["status"] = bool(payload.get("published", False))
+        response = await client.post(
+            f"/jsonapi/node/{bundle}",
+            json=body,
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 422,
+            detail={
+                "message": "Portal recusou a criação do registro.",
+                "response": response.text[:800],
+            },
+        )
+    data = response.json().get("data") or {}
+    return {"ok": True, **_manage_item(data)}
+
+
+@app.patch("/manage/{bundle}/{nid}")
+async def manage_update(
+    bundle: str,
+    nid: int,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _manage_schema_or_404(bundle)
+    async with drupal_client(session) as client:
+        uuid = await _node_uuid(client, bundle, nid)
+        body = await _build_node_payload(
+            bundle, payload.get("values") or {}, client, uuid=uuid
+        )
+        if "published" in payload:
+            body["data"]["attributes"]["status"] = bool(payload["published"])
+        response = await client.patch(
+            f"/jsonapi/node/{bundle}/{uuid}",
+            json=body,
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 422,
+            detail={
+                "message": "Portal recusou a atualização do registro.",
+                "response": response.text[:800],
+            },
+        )
+    data = response.json().get("data") or {}
+    return {"ok": True, **_manage_item(data)}
+
+
+@app.delete("/manage/{bundle}/{nid}")
+async def manage_delete(
+    bundle: str,
+    nid: int,
+    hard: bool = False,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Despublica por padrão; ?hard=1 remove de fato (Drupal decide a permissão)."""
+    _manage_schema_or_404(bundle)
+    async with drupal_client(session) as client:
+        uuid = await _node_uuid(client, bundle, nid)
+        if not hard:
+            response = await client.patch(
+                f"/jsonapi/node/{bundle}/{uuid}",
+                json={
+                    "data": {
+                        "type": f"node--{bundle}",
+                        "id": uuid,
+                        "attributes": {"status": False},
+                    }
+                },
+                headers=_jsonapi_write_headers(session),
+            )
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Portal recusou despublicar o registro.",
+                )
+            return {"ok": True, "nid": nid, "published": False}
+        response = await client.delete(
+            f"/jsonapi/node/{bundle}/{uuid}",
+            headers={"X-CSRF-Token": session.get("csrf") or ""},
+        )
+    if response.status_code != 204:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Portal recusou excluir o registro.",
+        )
+    return {"ok": True, "nid": nid, "deleted": True}
+
+
+@app.post("/manage/{bundle}/files/{field}")
+async def manage_upload_file(
+    bundle: str,
+    field: str,
+    request: Request,
+    filename: str,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Upload binário para campo file/image — devolve o uuid do arquivo."""
+    _manage_schema_or_404(bundle)
+    spec = manage_schema.spec_for(bundle, field)
+    if spec is None or spec.get("kind") not in ("file", "image"):
+        raise HTTPException(status_code=404, detail="Campo de arquivo não suportado.")
+    content = await request.body()
+    if not content:
+        raise HTTPException(status_code=422, detail="Arquivo vazio.")
+    async with drupal_client(session) as client:
+        response = await client.post(
+            f"/jsonapi/node/{bundle}/{field}",
+            content=content,
+            headers={
+                "X-CSRF-Token": session.get("csrf") or "",
+                "Content-Type": "application/octet-stream",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Accept": "application/vnd.api+json",
+            },
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={"message": "Upload recusado pelo portal.",
+                    "response": response.text[:600]},
+        )
+    data = response.json().get("data") or {}
+    return {
+        "ok": True,
+        "id": data.get("id"),
+        "name": filename,
+        "url": ((data.get("attributes") or {}).get("uri") or {}).get("url"),
     }
 
 

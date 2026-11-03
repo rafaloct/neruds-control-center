@@ -5,6 +5,7 @@ import 'attention_panel.dart';
 import 'drupal_api.dart';
 import 'editorial_page.dart';
 import 'identity_page.dart';
+import 'manage_sectors_page.dart';
 import 'mission_page.dart';
 import 'monitoring_page.dart';
 import 'onboarding_card.dart';
@@ -226,6 +227,11 @@ class _ControlHomeState extends State<ControlHome> {
           icon: Icon(Icons.rss_feed_outlined),
           label: 'Oportunidades',
         ),
+      if (config.feature('manage'))
+        const NavigationDestination(
+          icon: Icon(Icons.dashboard_customize_outlined),
+          label: 'Gestão',
+        ),
       if (session.canAdminUsers)
         const NavigationDestination(
           icon: Icon(Icons.manage_accounts_outlined),
@@ -261,6 +267,10 @@ class _ControlHomeState extends State<ControlHome> {
       if (config.feature('opportunities'))
         _visited.contains(4)
             ? OpportunitiesPage(key: ValueKey('opportunities-$epoch'))
+            : const SizedBox.shrink(),
+      if (config.feature('manage'))
+        _visited.contains(5)
+            ? ManageSectorsPage(key: ValueKey('manage-$epoch'))
             : const SizedBox.shrink(),
       if (session.canAdminUsers) AdminPage(key: ValueKey('admin-$epoch')),
     ];
