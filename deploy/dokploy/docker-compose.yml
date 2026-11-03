@@ -30,7 +30,7 @@ services:
       - traefik.http.services.neruds-api.loadbalancer.server.port=8787
       - traefik.http.routers.neruds-api-http.rule=Host(`api.neruds.org`)
       - traefik.http.routers.neruds-api-http.entrypoints=web
-      - traefik.http.routers.neruds-api-http.middlewares=redirect-to-https
+      - traefik.http.routers.neruds-api-http.middlewares=redirect-to-https@file
 
   web:
     build:
@@ -52,7 +52,7 @@ services:
       - traefik.http.services.neruds-app.loadbalancer.server.port=80
       - traefik.http.routers.neruds-app-http.rule=Host(`app.neruds.org`)
       - traefik.http.routers.neruds-app-http.entrypoints=web
-      - traefik.http.routers.neruds-app-http.middlewares=redirect-to-https
+      - traefik.http.routers.neruds-app-http.middlewares=redirect-to-https@file
 
 networks:
   internal:
