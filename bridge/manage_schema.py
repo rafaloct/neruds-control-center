@@ -99,6 +99,7 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
         "fields": [
             _f("title", "Título", required=True),
             _f("field_coordenador", "Coordenador", required=True),
+            _f("field_resumo", "Resumo", "longtext"),
             _f("field_descricao_projeto", "Descrição", "longtext"),
             _f("field_justificativa", "Justificativa", "longtext"),
             _f("field_objetivos", "Objetivos", "longtext"),
@@ -418,7 +419,7 @@ _FIELD_GROUPS: dict[str, dict[str, str]] = {
         "title": "basics", "field_coordenador": "basics",
         "field_data_inicio": "basics", "field_data_fim": "basics",
         "field_local_execucao": "basics",
-        "field_descricao_projeto": "academic",
+        "field_resumo": "academic", "field_descricao_projeto": "academic",
         "field_justificativa": "academic",
         "field_objetivos": "academic", "field_metodologia": "academic",
         "field_equipe_pesquisa": "team",
