@@ -11,7 +11,9 @@ import manage_schema
 
 
 def _allow_forms(respx_mock, bundles: set[str]):
-    for bundle in main.CONTENT_BUNDLES:
+    for bundle in dict.fromkeys(
+        [*main.CONTENT_BUNDLES, *main.manage_schema.MANAGE_SCHEMAS]
+    ):
         respx_mock.get(f"https://neruds.org/node/add/{bundle}").mock(
             return_value=Response(
                 200 if bundle in bundles else 403,

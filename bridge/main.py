@@ -2290,11 +2290,17 @@ async def _create_access_map(session: dict[str, Any]) -> dict[str, bool]:
     if cached and now - cached[0] < _CREATE_ACCESS_TTL:
         return cached[1]
     access: dict[str, bool] = {}
+    # Probe cobre criáveis clássicos + todos os bundles gerenciáveis —
+    # antes só CONTENT_BUNDLES era testado e schemas gerenciáveis
+    # (ex.: perfil_pesquisador) apareciam como não-criáveis.
+    probed = list(dict.fromkeys(
+        [*CONTENT_BUNDLES, *manage_schema.MANAGE_SCHEMAS]
+    ))
     async with drupal_client(session) as client:
         headers = {"Content-Type": "application/vnd.api+json"}
         if session.get("csrf"):
             headers["X-CSRF-Token"] = session["csrf"]
-        for bundle in CONTENT_BUNDLES:
+        for bundle in probed:
             # /node/add/{bundle} é rota admin — 403 até para quem tem
             # 'create {bundle} content'. POST vazio na JSON:API distingue
             # permissão: 403 = sem create; 400/422 = pode criar mas a

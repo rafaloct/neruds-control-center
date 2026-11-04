@@ -15,7 +15,9 @@ _FORM_HTML = (
 
 
 def _mock_bundle_forms(respx_mock, allowed: dict[str, int]):
-    for bundle in main.CONTENT_BUNDLES:
+    for bundle in dict.fromkeys(
+        [*main.CONTENT_BUNDLES, *main.manage_schema.MANAGE_SCHEMAS]
+    ):
         status = allowed.get(bundle, 403)
         respx_mock.get(f"https://neruds.org/node/add/{bundle}").mock(
             return_value=Response(status, text=_FORM_HTML if status == 200 else "")
