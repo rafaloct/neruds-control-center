@@ -5,6 +5,16 @@ import 'manage_form_page.dart';
 import 'manage_models.dart';
 import 'manage_service.dart';
 
+/// Resolve o tipo real do nó no portal — evita perguntar o setor ao
+/// operador quando a origem já conhece o nid mas não o bundle.
+Future<String?> _resolveNodeType(int nid) async {
+  try {
+    return await ManageService.nodeType(nid);
+  } catch (_) {
+    return null;
+  }
+}
+
 /// Abre a edição nativa de uma ficha do portal — elimina a necessidade
 /// de url_launcher para o Drupal. Quando [bundleName] não resolve a um
 /// schema conhecido, pergunta o setor ao usuário.
@@ -30,6 +40,13 @@ Future<bool?> openManageEditor(
   if (!context.mounted) return null;
   var bundle =
       schemas.where((s) => s.name == bundleName).firstOrNull;
+  // Tenta descobrir sozinho via o tipo real do nó antes de perguntar.
+  bundle ??= await _resolveNodeType(nid).then(
+    (type) => type == null
+        ? null
+        : schemas.where((s) => s.name == type).firstOrNull,
+  );
+  if (!context.mounted) return null;
   bundle ??= await showModalBottomSheet<ManageBundle>(
     context: context,
     showDragHandle: true,
@@ -84,6 +101,12 @@ Future<void> openManageDetail(
   if (!context.mounted) return;
   var bundle =
       schemas.where((s) => s.name == bundleName).firstOrNull;
+  bundle ??= await _resolveNodeType(nid).then(
+    (type) => type == null
+        ? null
+        : schemas.where((s) => s.name == type).firstOrNull,
+  );
+  if (!context.mounted) return;
   bundle ??= await showModalBottomSheet<ManageBundle>(
     context: context,
     showDragHandle: true,

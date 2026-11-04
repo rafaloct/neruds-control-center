@@ -161,6 +161,17 @@ class ManageService {
     return '${data['result'] ?? data['text'] ?? data['content'] ?? ''}';
   }
 
+  /// Tipo real do nó no portal — resolve bundle sem perguntar o setor.
+  static Future<String?> nodeType(int nid) async {
+    final response = await bridge.get(
+      AppConfig.endpoint('/portal/nodes/$nid/tipo'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) return null;
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+    return data['type']?.toString();
+  }
+
   // --- Menus do portal ------------------------------------------------------
 
   static Future<List<Map<String, String>>> menus() async {

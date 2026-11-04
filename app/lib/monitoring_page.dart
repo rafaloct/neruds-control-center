@@ -40,6 +40,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
   static const _createRoles = <String, Set<String>>{
     'noticia': {'extensionista', 'pesquisador', 'content_editor', 'administrator'},
     'relatorio': {'extensionista', 'pesquisador', 'content_editor', 'administrator'},
+    'perfil_pesquisador': {'extensionista', 'administrator'},
     'page': {'content_editor', 'administrator'},
     'projeto_pesquisa_extensao': {'administrator'},
     'acao_extensionista': {'administrator'},
@@ -50,6 +51,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
   static const _fichaLabels = <String, String>{
     'noticia': 'Notícia',
     'relatorio': 'Relatório',
+    'perfil_pesquisador': 'Pesquisador(a)',
     'page': 'Página',
     'projeto_pesquisa_extensao': 'Projeto de pesquisa e extensão',
     'acao_extensionista': 'Ação extensionista',

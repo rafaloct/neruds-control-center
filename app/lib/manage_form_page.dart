@@ -34,6 +34,7 @@ class _ManageFormPageState extends State<ManageFormPage> {
   final Map<String, DateTime?> _dates = {};
   final Map<String, List<ManageOption>> _refSelections = {};
   final Map<String, List<String>> _fileUuids = {};
+  List<ManageBundle> _allBundles = const [];
   final Map<String, List<ManageOption>> _refOptions = {};
   final Map<String, bool> _optionsLoading = {};
 
@@ -47,6 +48,10 @@ class _ManageFormPageState extends State<ManageFormPage> {
   @override
   void initState() {
     super.initState();
+    ManageService.schemas().then((b) {
+      if (mounted) setState(() => _allBundles = b);
+    }).ignore();
+
     _initFields();
     if (editing) _loadDetail();
   }
@@ -709,14 +714,70 @@ class _ManageFormPageState extends State<ManageFormPage> {
         ),
       'reference' => _referenceField(f),
       'image' || 'file' => _fileField(f),
-      _ => TextFormField(
-          controller: _controllers[f.name],
-          validator: (v) => f.required && (v?.trim().isEmpty ?? true)
-              ? 'Informe ${f.label}.'
-              : null,
-          decoration: _decoration(f),
-        ),
+      _ => _personAwareTextField(f),
     };
+  }
+
+  /// Campos de pessoa (autor, coordenador, equipe, participantes) são
+  /// texto no Drupal — a ação lateral preenche o nome a partir do
+  /// cadastro de pesquisadores ou abre "Cadastrar novo" quando a conta
+  /// pode criar perfis. Mantém o contrato: o campo continua texto.
+  bool _isPersonField(ManageField f) {
+    const patterns = [
+      'autor', 'coordenador', 'pesquisador',
+      'participante', 'equipe', 'responsavel',
+    ];
+    return patterns.any((p) => f.name.contains(p));
+  }
+
+  Widget _personAwareTextField(ManageField f) {
+    return TextFormField(
+      controller: _controllers[f.name],
+      validator: (v) => f.required && (v?.trim().isEmpty ?? true)
+          ? 'Informe ${f.label}.'
+          : null,
+      decoration: _isPersonField(f)
+          ? _decoration(f).copyWith(
+              suffixIcon: IconButton(
+                tooltip: 'Escolher pesquisador',
+                icon: const Icon(Icons.person_search_outlined),
+                onPressed: () => _pickPerson(f),
+              ),
+            )
+          : _decoration(f),
+    );
+  }
+
+  Future<void> _pickPerson(ManageField f) async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => _PersonPickerSheet(
+        canCreate: _allBundles
+                .where((b) => b.name == 'perfil_pesquisador')
+                .firstOrNull
+                ?.canCreate ==
+            true,
+        onCreateNew: () => Navigator.of(context).push<bool>(
+          MaterialPageRoute(
+            builder: (_) => ManageFormPage(
+              bundle: _allBundles
+                  .where((b) => b.name == 'perfil_pesquisador')
+                  .first,
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!mounted || picked == null || picked.isEmpty) return;
+    final ctrl = _controllers[f.name];
+    if (ctrl == null) return;
+    final current = ctrl.text.trim();
+    setState(() {
+      ctrl.text =
+          current.isEmpty ? picked : '$current; $picked';
+    });
   }
 
   InputDecoration _decoration(ManageField f, {String? label, String? hint}) =>
@@ -770,29 +831,83 @@ class _ManageFormPageState extends State<ManageFormPage> {
                   setState(() => selected.add(opt));
                 },
               ),
+              _createOptionButton(f),
             ],
           );
         }
-        return DropdownButtonFormField<int>(
-          decoration: _decoration(f),
-          initialValue: selected.isEmpty ? null : selected.first.id,
-          hint: Text(loading ? 'Carregando opções…' : 'Selecione'),
-          validator: (v) =>
-              f.required && v == null ? 'Informe ${f.label}.' : null,
-          items: [
-            for (final opt in options)
-              DropdownMenuItem(
-                  value: opt.id, child: Text(opt.label)),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            DropdownButtonFormField<int>(
+              decoration: _decoration(f),
+              initialValue: selected.isEmpty ? null : selected.first.id,
+              hint: Text(loading ? 'Carregando opções…' : 'Selecione'),
+              validator: (v) =>
+                  f.required && v == null ? 'Informe ${f.label}.' : null,
+              items: [
+                for (final opt in options)
+                  DropdownMenuItem(
+                      value: opt.id, child: Text(opt.label)),
+              ],
+              onChanged: (id) {
+                final opt = options.firstWhere((o) => o.id == id,
+                    orElse: () =>
+                        const ManageOption(id: 0, uuid: '', label: ''));
+                setState(() =>
+                    _refSelections[f.name] = opt.id == 0 ? [] : [opt]);
+              },
+            ),
+            _createOptionButton(f),
           ],
-          onChanged: (id) {
-            final opt = options.firstWhere((o) => o.id == id,
-                orElse: () => const ManageOption(id: 0, uuid: '', label: ''));
-            setState(() =>
-                _refSelections[f.name] = opt.id == 0 ? [] : [opt]);
-          },
         );
       },
     );
+  }
+
+  /// "Cadastrar novo" — cria o item-alvo (ex.: pesquisador) sem sair do
+  /// fluxo quando a conta pode criar aquele bundle; outros nós seguem
+  /// só visualização/edição (permissões do portal).
+  Widget _createOptionButton(ManageField f) {
+    final target = f.target;
+    if (target == null || !target.startsWith('node:')) {
+      return const SizedBox.shrink();
+    }
+    final bundleName = target.substring(5);
+    final bundle = _allBundles
+        .where((b) => b.name == bundleName)
+        .firstOrNull;
+    if (bundle == null || !bundle.canCreate) {
+      return const SizedBox.shrink();
+    }
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        icon: const Icon(Icons.add, size: 16),
+        label: Text('Cadastrar novo(a) ${bundle.labelSingular}'),
+        onPressed: () => _createTargetItem(f, bundle),
+      ),
+    );
+  }
+
+  Future<void> _createTargetItem(ManageField f, ManageBundle bundle) async {
+    final created = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ManageFormPage(bundle: bundle),
+      ),
+    );
+    if (created != true || !mounted) return;
+    _refOptions.remove(f.name);
+    final options = await _loadOptions(f, force: true);
+    if (!mounted || options.isEmpty) return;
+    // Seleciona o item recém-criado — vem primeiro por -changed.
+    setState(() {
+      final sel = _refSelections[f.name] ??= [];
+      if (f.multiple) {
+        sel.add(options.first);
+      } else {
+        _refSelections[f.name] = [options.first];
+      }
+    });
   }
 
   Future<void> _pickFromLibrary(ManageField field) async {
@@ -950,6 +1065,160 @@ class _MediaLibraryDialogState extends State<_MediaLibraryDialog> {
           child: const Text('Cancelar'),
         ),
       ],
+    );
+  }
+}
+
+
+/// Seletor de pesquisador — lista os perfis cadastrados para preencher
+/// campos de texto (autor/coordenador/equipe) sem digitar o nome. A
+/// opção "Cadastrar novo" abre o formulário do perfil quando a conta
+/// tem permissão de criação; bundles sem criação só selecionam.
+class _PersonPickerSheet extends StatefulWidget {
+  const _PersonPickerSheet({
+    required this.canCreate,
+    required this.onCreateNew,
+  });
+
+  final bool canCreate;
+  final Future<bool?> Function() onCreateNew;
+
+  @override
+  State<_PersonPickerSheet> createState() => _PersonPickerSheetState();
+}
+
+class _PersonPickerSheetState extends State<_PersonPickerSheet> {
+  final _search = TextEditingController();
+  List<ManageOption> _options = const [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+    _search.addListener(() => setState(() {}));
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final options =
+          await ManageService.options('node:perfil_pesquisador');
+      if (!mounted) return;
+      setState(() {
+        _options = options;
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'Não foi possível consultar os pesquisadores.';
+      });
+    }
+  }
+
+  List<ManageOption> get _filtered {
+    final q = _search.text.trim().toLowerCase();
+    if (q.isEmpty) return _options;
+    return _options
+        .where((o) => o.label.toLowerCase().contains(q))
+        .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: SizedBox(
+          height: 420,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Text(
+                  'Escolher pesquisador',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20),
+                child: TextField(
+                  controller: _search,
+                  decoration: const InputDecoration(
+                    prefixIcon: Icon(Icons.search),
+                    hintText: 'Buscar pelo nome',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: _loading
+                    ? const Center(
+                        child: CircularProgressIndicator(),
+                      )
+                    : _error != null
+                        ? Center(child: Text(_error!))
+                        : _filtered.isEmpty
+                            ? const Center(
+                                child: Text(
+                                  'Nenhum pesquisador encontrado.',
+                                ),
+                              )
+                            : ListView(
+                                children: [
+                                  for (final o in _filtered)
+                                    ListTile(
+                                      leading: const Icon(
+                                        Icons.person_outline,
+                                      ),
+                                      title: Text(o.label),
+                                      onTap: () =>
+                                          Navigator.pop(
+                                              context, o.label),
+                                    ),
+                                ],
+                              ),
+              ),
+              if (widget.canCreate)
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      icon: const Icon(Icons.add, size: 18),
+                      label: const Text(
+                        'Cadastrar novo pesquisador',
+                      ),
+                      onPressed: () async {
+                        final created =
+                            await widget.onCreateNew();
+                        if (!context.mounted) return;
+                        if (created == true) {
+                          // Recarrega: o novo perfil vem primeiro
+                          // na lista por -changed.
+                          setState(() => _loading = true);
+                          await _load();
+                        }
+                      },
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

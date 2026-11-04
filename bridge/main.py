@@ -1759,6 +1759,40 @@ _SHORTLINK_ALT = re.compile(
 )
 
 
+@app.get("/portal/nodes/{nid}/tipo")
+async def portal_node_type(
+    nid: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Resolve o tipo real do nó — o app usa para abrir edição/ficha
+    diretamente sem perguntar o setor ao operador."""
+    async with drupal_client(session) as client:
+        for bundle in content_map.MONITORED_TYPES:
+            response = await client.get(
+                f"/jsonapi/node/{bundle}",
+                params={
+                    "filter[drupal_internal__nid]": nid,
+                    "page[limit]": "1",
+                },
+            )
+            if response.status_code == 200 and response.json().get("data"):
+                return {"nid": nid, "type": bundle}
+        # bundles gerenciáveis que a monitoração não cobre
+        for bundle in manage_schema.MANAGE_SCHEMAS:
+            if bundle in content_map.MONITORED_TYPES:
+                continue
+            response = await client.get(
+                f"/jsonapi/node/{bundle}",
+                params={
+                    "filter[drupal_internal__nid]": nid,
+                    "page[limit]": "1",
+                },
+            )
+            if response.status_code == 200 and response.json().get("data"):
+                return {"nid": nid, "type": bundle}
+    raise HTTPException(status_code=404, detail="Registro não encontrado.")
+
+
 @app.get("/portal/node-lookup")
 async def portal_node_lookup(
     url: str = Query(min_length=1),
