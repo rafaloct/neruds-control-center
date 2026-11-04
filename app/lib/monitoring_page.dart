@@ -67,12 +67,15 @@ class _MonitoringPageState extends State<MonitoringPage> {
   @override
   void initState() {
     super.initState();
+    _search.addListener(
+        () => setState(() => _query = _search.text.trim().toLowerCase()));
     AppSession.instance.addListener(_sessionChanged);
     _reload();
   }
 
   @override
   void dispose() {
+    _search.dispose();
     AppSession.instance.removeListener(_sessionChanged);
     super.dispose();
   }
@@ -349,7 +352,10 @@ class _MonitoringPageState extends State<MonitoringPage> {
       for (final p in board.projects) ...p.ods,
     };
 
+    bool matches(String title) =>
+        _query.isEmpty || title.toLowerCase().contains(_query);
     final projects = board.projects.where((p) {
+      if (!matches(p.title)) return false;
       if (_statusFilter != null && !p.status.contains(_statusFilter)) {
         return false;
       }
@@ -362,6 +368,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
       return true;
     }).toList();
     final actions = board.actions.where((a) {
+      if (!matches(a.title)) return false;
       if (_kindFilter != null && !a.kind.contains(_kindFilter)) return false;
       if (_municipalityFilter != null &&
           !a.municipality.contains(_municipalityFilter)) {
@@ -378,6 +385,20 @@ class _MonitoringPageState extends State<MonitoringPage> {
           PortalLinkButton(label: 'Todos os projetos', url: board.listingUrl),
           PortalLinkButton(label: 'Mapa de projetos', url: board.mapUrl),
         ]),
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: SearchBar(
+            controller: _search,
+            hintText: 'Buscar por título',
+            leading: const Icon(Icons.search),
+            elevation: const WidgetStatePropertyAll(0),
+            side: WidgetStatePropertyAll(
+              BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+            ),
+          ),
+        ),
         if (statusTerms.isNotEmpty ||
             kindTerms.isNotEmpty ||
             municipalityTerms.isNotEmpty ||
@@ -432,6 +453,26 @@ class _MonitoringPageState extends State<MonitoringPage> {
                     options: odsTerms.toList()..sort(),
                     value: _odsFilter,
                     onChanged: (v) => setState(() => _odsFilter = v),
+                  ),
+                if (_statusFilter != null ||
+                    _kindFilter != null ||
+                    _municipalityFilter != null ||
+                    _eixoFilter != null ||
+                    _linhaFilter != null ||
+                    _odsFilter != null ||
+                    _query.isNotEmpty)
+                  ActionChip(
+                    avatar: const Icon(Icons.filter_alt_off, size: 16),
+                    label: const Text('Limpar filtros'),
+                    onPressed: () => setState(() {
+                      _statusFilter = null;
+                      _kindFilter = null;
+                      _municipalityFilter = null;
+                      _eixoFilter = null;
+                      _linhaFilter = null;
+                      _odsFilter = null;
+                      _search.clear();
+                    }),
                   ),
               ],
             ),
@@ -1111,6 +1152,11 @@ class _MonitoringPageState extends State<MonitoringPage> {
   /// Filtro de criticidade por faixa de score — os KPIs no topo
   /// filtram a lista para guiar a acao do operador.
   String? _scoreFilter; // 'ready' | 'attention' | 'critical'
+
+  /// Busca livre por título — filtra projetos, ações e eventos na
+  /// lista local (sem nova chamada ao portal).
+  final _search = TextEditingController();
+  String _query = '';
 
   /// Botão "Editar" nativo — abre o formulário do app em vez do portal.
   Widget _editInAppButton({required int? nid, required String? bundleName}) {
