@@ -115,3 +115,23 @@ eventos etc.) só permitem ver e editar.
   publicada (badge) e aguarde a página pública ser reconstruída.
 - Em caso de dúvida sobre permissões, o app já esconde o que a conta
   não pode fazer — o que aparece, pode ser feito.
+
+
+---
+
+## 9. Resolvendo erros na hora da demonstração
+
+Erros comuns durante uma apresentação ou uso ao vivo, e o que fazer:
+
+| Sintoma | Causa | Correção |
+|---|---|---|
+| Botão "+ Novo" não aparece | A conta não pode criar aquele tipo | Abra um item existente e edite — o portal só libera criação nos tipos permitidos (notícia, relatório, pesquisador) |
+| "Qual é o setor desta ficha?" | O app ainda não conhece o tipo daquele registro | Escolha o setor uma vez — a partir daí ele resolve sozinho |
+| Lista de pesquisadores vazia no seletor | Sessão expirada ou sem permissão | Saia e entre de novo; se persistir, o papel no portal precisa de "access content" |
+| "✨ Sugerir" não responde | Limite de chamadas de IA ou campo não é texto | Aguarde ~1 min e tente de novo; só campos de texto/rico aceitam sugestão |
+| Campo de referência mostra só opções antigas | Item criado por outra conta depois do carregamento | Toque fora do campo e reabra — a lista recarrega |
+| Mudança salva não aparece no site | A ficha continua rascunho ou o portal está reconstruindo a página | Confira o badge Publicado/Rascunho; se rascunho, publique; se publicado, aguarde ~1 min |
+| "O portal recusou o salvamento" | Permissão ou validação do Drupal | Tente pelo formulário completo — a mensagem do Drupal explica o motivo |
+| Validação não deixa avançar | Campo obrigatório vazio ou inválido | Os campos com borda vermelha mostram o que falta — preencha e avance |
+| Datepicker não confirma | Clique fora fechou sem OK | Reabra e confirme com o botão "OK" do calendário |
+| Tela cinza ou travada | Falha temporária de rede no portal | Atualize a página (F5) — o trabalho salvo não se perde |
