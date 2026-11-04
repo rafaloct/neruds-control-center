@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app_config.dart';
+import 'bulk_suggest_sheet.dart';
 import 'app_session.dart';
 import 'manage_navigation.dart';
 import 'portal_read.dart';
@@ -494,7 +495,10 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         nid: p.nid,
                         bundleName: 'projeto_pesquisa_extensao',
                       ),
-                      if (gaps[p.nid] != null) _gapTaskButton(gaps[p.nid]!),
+                      if (gaps[p.nid] != null) ...[
+                        _suggestButton(gaps[p.nid]!),
+                        _gapTaskButton(gaps[p.nid]!),
+                      ],
                     ]),
                   ],
                 ),
@@ -532,7 +536,10 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         nid: a.nid,
                         bundleName: 'acao_extensionista',
                       ),
-                      if (gaps[a.nid] != null) _gapTaskButton(gaps[a.nid]!),
+                      if (gaps[a.nid] != null) ...[
+                        _suggestButton(gaps[a.nid]!),
+                        _gapTaskButton(gaps[a.nid]!),
+                      ],
                     ]),
                   ],
                 ),
@@ -651,6 +658,29 @@ class _MonitoringPageState extends State<MonitoringPage> {
           ),
         ],
       ),
+    );
+  }
+
+  /// Sugestão em massa com IA — top-3 lacunas críticas, revisão em
+  /// um clique, aplicação parcial. Reutiliza /ai/assist draft.
+  Widget _suggestButton(GapNode node) {
+    if (node.nid == null) return const SizedBox.shrink();
+    return TextButton.icon(
+      icon: const Icon(Icons.auto_awesome, size: 16),
+      label: const Text('Sugerir'),
+      onPressed: () async {
+        final applied = await showModalBottomSheet<bool>(
+          context: context,
+          isScrollControlled: true,
+          useSafeArea: true,
+          showDragHandle: true,
+          builder: (context) => BulkSuggestSheet(
+            node: node,
+            fieldWeight: _fieldWeight,
+          ),
+        );
+        if (applied == true && mounted) _reload();
+      },
     );
   }
 
@@ -944,7 +974,10 @@ class _MonitoringPageState extends State<MonitoringPage> {
               nid: event.nid,
               bundleName: 'evento_cientifico',
             ),
-            if (gaps[event.nid] != null) _gapTaskButton(gaps[event.nid]!),
+            if (gaps[event.nid] != null) ...[
+              _suggestButton(gaps[event.nid]!),
+              _gapTaskButton(gaps[event.nid]!),
+            ],
           ]),
         ],
       ),
@@ -1202,6 +1235,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                       nid: s.node.nid,
                       bundleName: s.node.type,
                     ),
+                    _suggestButton(s.node),
                     _gapTaskButton(s.node),
                   ]),
                 ],
