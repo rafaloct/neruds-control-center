@@ -19,6 +19,15 @@ RUN flutter build web --release --no-wasm-dry-run --no-tree-shake-icons \
       --dart-define=NERUDS_BRIDGE_URL=${NERUDS_BRIDGE_URL} \
       --dart-define=NERUDS_PORTAL_URL=${NERUDS_PORTAL_URL}
 
+# Versiona a fonte MaterialIcons no nome: /assets é cacheado como
+# immutable na CDN/browsers — sem hash, uma fonte nova com o mesmo
+# nome continuaria servindo o subset antigo por até 30d.
+RUN cd build/web/assets/fonts \
+      && HASH=$(md5sum MaterialIcons-Regular.otf | cut -c1-8) \
+      && mv MaterialIcons-Regular.otf MaterialIcons-${HASH}.otf \
+      && sed -i "s|fonts/MaterialIcons-Regular.otf|fonts/MaterialIcons-${HASH}.otf|" \
+         ../FontManifest.json
+
 FROM nginx:1.27-alpine
 COPY deploy/dokploy/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/build/web /usr/share/nginx/html
