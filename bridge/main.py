@@ -4703,9 +4703,11 @@ async def menus_list(
     return {
         "menus": [
             {
-                "id": (it.get("attributes") or {}).get("id"),
+                "id": (it.get("attributes") or {}).get(
+                    "drupal_internal__id"),
                 "label": (it.get("attributes") or {}).get("label")
-                or (it.get("attributes") or {}).get("id"),
+                or (it.get("attributes") or {}).get(
+                    "drupal_internal__id"),
             }
             for it in response.json().get("data", [])
         ]
