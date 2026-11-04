@@ -182,7 +182,16 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
             _f("title", "Título da página", required=True,
                hint="Nome interno de referência"),
             _f("field_titulo_publicacao", "Título da publicação", required=True),
-            _f("field_autores", "Autores", required=True),
+            _f(
+                "field_pesquisadores_autores",
+                "Autores do núcleo",
+                "reference",
+                target="node:perfil_pesquisador",
+                multiple=True,
+                hint="Pesquisadores cadastrados — escolha na lista",
+            ),
+            _f("field_autores", "Autores externos / demais autores",
+               hint="Quem não é pesquisador do NERUDS — escreva o nome"),
             _f("field_ano_publicacao", "Ano de publicação", "number", required=True),
             _f("field_link_publicacao", "Link da publicação", "link", required=True),
             _f("field_doi", "DOI"),
@@ -278,7 +287,15 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
             _f("title", "Título", required=True),
             _f("field_data_reuniao", "Data e hora", "date"),
             _f("field_pauta", "Pauta", "longtext"),
-            _f("field_participantes", "Participantes"),
+            _f(
+                "field_participantes_reuniao",
+                "Participantes",
+                "reference",
+                target="node:perfil_pesquisador",
+                multiple=True,
+            ),
+            _f("field_participantes", "Participantes externos",
+               hint="Quem não é pesquisador do NERUDS — escreva o nome"),
         ],
     },
     "page": {
@@ -441,6 +458,7 @@ _FIELD_GROUPS: dict[str, dict[str, str]] = {
     "publicacao_cientifica": {
         "title": "basics",
         "field_titulo_publicacao": "basics",
+        "field_pesquisadores_autores": "academic",
         "field_autores": "academic",
         "field_ano_publicacao": "academic",
         "field_link_publicacao": "academic", "field_doi": "academic",
@@ -472,7 +490,8 @@ _FIELD_GROUPS: dict[str, dict[str, str]] = {
     },
     "reuniao": {
         "title": "basics", "field_data_reuniao": "basics",
-        "field_pauta": "details", "field_participantes": "details",
+        "field_pauta": "details", "field_participantes_reuniao": "details",
+        "field_participantes": "details",
     },
     "page": {
         "title": "content", "field_content": "content",

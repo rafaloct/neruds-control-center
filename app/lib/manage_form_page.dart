@@ -1178,6 +1178,24 @@ class _PersonPickerSheetState extends State<_PersonPickerSheet> {
                               )
                             : ListView(
                                 children: [
+                                  if (_search.text
+                                      .trim()
+                                      .isNotEmpty)
+                                    ListTile(
+                                      leading: const Icon(
+                                        Icons.person_add_alt_outlined,
+                                      ),
+                                      title: Text(
+                                        'Usar "${_search.text.trim()}"',
+                                      ),
+                                      subtitle: const Text(
+                                        'Autor externo — sem cadastro',
+                                      ),
+                                      onTap: () => Navigator.pop(
+                                        context,
+                                        _search.text.trim(),
+                                      ),
+                                    ),
                                   for (final o in _filtered)
                                     ListTile(
                                       leading: const Icon(
