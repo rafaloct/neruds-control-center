@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'app_session.dart';
 import 'home_preview_page.dart';
 import 'manage_list_page.dart';
+import 'manage_menus_page.dart';
 import 'manage_moderation_page.dart';
 import 'manage_models.dart';
 import 'manage_service.dart';
@@ -153,6 +154,16 @@ class _ManageSectorsPageState extends State<ManageSectorsPage> {
                     ),
                   ),
                 ),
+              _ActionCard(
+                icon: Icons.menu_outlined,
+                title: 'Menus e navegação',
+                subtitle: 'Itens de menu do portal',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const ManageMenusPage(),
+                  ),
+                ),
+              ),
               _ActionCard(
                 icon: Icons.category_outlined,
                 title: 'Categorias e Tags',

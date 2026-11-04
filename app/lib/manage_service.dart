@@ -161,6 +161,79 @@ class ManageService {
     return '${data['result'] ?? data['text'] ?? data['content'] ?? ''}';
   }
 
+  // --- Menus do portal ------------------------------------------------------
+
+  static Future<List<Map<String, String>>> menus() async {
+    final response = await bridge.get(
+      AppConfig.endpoint('/menus'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('menus ${response.statusCode}');
+    }
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+    return [
+      for (final m in (data['menus'] as List?) ?? const [])
+        {
+          'id': '${(m as Map)['id']}',
+          'label': '${m['label']}',
+        },
+    ];
+  }
+
+  static Future<List<Map<String, dynamic>>> menuItems(String menu) async {
+    final response = await bridge.get(
+      AppConfig.endpoint('/menus/$menu'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200) {
+      throw Exception('menuItems ${response.statusCode}');
+    }
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+    return [
+      for (final i in (data['items'] as List?) ?? const [])
+        Map<String, dynamic>.from(i as Map),
+    ];
+  }
+
+  static Future<void> updateMenuItem(
+    String uuid,
+    Map<String, dynamic> patch,
+  ) async {
+    final response = await bridge.patch(
+      AppConfig.endpoint('/menus/items/$uuid'),
+      headers: AppSession.instance.authHeaders,
+      body: jsonEncode(patch),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('updateMenuItem ${response.statusCode}');
+    }
+  }
+
+  static Future<void> createMenuItem(
+    String menu,
+    Map<String, dynamic> item,
+  ) async {
+    final response = await bridge.post(
+      AppConfig.endpoint('/menus/$menu/items'),
+      headers: AppSession.instance.authHeaders,
+      body: jsonEncode(item),
+    );
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      throw Exception('createMenuItem ${response.statusCode}');
+    }
+  }
+
+  static Future<void> deleteMenuItem(String uuid) async {
+    final response = await bridge.delete(
+      AppConfig.endpoint('/menus/items/$uuid'),
+      headers: AppSession.instance.authHeaders,
+    );
+    if (response.statusCode != 200 && response.statusCode != 204) {
+      throw Exception('deleteMenuItem ${response.statusCode}');
+    }
+  }
+
   static Future<void> unpublish(String bundle, int nid) async {
     final response = await bridge.delete(
       AppConfig.endpoint('/manage/$bundle/$nid'),

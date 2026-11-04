@@ -4667,3 +4667,156 @@ def mission_work_item_update(
             status_code=404,
             detail="Atividade complementar não encontrada.",
         )
+
+
+# ---------------------------------------------------------------------------
+# Menus do portal — navegação gerenciável no app.
+# Requer a permissão Drupal "administer menu" (concedida ao papel
+# extensionista em 2026-11 — se um novo operador não enxergar os menus,
+# a permissão está faltando na sua conta/papel).
+# ---------------------------------------------------------------------------
+
+
+def _menu_link_item(item: dict[str, Any]) -> dict[str, Any]:
+    a = item.get("attributes") or {}
+    link = a.get("link") or {}
+    return {
+        "uuid": item.get("id"),
+        "menu": a.get("menu_name"),
+        "title": a.get("title") or "",
+        "uri": link.get("uri") or "",
+        "enabled": bool(a.get("enabled", True)),
+        "expanded": bool(a.get("expanded", False)),
+        "weight": a.get("weight") or 0,
+    }
+
+
+@app.get("/menus")
+async def menus_list(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        response = await client.get("/jsonapi/menu/menu")
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta de menus recusada.")
+    return {
+        "menus": [
+            {
+                "id": (it.get("attributes") or {}).get("id"),
+                "label": (it.get("attributes") or {}).get("label")
+                or (it.get("attributes") or {}).get("id"),
+            }
+            for it in response.json().get("data", [])
+        ]
+    }
+
+
+@app.get("/menus/{menu}")
+async def menu_items(
+    menu: str,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        response = await client.get(
+            "/jsonapi/menu_link_content/menu_link_content",
+            params={
+                "filter[menu_name]": menu,
+                "sort": "weight",
+                "page[limit]": "100",
+            },
+        )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta de itens recusada.")
+    return {"items": [_menu_link_item(it) for it in response.json().get("data", [])]}
+
+
+def _menu_link_body(payload: dict[str, Any], item: dict[str, Any] | None) -> dict[str, Any]:
+    a = (item or {}).get("attributes") or {}
+    attrs: dict[str, Any] = {
+        "title": payload.get("title", a.get("title")),
+        "enabled": bool(payload.get("enabled", a.get("enabled", True))),
+        "expanded": bool(payload.get("expanded", a.get("expanded", False))),
+        "weight": payload.get("weight", a.get("weight", 0)),
+        "link": {"uri": payload.get("uri", (a.get("link") or {}).get("uri"))},
+    }
+    if a.get("menu_name"):
+        attrs["menu_name"] = a["menu_name"]
+    return attrs
+
+
+@app.patch("/menus/items/{uuid}")
+async def menu_item_update(
+    uuid: str,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        current = await client.get(
+            f"/jsonapi/menu_link_content/menu_link_content/{uuid}")
+        if current.status_code != 200:
+            raise HTTPException(status_code=current.status_code,
+                                detail="Item de menu não acessível.")
+        item = current.json().get("data") or {}
+        body = {
+            "data": {
+                "type": "menu_link_content--menu_link_content",
+                "id": uuid,
+                "attributes": _menu_link_body(payload, item),
+            }
+        }
+        response = await client.patch(
+            f"/jsonapi/menu_link_content/menu_link_content/{uuid}",
+            json=body,
+            headers={"Content-Type": "application/vnd.api+json"},
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"Portal recusou a atualização do item de menu.",
+        )
+    return {"ok": True, "item": _menu_link_item(response.json().get("data") or {})}
+
+
+@app.post("/menus/{menu}/items")
+async def menu_item_create(
+    menu: str,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    attrs = _menu_link_body(payload, {"attributes": {"menu_name": menu}})
+    body = {
+        "data": {
+            "type": "menu_link_content--menu_link_content",
+            "attributes": attrs,
+        }
+    }
+    async with drupal_client(session) as client:
+        response = await client.post(
+            "/jsonapi/menu_link_content/menu_link_content",
+            json=body,
+            headers={"Content-Type": "application/vnd.api+json"},
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Portal recusou a criação do item de menu.",
+        )
+    return {"ok": True, "item": _menu_link_item(response.json().get("data") or {})}
+
+
+@app.delete("/menus/items/{uuid}")
+async def menu_item_delete(
+    uuid: str,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        response = await client.delete(
+            f"/jsonapi/menu_link_content/menu_link_content/{uuid}")
+    if response.status_code not in (200, 204):
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Portal recusou a remoção do item de menu.",
+        )
+    return {"ok": True}
