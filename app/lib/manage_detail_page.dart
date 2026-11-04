@@ -214,6 +214,8 @@ class _ManageDetailPageState extends State<ManageDetailPage> {
           field: f,
           rawValue: values[f.name],
           relUuids: _uuids(rels[f.name]),
+          itemTitle: '${_detail['title'] ?? ''}',
+          bundleLabel: widget.bundle.labelSingular,
           onSave: (serialized) => ManageService.save(
             widget.bundle.name,
             nid: widget.nid,
@@ -511,12 +513,16 @@ class _QuickEditSheet extends StatefulWidget {
     required this.rawValue,
     required this.relUuids,
     required this.onSave,
+    required this.itemTitle,
+    required this.bundleLabel,
   });
 
   final ManageField field;
   final dynamic rawValue;
   final List<String> relUuids;
   final Future<void> Function(dynamic serialized) onSave;
+  final String itemTitle;
+  final String bundleLabel;
 
   @override
   State<_QuickEditSheet> createState() => _QuickEditSheetState();
@@ -532,8 +538,45 @@ class _QuickEditSheetState extends State<_QuickEditSheet> {
   List<ManageOption> _options = const [];
   Set<String> _refSelected = {};
   bool _saving = false;
+  bool _suggesting = false;
   String? _error;
   bool _optionsLoading = false;
+
+  /// "Sugerir" — pede rascunho ao /ai/assist para o campo vazio.
+  /// Só para campos de texto (curto e longo); datas/refs não se sugerem.
+  bool get _canSuggest =>
+      {'text', 'longtext'}.contains(widget.field.kind);
+
+  Future<void> _suggest() async {
+    setState(() {
+      _suggesting = true;
+      _error = null;
+    });
+    try {
+      final result = await ManageService.aiAssist(
+        'draft',
+        text: 'Campo "${widget.field.label}" precisa de rascunho.',
+        context: 'Tipo: ${widget.bundleLabel}. Título do item: '
+            '${widget.itemTitle}.',
+      );
+      if (!mounted) return;
+      if (widget.field.kind == 'longtext') {
+        final html =
+            '<p>${result.replaceAll('\n', '</p><p>')}</p>';
+        _rich.document =
+            Document.fromDelta(ManageRichTextField.htmlToDelta(html));
+      } else {
+        _text.text = result;
+      }
+      setState(() => _suggesting = false);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _suggesting = false;
+        _error = 'Assistente indisponível agora.';
+      });
+    }
+  }
 
   @override
   void initState() {
@@ -734,9 +777,27 @@ class _QuickEditSheetState extends State<_QuickEditSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(
-            'Editar ${widget.field.label}',
-            style: Theme.of(context).textTheme.titleMedium,
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Editar ${widget.field.label}',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              if (_canSuggest)
+                TextButton.icon(
+                  onPressed: _suggesting ? null : _suggest,
+                  icon: _suggesting
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.auto_awesome, size: 16),
+                  label: const Text('Sugerir'),
+                ),
+            ],
           ),
           const SizedBox(height: 14),
           _editor(),

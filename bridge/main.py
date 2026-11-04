@@ -1029,6 +1029,13 @@ _AI_ACTIONS: dict[str, str] = {
         "title, summary, data (AAAA-MM-DD ou vazio), local, autores. "
         "Responda somente o JSON."
     ),
+    "draft": (
+        "Escreva um rascunho curto e factual em português para o campo "
+        "indicado, no estilo editorial do portal NERUDS (núcleo de "
+        "estudos rurais e socioecológicos). Use apenas as informações "
+        "do contexto; sem inventar nomes, datas ou números. Responda "
+        "só com o texto do campo, sem comentários."
+    ),
 }
 
 _AI_RATE: dict[str, list[float]] = {}

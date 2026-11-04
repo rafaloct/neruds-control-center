@@ -139,6 +139,28 @@ class ManageService {
         jsonDecode(utf8.decode(response.bodyBytes)) as Map);
   }
 
+  /// Assistente IA do bridge — ações fixas, chave só no servidor.
+  static Future<String> aiAssist(
+    String action, {
+    required String text,
+    String context = '',
+  }) async {
+    final response = await bridge.post(
+      AppConfig.endpoint('/ai/assist'),
+      headers: AppSession.instance.authHeaders,
+      body: jsonEncode({
+        'action': action,
+        'text': text,
+        'context': context,
+      }),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('assist ${response.statusCode}');
+    }
+    final data = jsonDecode(utf8.decode(response.bodyBytes)) as Map;
+    return '${data['result'] ?? data['text'] ?? data['content'] ?? ''}';
+  }
+
   static Future<void> unpublish(String bundle, int nid) async {
     final response = await bridge.delete(
       AppConfig.endpoint('/manage/$bundle/$nid'),
