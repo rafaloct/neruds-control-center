@@ -463,7 +463,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         if ((p.end ?? '').isNotEmpty) 'fim ${p.end}',
                       ].join(' · '),
                     ),
-                    _gapsLine(gaps[p.nid]),
+                    _gapsLine(gaps[p.nid], data.projetoGaps.data),
                     if (p.status.isNotEmpty || p.kind.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
@@ -525,7 +525,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         ...a.kind,
                       ].join(' · '),
                     ),
-                    _gapsLine(gaps[a.nid]),
+                    _gapsLine(gaps[a.nid], data.acaoGaps.data),
                     _linkRow([
                       _viewInAppButton(nid: a.nid, bundleName: 'acao_extensionista'),
                       _editInAppButton(
@@ -609,7 +609,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
         if (upcoming.isNotEmpty) ...[
           Text('Próximos', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 6),
-          for (final e in upcoming) _eventTile(e, gaps),
+          for (final e in upcoming) _eventTile(e, gaps, data.eventoGaps.data),
         ],
         if (undated.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -618,7 +618,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 6),
-          for (final e in undated) _eventTile(e, gaps),
+          for (final e in undated) _eventTile(e, gaps, data.eventoGaps.data),
         ],
         if (past.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -627,20 +627,29 @@ class _MonitoringPageState extends State<MonitoringPage> {
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 6),
-          for (final e in past) _eventTile(e, gaps),
+          for (final e in past) _eventTile(e, gaps, data.eventoGaps.data),
         ],
       ],
     );
   }
 
-  Widget _gapsLine(GapNode? gap) {
+  Widget _gapsLine(GapNode? gap, [GapReport? report]) {
     final missing = gap?.missing;
     if (missing == null || missing.isEmpty) return const SizedBox.shrink();
+    final score = report == null ? null : _nodeScore(gap!, report);
     return Padding(
       padding: const EdgeInsets.only(top: 4),
-      child: Text(
-        'Faltam: ${missing.join(', ')}',
-        style: Theme.of(context).textTheme.bodySmall,
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          if (score != null) _scoreChip(score),
+          Text(
+            'Faltam: ${report == null ? missing.join(', ') : _missingSummary(gap!)}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
       ),
     );
   }
@@ -905,7 +914,11 @@ class _MonitoringPageState extends State<MonitoringPage> {
     );
   }
 
-  Widget _eventTile(PortalEvent event, Map<int, GapNode> gaps) => Card(
+  Widget _eventTile(
+    PortalEvent event,
+    Map<int, GapNode> gaps,
+    GapReport? gapReport,
+  ) => Card(
     child: ListTile(
       title: Text(event.title),
       subtitle: Column(
@@ -919,7 +932,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
               if (event.callOpen == true) 'chamada aberta',
             ].join(' · '),
           ),
-          _gapsLine(gaps[event.nid]),
+          _gapsLine(gaps[event.nid], gapReport),
           _linkRow([
             if ((event.signupUrl ?? '').isNotEmpty)
               PortalLinkButton(label: 'Inscrição', url: event.signupUrl),
