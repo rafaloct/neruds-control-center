@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'app_session.dart';
+import 'home_preview_page.dart';
 import 'manage_list_page.dart';
 import 'manage_moderation_page.dart';
 import 'manage_models.dart';
@@ -109,6 +110,16 @@ class _ManageSectorsPageState extends State<ManageSectorsPage> {
           const Text(
             'Escolha o setor que deseja gerenciar. O portal continua sendo '
             'a fonte oficial — tudo que você mudar aqui vale na hora no site.',
+          ),
+          const SizedBox(height: 16),
+          // Prévia interna — como o site monta a home com os dados
+          // gerenciados aqui (sem abrir o navegador).
+          OutlinedButton.icon(
+            icon: const Icon(Icons.visibility_outlined, size: 18),
+            label: const Text('Prévia da página inicial'),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const HomePreviewPage()),
+            ),
           ),
           const SizedBox(height: 20),
           GridView.count(
