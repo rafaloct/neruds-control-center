@@ -1,0 +1,71 @@
+%% Grafo funcional observado — NERUDS Control Center (auditoria 2026-11)
+%% Tipos: AREA, SCREEN, ACTION, API_ENDPOINT, DATA_ENTITY, EXTERNAL_SERVICE
+graph TD
+  subgraph AREA_GESTAO["AREA Gestão"]
+    SECTORS["SCREEN ManageSectorsPage"]
+    LIST["SCREEN ManageListPage"]
+    DETAIL["SCREEN ManageDetailPage"]
+    FORM["SCREEN ManageFormPage (wizard/lista)"]
+    TAX["SCREEN ManageTaxonomyPage"]
+    MOD["SCREEN ManageModerationPage"]
+    USERS["SCREEN ManageUsersPage"]
+  end
+  subgraph AREA_OBS["AREA Observação"]
+    MON["SCREEN MonitoringPage"]
+    MISS["SCREEN MissionPage"]
+    OPP["SCREEN OpportunitiesPage"]
+    ATT["COMPONENT AttentionPanel"]
+  end
+  subgraph NAV["Navegação compartilhada"]
+    NAVE["FN openManageEditor"]
+    NAVD["FN openManageDetail"]
+    PICK["COMPONENT NodePickerSheet"]
+  end
+  subgraph BRIDGE["API_ENDPOINT (api.neruds.org)"]
+    E1["GET /manage/schemas"]
+    E2["GET /manage/{bundle}"]
+    E3["GET /manage/{bundle}/{nid}"]
+    E4["POST/PATCH/DELETE /manage/{bundle}/{nid}"]
+    E5["GET /manage/options/{entity}/{target}"]
+    E6["GET/POST/PATCH/DELETE /manage/taxonomy*"]
+    E7["GET /manage/moderation/pending · POST approve"]
+    E8["GET/PATCH /manage/users*"]
+    E9["GET/POST /manage/media*"]
+    E10["POST /ai/assist"]
+  end
+  DRUP["EXTERNAL_SERVICE Drupal JSON:API (neruds.org)"]
+
+  SECTORS -->|NAVIGATES_TO| LIST
+  SECTORS -->|NAVIGATES_TO| TAX
+  SECTORS -->|NAVIGATES_TO| MOD
+  SECTORS -->|NAVIGATES_TO| USERS
+  LIST -->|tap: NAVIGATES_TO| DETAIL
+  LIST -->|slidable: NAVIGATES_TO| FORM
+  DETAIL -->|Editar: NAVIGATES_TO| FORM
+  MOD -->|tap: NAVIGATES_TO| DETAIL
+  MOD -->|Aprovar: CALLS| E7
+  MON -->|Ver/Editar| NAVD
+  MON --> NAVD
+  MISS -->|Editar ficha| NAVE
+  MISS -->|Vincular ficha| PICK
+  OPP -->|Abrir ficha| NAVE
+  NAVE -->|CALLS| E1
+  NAVE -->|NAVIGATES_TO| FORM
+  NAVD -->|CALLS| E1
+  NAVD -->|NAVIGATES_TO| DETAIL
+  PICK -->|CALLS| E1
+  PICK -->|CALLS| E2
+  SECTORS -->|CALLS| E1
+  LIST -->|CALLS| E2
+  DETAIL -->|CALLS| E3
+  DETAIL -->|CALLS| E5
+  FORM -->|CALLS| E3
+  FORM -->|WRITES| E4
+  FORM -->|CALLS| E5
+  TAX -->|CALLS| E6
+  USERS -->|CALLS| E8
+  FORM -->|upload| E9
+  E1 & E2 & E3 & E4 & E5 & E6 & E7 & E8 & E9 & E10 -->|DEPENDS_ON| DRUP
+  classDef ext fill:#fee,stroke:#c00;
+  classDef edge fill:#ffe9b8,stroke:#a80;
+  class DRUP ext;

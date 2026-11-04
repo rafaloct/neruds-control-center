@@ -10,7 +10,26 @@ import 'manage_models.dart';
 class ManageService {
   const ManageService._();
 
+  // Cada GET /manage/schemas dispara ~9 probes de permissão ao Drupal
+  // (~1s+). Detalhe/edição/picker abrem várias vezes em sequência —
+  // cache curto evita re-probes sem sacrificar atualidade.
+  static List<ManageBundle>? _schemasCache;
+  static DateTime? _schemasAt;
+  static const _schemasTtl = Duration(minutes: 2);
+
+  static void resetSchemasCache() {
+    _schemasCache = null;
+    _schemasAt = null;
+  }
+
   static Future<List<ManageBundle>> schemas() async {
+    final cached = _schemasCache;
+    final at = _schemasAt;
+    if (cached != null &&
+        at != null &&
+        DateTime.now().difference(at) < _schemasTtl) {
+      return cached;
+    }
     final response = await bridge.get(
       AppConfig.endpoint('/manage/schemas'),
       headers: AppSession.instance.authHeaders,
@@ -22,13 +41,16 @@ class ManageService {
     final canCreate =
         Map<String, dynamic>.from(data['can_create'] as Map? ?? {});
     final schemas = Map<String, dynamic>.from(data['schemas'] as Map? ?? {});
-    return schemas.entries
+    final result = schemas.entries
         .map((e) => ManageBundle.fromJson(
               e.key,
               Map<String, dynamic>.from(e.value as Map),
               canCreate: canCreate[e.key] == true,
             ))
         .toList();
+    _schemasCache = result;
+    _schemasAt = DateTime.now();
+    return result;
   }
 
   static Future<List<ManageItem>> list(
