@@ -108,6 +108,8 @@ class _ManageRichTextFieldState extends State<ManageRichTextField> {
             controller: widget.controller,
             config: const QuillSimpleToolbarConfig(
               multiRowsDisplay: false,
+              toolbarSectionSpacing: 2,
+              toolbarRunSpacing: 0,
               showBoldButton: true,
               showItalicButton: true,
               showUnderLineButton: true,
@@ -143,7 +145,7 @@ class _ManageRichTextFieldState extends State<ManageRichTextField> {
           ),
         ),
         Container(
-          height: 200,
+          constraints: const BoxConstraints(minHeight: 160, maxHeight: 260),
           decoration: BoxDecoration(
             border: Border.all(color: theme.colorScheme.outlineVariant),
             borderRadius: const BorderRadius.vertical(
@@ -154,8 +156,9 @@ class _ManageRichTextFieldState extends State<ManageRichTextField> {
             controller: widget.controller,
             focusNode: _focusNode,
             scrollController: _scrollController,
-            config: const QuillEditorConfig(
-              padding: EdgeInsets.all(12),
+            config: QuillEditorConfig(
+              padding: const EdgeInsets.all(12),
+              placeholder: widget.hint ?? 'Escreva aqui…',
             ),
           ),
         ),

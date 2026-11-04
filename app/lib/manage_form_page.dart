@@ -437,45 +437,98 @@ class _ManageFormPageState extends State<ManageFormPage> {
       _stepKeys.add(GlobalKey<FormState>());
     }
     final last = _step == steps.length - 1;
-    // Controles fora do Stepper: na área interna do Stepper eles ficavam
-    // encobertos pelo conteúdo da etapa e não recebiam toque em telas reais.
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     return Column(
       children: [
-        Expanded(
-          child: SingleChildScrollView(
-            child: Stepper(
-              currentStep: _step,
-              controlsBuilder: (context, details) => const SizedBox.shrink(),
-              onStepTapped: (i) {
-                if (i < _step) setState(() => _step = i);
-              },
-              steps: [
-                for (var i = 0; i < steps.length - 1; i++)
-                  Step(
-                    title: Text(steps[i].label),
-                    isActive: _step >= i,
-                    state:
-                        _step > i ? StepState.complete : StepState.indexed,
-                    content: Form(
-                      key: _stepKeys[i],
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          for (final f in _fieldsOf(steps[i].id)) ...[
-                            _buildField(f),
-                            const SizedBox(height: 14),
-                          ],
-                        ],
-                      ),
+        // Header compacto: título da etapa + progresso em uma faixa só.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      steps[_step].label,
+                      style: theme.textTheme.titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w600),
                     ),
                   ),
-                Step(
-                  title: Text(steps.last.label),
-                  isActive: true,
-                  state: _step >= steps.length - 1
-                      ? StepState.editing
-                      : StepState.indexed,
-                  content: Column(
+                  Text(
+                    'Passo ${_step + 1} de ${steps.length}',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: (_step + 1) / steps.length,
+                  minHeight: 5,
+                  backgroundColor: scheme.surfaceContainerHighest,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  for (var i = 0; i < steps.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: InkWell(
+                        onTap: i < _step
+                            ? () => setState(() => _step = i)
+                            : null,
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          width: 20,
+                          height: 20,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: i < _step
+                                ? scheme.primary
+                                : i == _step
+                                    ? scheme.primaryContainer
+                                    : scheme.surfaceContainerHighest,
+                          ),
+                          alignment: Alignment.center,
+                          child: i < _step
+                              ? Icon(Icons.check,
+                                  size: 12,
+                                  color: scheme.onPrimary)
+                              : Text(
+                                  '${i + 1}',
+                                  style:
+                                      theme.textTheme.labelSmall?.copyWith(
+                                    fontSize: 10,
+                                    color: i == _step
+                                        ? scheme.onPrimaryContainer
+                                        : scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        // Só a etapa atual é renderizada — nada de Stepper vertical
+        // consumindo faixa gigante de conectores.
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 720),
+                child: last
+                ? Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (_error != null) ...[
@@ -500,9 +553,20 @@ class _ManageFormPageState extends State<ManageFormPage> {
                       ),
                       _publishSwitch(),
                     ],
+                  )
+                : Form(
+                    key: _stepKeys[_step],
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final f in _fieldsOf(steps[_step].id)) ...[
+                          _buildField(f),
+                          const SizedBox(height: 14),
+                        ],
+                      ],
+                    ),
                   ),
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -517,11 +581,6 @@ class _ManageFormPageState extends State<ManageFormPage> {
                     icon: const Icon(Icons.arrow_back),
                     label: const Text('Voltar'),
                   ),
-                const Spacer(),
-                Text(
-                  'Passo ${_step + 1} de ${steps.length}',
-                  style: Theme.of(context).textTheme.labelMedium,
-                ),
                 const Spacer(),
                 FilledButton.icon(
                   onPressed: last ? (_saving ? null : _save) : _continue,

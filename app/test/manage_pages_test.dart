@@ -197,6 +197,12 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('Informações básicas'), findsWidgets);
+    // Novo header compacto: indicador "Passo N de 5" + progresso linear
+    expect(find.text('Passo 1 de 5'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    // Não há mais Stepper vertical consumindo faixa gigante
+    expect(find.byType(Stepper), findsNothing);
+    // editor rico visível no passo de conteúdo
     await tester.tap(find.text('Avançar').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Avançar').first);
