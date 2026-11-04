@@ -4771,7 +4771,10 @@ async def menu_item_update(
         response = await client.patch(
             f"/jsonapi/menu_link_content/menu_link_content/{uuid}",
             json=body,
-            headers={"Content-Type": "application/vnd.api+json"},
+            headers={
+                "Content-Type": "application/vnd.api+json",
+                "X-CSRF-Token": session.get("csrf") or "",
+            },
         )
     if response.status_code != 200:
         raise HTTPException(
@@ -4798,7 +4801,10 @@ async def menu_item_create(
         response = await client.post(
             "/jsonapi/menu_link_content/menu_link_content",
             json=body,
-            headers={"Content-Type": "application/vnd.api+json"},
+            headers={
+                "Content-Type": "application/vnd.api+json",
+                "X-CSRF-Token": session.get("csrf") or "",
+            },
         )
     if response.status_code not in (200, 201):
         raise HTTPException(
@@ -4815,7 +4821,8 @@ async def menu_item_delete(
 ) -> dict[str, Any]:
     async with drupal_client(session) as client:
         response = await client.delete(
-            f"/jsonapi/menu_link_content/menu_link_content/{uuid}")
+            f"/jsonapi/menu_link_content/menu_link_content/{uuid}",
+            headers={"X-CSRF-Token": session.get("csrf") or ""})
     if response.status_code not in (200, 204):
         raise HTTPException(
             status_code=response.status_code,
