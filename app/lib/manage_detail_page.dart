@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_quill_delta_from_html/flutter_quill_delta_from_html.dart';
 
 import 'app_config.dart';
 import 'manage_form_page.dart';
 import 'manage_models.dart';
 import 'manage_rich_list.dart';
+import 'manage_rich_text.dart';
 import 'manage_service.dart';
 import 'workflow_widgets.dart';
 
@@ -182,6 +184,46 @@ class _ManageDetailPageState extends State<ManageDetailPage> {
     if (raw == null) return null;
     final s = raw.toString();
     return DateTime.tryParse(s.length > 10 ? s : '${s}T00:00:00');
+  }
+
+  /// Edição rápida de um campo — bottom-sheet inline, PATCH parcial.
+  /// Tipos complexos (imagem/arquivo/período) seguem no formulário completo.
+  static const _quickKinds = {
+    'text', 'email', 'link', 'number', 'date', 'bool',
+    'longtext', 'reference',
+  };
+
+  bool _isEditable(ManageField f) => _quickKinds.contains(f.kind);
+
+  Future<void> _quickEdit(ManageField f) async {
+    final values =
+        Map<String, dynamic>.from(_detail['values'] as Map? ?? {});
+    final rels = Map<String, dynamic>.from(
+      _detail['relationships'] as Map? ?? {},
+    );
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: _QuickEditSheet(
+          field: f,
+          rawValue: values[f.name],
+          relUuids: _uuids(rels[f.name]),
+          onSave: (serialized) => ManageService.save(
+            widget.bundle.name,
+            nid: widget.nid,
+            values: {f.name: serialized},
+            published: _detail['status'] == true,
+          ),
+        ),
+      ),
+    );
+    if (saved == true) _load();
   }
 
   Future<void> _openEdit() async {
@@ -381,21 +423,66 @@ class _ManageDetailPageState extends State<ManageDetailPage> {
                   ),
                   const Divider(height: 18),
                   for (final f in g.fields) ...[
-                    Text(
-                      f.label,
-                      style: Theme.of(context).textTheme.labelMedium
-                          ?.copyWith(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurfaceVariant,
-                          ),
+                    InkWell(
+                      onTap:
+                          _isEditable(f) ? () => _quickEdit(f) : null,
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 4,
+                          horizontal: 2,
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    f.label,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelMedium
+                                        ?.copyWith(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onSurfaceVariant,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  // SelectableText consome o toque do
+                                  // InkWell — campos editáveis usam Text.
+                                  _isEditable(f)
+                                      ? Text(
+                                          _displayValue(f),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium,
+                                        )
+                                      : SelectableText(
+                                          _displayValue(f),
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium,
+                                        ),
+                                ],
+                              ),
+                            ),
+                            if (_isEditable(f))
+                              Icon(
+                                Icons.edit_outlined,
+                                size: 15,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                          ],
+                        ),
+                      ),
                     ),
-                    const SizedBox(height: 2),
-                    SelectableText(
-                      _displayValue(f),
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                   ],
                 ],
               ),
@@ -412,5 +499,275 @@ class _ManageDetailPageState extends State<ManageDetailPage> {
     if (dt == null) return '';
     return '${dt.day.toString().padLeft(2, '0')}/'
         '${dt.month.toString().padLeft(2, '0')}/${dt.year}';
+  }
+}
+
+/// Bottom-sheet de edição rápida — um único campo, PATCH parcial.
+/// Reaproveita o mesmo editor rico para longtext e as mesmas regras
+/// de serialização do formulário completo.
+class _QuickEditSheet extends StatefulWidget {
+  const _QuickEditSheet({
+    required this.field,
+    required this.rawValue,
+    required this.relUuids,
+    required this.onSave,
+  });
+
+  final ManageField field;
+  final dynamic rawValue;
+  final List<String> relUuids;
+  final Future<void> Function(dynamic serialized) onSave;
+
+  @override
+  State<_QuickEditSheet> createState() => _QuickEditSheetState();
+}
+
+class _QuickEditSheetState extends State<_QuickEditSheet> {
+  late final TextEditingController _text;
+  late final QuillController _rich;
+  final _focus = FocusNode();
+  final _scroll = ScrollController();
+  DateTime? _date;
+  bool _bool = false;
+  List<ManageOption> _options = const [];
+  Set<String> _refSelected = {};
+  bool _saving = false;
+  String? _error;
+  bool _optionsLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final f = widget.field;
+    final raw = widget.rawValue;
+    switch (f.kind) {
+      case 'longtext':
+        final html =
+            raw is Map ? (raw['value']?.toString() ?? '') : '${raw ?? ''}';
+        _rich = QuillController(
+          document: html.isEmpty
+              ? Document()
+              : Document.fromDelta(ManageRichTextField.htmlToDelta(html)),
+          selection: const TextSelection.collapsed(offset: 0),
+        );
+        _text = TextEditingController();
+      case 'date':
+        if (raw is Map) {
+          _date = DateTime.tryParse('${raw['value']}');
+        } else {
+          _date = DateTime.tryParse('${raw ?? ''}');
+        }
+        _text = TextEditingController();
+        _rich = QuillController.basic();
+      case 'bool':
+        _bool = raw == true;
+        _text = TextEditingController();
+        _rich = QuillController.basic();
+      case 'reference':
+        _refSelected = widget.relUuids.toSet();
+        _loadOptions();
+        _text = TextEditingController();
+        _rich = QuillController.basic();
+      default:
+        _text = TextEditingController(
+          text: raw is Map
+              ? '${raw['uri'] ?? raw['value'] ?? ''}'
+              : '${raw ?? ''}',
+        );
+        _rich = QuillController.basic();
+    }
+  }
+
+  Future<void> _loadOptions() async {
+    if (widget.field.target == null) return;
+    setState(() => _optionsLoading = true);
+    try {
+      final options = await ManageService.options(widget.field.target!);
+      if (!mounted) return;
+      setState(() {
+        _options = options;
+        _optionsLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _optionsLoading = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    _rich.dispose();
+    _focus.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  dynamic _serialize() {
+    final f = widget.field;
+    switch (f.kind) {
+      case 'number':
+        final t = _text.text.trim();
+        return int.tryParse(t) ?? t;
+      case 'date':
+        if (_date == null) return null;
+        final d = _date!;
+        return '${d.year}-'
+            '${d.month.toString().padLeft(2, '0')}-'
+            '${d.day.toString().padLeft(2, '0')}';
+      case 'bool':
+        return _bool;
+      case 'reference':
+        final sel = _options
+            .where((o) => _refSelected.contains(o.uuid))
+            .map((o) => o.id)
+            .toList();
+        return f.multiple ? sel : (sel.isEmpty ? null : sel.first);
+      case 'longtext':
+        return {
+          'value': ManageRichTextField.deltaToHtml(_rich),
+          'format': 'basic_html',
+        };
+      default:
+        return _text.text.trim();
+    }
+  }
+
+  Future<void> _save() async {
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      await widget.onSave(_serialize());
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _error = 'O portal recusou o salvamento.';
+      });
+    }
+  }
+
+  String _dateLabel() {
+    if (_date == null) return 'Escolher data';
+    final d = _date!;
+    return '${d.day.toString().padLeft(2, '0')}/'
+        '${d.month.toString().padLeft(2, '0')}/${d.year}';
+  }
+
+  Widget _editor() {
+    final f = widget.field;
+    switch (f.kind) {
+      case 'longtext':
+        return ManageRichTextField(
+          label: f.label,
+          controller: _rich,
+        );
+      case 'date':
+        return OutlinedButton.icon(
+          icon: const Icon(Icons.calendar_today_outlined, size: 18),
+          label: Text(_dateLabel()),
+          onPressed: () async {
+            final picked = await showDatePicker(
+              context: context,
+              initialDate: _date ?? DateTime.now(),
+              firstDate: DateTime(2000),
+              lastDate: DateTime(2100),
+            );
+            if (picked != null) setState(() => _date = picked);
+          },
+        );
+      case 'bool':
+        return SwitchListTile(
+          title: Text(f.label),
+          value: _bool,
+          onChanged: (v) => setState(() => _bool = v),
+        );
+      case 'reference':
+        if (_optionsLoading) {
+          return const Padding(
+            padding: EdgeInsets.all(24),
+            child: Center(child: CircularProgressIndicator()),
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final o in _options)
+              CheckboxListTile(
+                dense: true,
+                title: Text(o.label),
+                value: _refSelected.contains(o.uuid),
+                onChanged: (v) => setState(() {
+                  if (v == true) {
+                    if (!f.multiple) _refSelected.clear();
+                    _refSelected.add(o.uuid);
+                  } else {
+                    _refSelected.remove(o.uuid);
+                  }
+                }),
+              ),
+          ],
+        );
+      default:
+        return TextField(
+          controller: _text,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: f.label,
+            border: const OutlineInputBorder(),
+          ),
+          keyboardType:
+              f.kind == 'number' ? TextInputType.number : TextInputType.text,
+        );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Editar ${widget.field.label}',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 14),
+          _editor(),
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              _error!,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.error,
+              ),
+            ),
+          ],
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              TextButton(
+                onPressed:
+                    _saving ? null : () => Navigator.of(context).pop(false),
+                child: const Text('Cancelar'),
+              ),
+            
+            const Spacer(),
+              FilledButton.icon(
+                onPressed: _saving ? null : _save,
+                icon: const Icon(Icons.check, size: 18),
+                label: Text(_saving ? 'Salvando…' : 'Salvar'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }

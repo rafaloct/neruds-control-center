@@ -293,4 +293,46 @@ void main() {
       reason: 'edição deve usar o tid do termo, não 0 — $calls',
     );
   });
+
+  testWidgets('edição rápida: tocar num campo abre sheet e salva PATCH',
+      (tester) async {
+    final calls = <String>[];
+    bridge.setClientForTesting(MockClient((request) async {
+      calls.add('${request.method} ${request.url.path}');
+      if (request.url.path == '/manage/noticia/42') {
+        if (request.method == 'PATCH') {
+          return json_({'ok': true});
+        }
+        return json_({
+          'nid': 42,
+          'uuid': 'u-42',
+          'title': 'Notícia X',
+          'status': true,
+          'values': {'title': 'Notícia X', 'field_autor_noticia': 'Ana'},
+          'relationships': {},
+        });
+      }
+      return http.Response('nf', 404);
+    }));
+    final bundle =
+        ManageBundle.fromJson('noticia', noticiaSchema(), canCreate: true);
+    await tester.pumpWidget(
+      MaterialApp(home: ManageDetailPage(bundle: bundle, nid: 42)),
+    );
+    await tester.pumpAndSettle();
+    // toca no campo "Autor da notícia" → bottom-sheet de edição rápida
+    await tester.tap(find.text('Ana'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Editar'), findsWidgets);
+    await tester.enterText(find.byType(TextField).last, 'Ana Maria');
+    await tester.tap(find.text('Salvar'));
+    await tester.pumpAndSettle();
+    expect(
+      calls.any((c) => c == 'PATCH /manage/noticia/42'),
+      isTrue,
+      reason: 'edição rápida deveria disparar PATCH parcial',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
 }
