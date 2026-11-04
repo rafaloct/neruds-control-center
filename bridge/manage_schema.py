@@ -280,6 +280,50 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
             _f("field_participantes", "Participantes"),
         ],
     },
+    "page": {
+        "label": "Páginas institucionais",
+        "label_singular": "Página",
+        "icon": "article",
+        "fields": [
+            _f("title", "Título", required=True),
+            _f("field_content", "Conteúdo", "longtext"),
+            _f("field_description", "Descrição", "longtext"),
+            _f("field_featured_image", "Imagem de destaque", "image"),
+            _f("field_tags", "Tags", "reference",
+               target="taxonomy_term:tags", multiple=True),
+        ],
+    },
+    "boletim_periodico": {
+        "label": "Boletins",
+        "label_singular": "Boletim",
+        "icon": "description",
+        "fields": [
+            _f("title", "Título", required=True),
+            _f("field_resumo_boletim", "Resumo", "longtext"),
+            _f("field_ano_publicacao", "Ano", "number"),
+            _f("field_mes_publicacao", "Mês"),
+            _f("field_periodo_publicacao", "Período"),
+        ],
+    },
+    "relatorio_fno": {
+        "label": "Relatórios FNO",
+        "label_singular": "Relatório FNO",
+        "icon": "analytics",
+        "fields": [
+            _f("title", "Título", required=True),
+            _f("field_fno_key_findings", "Principais descobertas", "longtext"),
+            _f("field_fno_methodology", "Metodologia FNO", "longtext"),
+            _f("field_metodologia", "Metodologia", "longtext"),
+            _f("field_principais_descobertas", "Descobertas", "longtext"),
+            _f("field_pesquisadores", "Pesquisadores"),
+            _f("field_periodo_pesquisa", "Período da pesquisa"),
+            _f("field_fno_research_period", "Período FNO"),
+            _f("field_fno_report_url", "URL do relatório", "link"),
+            _f("field_looker_url", "URL Looker", "link"),
+            _f("field_embed_code", "Código embed", "longtext"),
+            _f("field_fno_report_embed", "Embed do relatório", "longtext"),
+        ],
+    },
 }
 
 
@@ -329,6 +373,20 @@ _WIZARD_STEPS: dict[str, list[dict[str, str]]] = {
         {"id": "basics", "label": "Identificação"},
         {"id": "content", "label": "Conteúdo do relatório"},
         {"id": "media", "label": "Arquivos"},
+    ],
+    "page": [
+        {"id": "content", "label": "Conteúdo"},
+        {"id": "refs", "label": "Classificação"},
+        {"id": "media", "label": "Mídia"},
+    ],
+    "boletim_periodico": [
+        {"id": "basics", "label": "Informações básicas"},
+        {"id": "content", "label": "Conteúdo"},
+    ],
+    "relatorio_fno": [
+        {"id": "basics", "label": "Informações básicas"},
+        {"id": "academic", "label": "Pesquisa"},
+        {"id": "refs", "label": "Links e embeds"},
     ],
     "reuniao": [
         {"id": "basics", "label": "Informações básicas"},
@@ -414,6 +472,28 @@ _FIELD_GROUPS: dict[str, dict[str, str]] = {
     "reuniao": {
         "title": "basics", "field_data_reuniao": "basics",
         "field_pauta": "details", "field_participantes": "details",
+    },
+    "page": {
+        "title": "content", "field_content": "content",
+        "field_description": "content",
+        "field_tags": "refs", "field_featured_image": "media",
+    },
+    "boletim_periodico": {
+        "title": "basics", "field_ano_publicacao": "basics",
+        "field_mes_publicacao": "basics",
+        "field_periodo_publicacao": "basics",
+        "field_resumo_boletim": "content",
+    },
+    "relatorio_fno": {
+        "title": "basics", "field_pesquisadores": "basics",
+        "field_periodo_pesquisa": "basics",
+        "field_fno_research_period": "basics",
+        "field_fno_key_findings": "academic",
+        "field_fno_methodology": "academic",
+        "field_metodologia": "academic",
+        "field_principais_descobertas": "academic",
+        "field_fno_report_url": "refs", "field_looker_url": "refs",
+        "field_embed_code": "refs", "field_fno_report_embed": "refs",
     },
 }
 
