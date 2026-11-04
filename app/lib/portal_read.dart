@@ -21,12 +21,14 @@ class GapNodeRef {
     required this.title,
     this.viewUrl,
     this.editUrl,
+    this.published = true,
   });
 
   final int? nid;
   final String title;
   final String? viewUrl;
   final String? editUrl;
+  final bool published;
 }
 
 class GapField {
@@ -84,6 +86,7 @@ class GapNode {
     this.nid,
     this.viewUrl,
     this.editUrl,
+    this.published = true,
     required this.missing,
     required this.missingFields,
   });
@@ -96,6 +99,10 @@ class GapNode {
   final String title;
   final String? viewUrl;
   final String? editUrl;
+
+  /// Estado de publicação no portal — o score de completude orienta a
+  /// ação, o badge informa se a ficha já está visível ao público.
+  final bool published;
   final List<String> missing;
 
   /// Machine names of the missing fields, parallel to [missing].
@@ -461,6 +468,7 @@ class PortalReadApi {
                               title: (n['title'] ?? 'Sem título').toString(),
                               viewUrl: n['view_url']?.toString(),
                               editUrl: n['edit_url']?.toString(),
+                              published: n['published'] != false,
                             ),
                           )
                           .toList(),
@@ -493,6 +501,7 @@ class PortalReadApi {
               title: node.title,
               viewUrl: node.viewUrl,
               editUrl: node.editUrl,
+              published: node.published,
               missing: [field.label],
               missingFields: [field.field],
             );

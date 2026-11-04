@@ -1579,6 +1579,7 @@ def _node_ref(item: dict[str, Any]) -> dict[str, Any]:
         "title": attrs.get("title") or "Sem título",
         "view_url": urls["public_url"],
         "edit_url": urls["edit_url"],
+        "published": bool(attrs.get("status")),
     }
 
 

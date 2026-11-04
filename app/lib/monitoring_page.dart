@@ -206,7 +206,20 @@ class _MonitoringPageState extends State<MonitoringPage> {
               runSpacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Text('Monitoramento', style: theme.textTheme.headlineSmall),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Monitoramento',
+                        style: theme.textTheme.headlineSmall),
+                    Text(
+                      'Qualidade do portal — lacunas de conteúdo '
+                      'para revisar e preencher',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
                 if (data?.fetchedAt != null)
                   Chip(
                     avatar: const Icon(Icons.schedule, size: 16),
@@ -679,7 +692,10 @@ class _MonitoringPageState extends State<MonitoringPage> {
             fieldWeight: _fieldWeight,
           ),
         );
-        if (applied == true && mounted) _reload();
+        if (applied == true && mounted) {
+          _reload();
+          _showAppliedToast(node);
+        }
       },
     );
   }
@@ -1058,6 +1074,38 @@ class _MonitoringPageState extends State<MonitoringPage> {
     );
   }
 
+  /// Badge Publicado/Rascunho — informa se a ficha já está visível.
+  Widget _publishedChip(bool published) {
+    final cs = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: published ? 'Publicado no portal' : 'Rascunho',
+      child: Icon(
+        published ? Icons.public : Icons.drafts_outlined,
+        size: 16,
+        color: published ? cs.primary : cs.outline,
+      ),
+    );
+  }
+
+  /// Toast pós-salvamento com link direto para conferir no portal.
+  void _showAppliedToast(GapNode node) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Ficha atualizada: ${node.title}'),
+        action: node.viewUrl == null
+            ? null
+            : SnackBarAction(
+                label: 'Ver no site',
+                onPressed: () => launchExternalUri(
+                  context,
+                  Uri.parse(node.viewUrl!),
+                ),
+              ),
+      ),
+    );
+  }
+
   /// Filtro de criticidade por faixa de score — os KPIs no topo
   /// filtram a lista para guiar a acao do operador.
   String? _scoreFilter; // 'ready' | 'attention' | 'critical'
@@ -1220,6 +1268,8 @@ class _MonitoringPageState extends State<MonitoringPage> {
               title: Row(
                 children: [
                   _scoreChip(s.score),
+                  const SizedBox(width: 4),
+                  _publishedChip(s.node.published),
                   const SizedBox(width: 8),
                   Expanded(child: Text(s.node.title)),
                 ],

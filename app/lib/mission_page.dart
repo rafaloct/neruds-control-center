@@ -634,7 +634,21 @@ class _MissionPageState extends State<MissionPage> {
           Wrap(
             spacing: 12,
             runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
+              FilterChip(
+                key: const ValueKey('mission-mine'),
+                showCheckmark: false,
+                avatar: const Icon(Icons.person_outline, size: 16),
+                label: const Text('Só as minhas'),
+                selected: owner != null &&
+                    owner == AppSession.instance.username,
+                onSelected: (v) {
+                  owner =
+                      v ? AppSession.instance.username : null;
+                  _load();
+                },
+              ),
               _filter(
                 label: 'Responsável',
                 value: owner,
