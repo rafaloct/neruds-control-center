@@ -2291,12 +2291,21 @@ async def _create_access_map(session: dict[str, Any]) -> dict[str, bool]:
         return cached[1]
     access: dict[str, bool] = {}
     async with drupal_client(session) as client:
+        headers = {"Content-Type": "application/vnd.api+json"}
+        if session.get("csrf"):
+            headers["X-CSRF-Token"] = session["csrf"]
         for bundle in CONTENT_BUNDLES:
+            # /node/add/{bundle} é rota admin — 403 até para quem tem
+            # 'create {bundle} content'. POST vazio na JSON:API distingue
+            # permissão: 403 = sem create; 400/422 = pode criar mas a
+            # validação reprovou o payload vazio.
             try:
-                probe = await client.get(
-                    f"/node/add/{bundle}", follow_redirects=False
+                probe = await client.post(
+                    f"/jsonapi/node/{bundle}",
+                    json={"data": {"type": f"node--{bundle}", "attributes": {}}},
+                    headers=headers,
                 )
-                access[bundle] = probe.status_code == 200
+                access[bundle] = probe.status_code != 403
             except Exception:
                 access[bundle] = False
     _CREATE_ACCESS_CACHE[token] = (now, access)

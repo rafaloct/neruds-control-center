@@ -20,6 +20,13 @@ def _mock_bundle_forms(respx_mock, allowed: dict[str, int]):
         respx_mock.get(f"https://neruds.org/node/add/{bundle}").mock(
             return_value=Response(status, text=_FORM_HTML if status == 200 else "")
         )
+        # Probe de permissão via JSON:API — POST vazio: 403 = sem create,
+        # 422/400 = pode criar (validação reprova o payload).
+        respx_mock.post(f"https://neruds.org/jsonapi/node/{bundle}").mock(
+            return_value=Response(
+                403 if status != 200 else 422, text=""
+            )
+        )
 
 
 @pytest.mark.asyncio

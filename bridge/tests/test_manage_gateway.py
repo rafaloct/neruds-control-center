@@ -18,6 +18,12 @@ def _allow_forms(respx_mock, bundles: set[str]):
                 text="<form></form>" if bundle in bundles else "",
             )
         )
+        # Probe de create via JSON:API (POST vazio).
+        respx_mock.post(f"https://neruds.org/jsonapi/node/{bundle}").mock(
+            return_value=Response(
+                422 if bundle in bundles else 403, text=""
+            )
+        )
 
 
 def _node_jsonapi_item(nid: int, uuid: str, title: str, status: bool = True):
