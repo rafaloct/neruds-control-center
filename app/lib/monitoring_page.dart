@@ -938,6 +938,84 @@ class _MonitoringPageState extends State<MonitoringPage> {
     ),
   );
 
+
+  /// Peso de criticidade editorial por nome de campo monitorado.
+  /// Campos que o publico/site precisa para renderizar a ficha valem
+  /// mais; anexos e vinculos secundarios valem menos. Recomendacao do
+  /// review de UX (sonnet-4.5): prioriza acao em vez de paralisia.
+  static const _fieldWeightRules = <(String, int)>[
+    ('coordenador', 3), ('data', 3), ('resumo', 3), ('descricao', 3),
+    ('justificativa', 3), ('objetivos', 3), ('metodologia', 3),
+    ('conteudo', 3), ('autor', 3),
+    ('equipe', 2), ('linhas', 2), ('eixos', 2), ('ods', 2),
+    ('status', 2), ('tipo', 2), ('local', 2), ('municipio', 2),
+    ('participantes', 2), ('apoiadores', 2), ('periodo', 2),
+    ('ano', 2), ('mes', 2), ('pesquisadores', 2), ('chamada', 2),
+    ('organizadores', 2), ('doi', 2), ('lattes', 2),
+  ];
+
+  int _fieldWeight(String fieldName) {
+    for (final (needle, w) in _fieldWeightRules) {
+      if (fieldName.contains(needle)) return w;
+    }
+    return 1;
+  }
+
+  /// Completude ponderada de um no: 100% = todas as lacunas zeradas.
+  /// O relatório carrega o universo de campos monitorados do bundle.
+  int _nodeScore(GapNode node, GapReport report) {
+    final fields = report.monitoredFields[node.type];
+    if (fields == null || fields.isEmpty) return 100;
+    final total =
+        fields.fold<int>(0, (s, f) => s + _fieldWeight(f));
+    if (total == 0) return 100;
+    final missing =
+        node.missingFields.fold<int>(0, (s, f) => s + _fieldWeight(f));
+    return (100 - (100 * missing) ~/ total).clamp(0, 100);
+  }
+
+  /// Rotulo curto das lacunas mais criticas (peso decrescente), com o
+  /// resto colapsado — reduz 14 campos para uma decisao rapida.
+  String _missingSummary(GapNode node) {
+    final paired = <(String, int)>[
+      for (var i = 0; i < node.missing.length; i++)
+        (
+          node.missing[i],
+          i < node.missingFields.length
+              ? _fieldWeight(node.missingFields[i])
+              : 1,
+        ),
+    ]..sort((a, b) => b.$2.compareTo(a.$2));
+    final top = paired.take(3).map((p) => p.$1).join(', ');
+    final rest = paired.length - 3;
+    return rest > 0 ? '$top (+$rest)' : top;
+  }
+
+  Widget _scoreChip(int score) {
+    final cs = Theme.of(context).colorScheme;
+    final (bg, fg) = score >= 80
+        ? (cs.primaryContainer, cs.onPrimaryContainer)
+        : score >= 50
+            ? (cs.tertiaryContainer, cs.onTertiaryContainer)
+            : (cs.errorContainer, cs.onErrorContainer);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        '$score%',
+        style: TextStyle(
+            fontSize: 11, fontWeight: FontWeight.w600, color: fg),
+      ),
+    );
+  }
+
+  /// Filtro de criticidade por faixa de score — os KPIs no topo
+  /// filtram a lista para guiar a acao do operador.
+  String? _scoreFilter; // 'ready' | 'attention' | 'critical'
+
   /// Botão "Editar" nativo — abre o formulário do app em vez do portal.
   Widget _editInAppButton({required int? nid, required String? bundleName}) {
     return OutlinedButton.icon(
@@ -1013,26 +1091,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
         else if (nodes.isEmpty)
           const Text('Nenhum campo monitorado ausente nesta consulta.')
         else
-          for (final node in nodes)
-            Card(
-              child: ListTile(
-                title: Text(node.title),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Faltam: ${node.missing.join(', ')}'),
-                    _linkRow([
-                      _viewInAppButton(nid: node.nid, bundleName: node.type),
-                      _editInAppButton(
-                        nid: node.nid,
-                        bundleName: node.type,
-                      ),
-                      _gapTaskButton(node),
-                    ]),
-                  ],
-                ),
-              ),
-            ),
+          _gapNodeList(nodes, report!),
         const SizedBox(height: 16),
         Text(
           'Últimas publicadas',
@@ -1061,6 +1120,102 @@ class _MonitoringPageState extends State<MonitoringPage> {
               ),
             ),
       ],
+    );
+  }
+
+  /// Lista de nos com score de completude ponderado e KPIs acionaveis.
+  /// Ordena pelos mais criticos primeiro — os KPIs filtram por faixa.
+  Widget _gapNodeList(List<GapNode> nodes, GapReport report) {
+    final scored = [
+      for (final n in nodes) (node: n, score: _nodeScore(n, report)),
+    ]..sort((a, b) => a.score.compareTo(b.score));
+
+    final ready = scored.where((s) => s.score >= 80).length;
+    final attention =
+        scored.where((s) => s.score >= 50 && s.score < 80).length;
+    final critical = scored.where((s) => s.score < 50).length;
+
+    final shown = switch (_scoreFilter) {
+      'ready' => scored.where((s) => s.score >= 80).toList(),
+      'attention' =>
+        scored.where((s) => s.score >= 50 && s.score < 80).toList(),
+      'critical' => scored.where((s) => s.score < 50).toList(),
+      _ => scored,
+    };
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              _kpiChip('Prontos p/ publicar', ready, 'ready',
+                  Theme.of(context).colorScheme.primary),
+              _kpiChip('Precisam de atencao', attention, 'attention',
+                  Theme.of(context).colorScheme.tertiary),
+              _kpiChip('Criticos', critical, 'critical',
+                  Theme.of(context).colorScheme.error),
+              if (_scoreFilter != null)
+                ActionChip(
+                  avatar: const Icon(Icons.close, size: 14),
+                  label: const Text('Todas'),
+                  onPressed: () =>
+                      setState(() => _scoreFilter = null),
+                ),
+            ],
+          ),
+        ),
+        for (final s in shown)
+          Card(
+            child: ListTile(
+              title: Row(
+                children: [
+                  _scoreChip(s.score),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(s.node.title)),
+                ],
+              ),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Faltam: ${_missingSummary(s.node)}'),
+                  _linkRow([
+                    _viewInAppButton(
+                        nid: s.node.nid, bundleName: s.node.type),
+                    _editInAppButton(
+                      nid: s.node.nid,
+                      bundleName: s.node.type,
+                    ),
+                    _gapTaskButton(s.node),
+                  ]),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// KPI acionavel — toque filtra a lista para aquela faixa de score.
+  Widget _kpiChip(String label, int count, String key, Color color) {
+    final active = _scoreFilter == key;
+    return FilterChip(
+      selected: active,
+      showCheckmark: false,
+      avatar: CircleAvatar(
+        radius: 10,
+        backgroundColor: color,
+        child: Text(
+          '$count',
+          style: const TextStyle(fontSize: 10, color: Colors.white),
+        ),
+      ),
+      label: Text(label),
+      onSelected: (v) =>
+          setState(() => _scoreFilter = v ? key : null),
     );
   }
 }
