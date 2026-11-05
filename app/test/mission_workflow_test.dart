@@ -440,6 +440,93 @@ void main() {
   );
 
   testWidgets(
+    'upload recusado exibe o motivo exato retornado pelo serviço',
+    (tester) async {
+      wideSurface(tester);
+      final task = taskFixture();
+      var uploads = 0;
+      bridge.setClientForTesting(
+        MockClient((request) async {
+          if (request.url.path == '/mission-tasks/41' &&
+              request.method == 'GET') {
+            return jsonResponse(task);
+          }
+          if (request.url.path == '/mission-tasks/41/evidence-files') {
+            uploads++;
+            return jsonResponse({'detail': 'Arquivo excede 10 MB.'}, 413);
+          }
+          throw StateError(
+            'Rota inesperada: ${request.method} ${request.url.path}',
+          );
+        }),
+      );
+      await openTask(
+        tester,
+        picker: () async => MissionEvidenceSelection(
+          name: 'evidencia.zip',
+          bytes: Uint8List.fromList([1, 2, 3]),
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('mission-task-step-1')));
+      await tester.pumpAndSettle();
+      await reveal(tester, const ValueKey('mission-upload-evidence'));
+      final uploadAction = tester
+          .widget<TextButton>(
+            find.byKey(const ValueKey('mission-upload-evidence')),
+          )
+          .onPressed!;
+      await tester.runAsync(() => (uploadAction as Future<void> Function())());
+      await tester.pumpAndSettle();
+      expect(uploads, 1);
+      expect(find.text('Arquivo excede 10 MB.'), findsAtLeastNWidgets(1));
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
+    'upload com sessão expirada orienta nova entrada',
+    (tester) async {
+      wideSurface(tester);
+      final task = taskFixture();
+      bridge.setClientForTesting(
+        MockClient((request) async {
+          if (request.url.path == '/mission-tasks/41' &&
+              request.method == 'GET') {
+            return jsonResponse(task);
+          }
+          if (request.url.path == '/mission-tasks/41/evidence-files') {
+            return jsonResponse({'detail': 'Sessão expirada.'}, 401);
+          }
+          throw StateError(
+            'Rota inesperada: ${request.method} ${request.url.path}',
+          );
+        }),
+      );
+      await openTask(
+        tester,
+        picker: () async => MissionEvidenceSelection(
+          name: 'evidencia.pdf',
+          bytes: Uint8List.fromList([1, 2, 3]),
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('mission-task-step-1')));
+      await tester.pumpAndSettle();
+      await reveal(tester, const ValueKey('mission-upload-evidence'));
+      final uploadAction = tester
+          .widget<TextButton>(
+            find.byKey(const ValueKey('mission-upload-evidence')),
+          )
+          .onPressed!;
+      await tester.runAsync(() => (uploadAction as Future<void> Function())());
+      await tester.pumpAndSettle();
+      expect(find.textContaining('sessão expirou'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
     'saída pede descarte e permite continuar sem perder a evidência',
     (tester) async {
       wideSurface(tester);

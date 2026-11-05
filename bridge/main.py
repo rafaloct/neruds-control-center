@@ -18,6 +18,7 @@ from logging.handlers import TimedRotatingFileHandler
 from email.message import EmailMessage
 from html import escape, unescape
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 from weakref import WeakValueDictionary
@@ -2382,6 +2383,13 @@ def mission_checklist_update(
 
 EVIDENCE_MAX_BYTES = 10 * 1024 * 1024
 
+# Extensões executáveis não são evidência documental; a recusa é explícita
+# para o usuário ver o motivo exato em vez de uma falha genérica.
+EVIDENCE_BLOCKED_EXTENSIONS = {
+    ".apk", ".appimage", ".bat", ".cmd", ".com", ".dll", ".exe",
+    ".jar", ".js", ".msi", ".ps1", ".scr", ".sh", ".vbs",
+}
+
 
 @app.post("/mission-tasks/{task_id}/evidence-files", status_code=201)
 async def mission_evidence_upload(
@@ -2395,17 +2403,28 @@ async def mission_evidence_upload(
         raise HTTPException(status_code=422, detail="Arquivo vazio.")
     if len(content) > EVIDENCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Arquivo excede 10 MB.")
+    filename = file.filename or "evidence.bin"
+    if Path(filename).suffix.lower() in EVIDENCE_BLOCKED_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail="Formato de arquivo não aceito como evidência.",
+        )
     try:
         item = mission_store.add_evidence_file(
             task_id,
             actor=session["username"],
-            filename=file.filename or "evidence.bin",
+            filename=filename,
             content=content,
             content_type=file.content_type,
             note=note,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
+    except OSError:
+        raise HTTPException(
+            status_code=507,
+            detail="Não foi possível gravar o arquivo no armazenamento do serviço.",
+        )
     return {"evidence": item}
 
 

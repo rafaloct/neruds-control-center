@@ -1347,46 +1347,54 @@ def add_evidence_file(
 
         target_dir = _evidence_dir(task_id)
         target_dir.mkdir(parents=True, exist_ok=True)
-        (target_dir / stored_name).write_bytes(content)
+        target_path = target_dir / stored_name
+        target_path.write_bytes(content)
 
-        cur = conn.execute(
-            """
-            INSERT INTO task_evidence_file
-            (task_id,filename,stored_name,content_type,size_bytes,sha256,note,uploaded_by,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                task_id,
-                safe_name,
-                stored_name,
-                content_type,
-                len(content),
-                digest,
-                note,
-                actor,
-                utcnow(),
-            ),
-        )
-        evidence_id = int(cur.lastrowid)
-        conn.execute(
-            """
-            INSERT INTO mission_event
-            (task_id,actor,event_type,from_stage,to_stage,note,evidence_url,changes_json,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                task_id,
-                actor,
-                "evidence_registered",
-                task["current_stage"],
-                task["current_stage"],
-                note,
-                f"/mission-evidence/{evidence_id}",
-                _json({"file": safe_name, "sha256": digest, "size_bytes": len(content)}),
-                utcnow(),
-            ),
-        )
-        conn.commit()
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO task_evidence_file
+                (task_id,filename,stored_name,content_type,size_bytes,sha256,note,uploaded_by,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    task_id,
+                    safe_name,
+                    stored_name,
+                    content_type,
+                    len(content),
+                    digest,
+                    note,
+                    actor,
+                    utcnow(),
+                ),
+            )
+            evidence_id = int(cur.lastrowid)
+            conn.execute(
+                """
+                INSERT INTO mission_event
+                (task_id,actor,event_type,from_stage,to_stage,note,evidence_url,changes_json,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    task_id,
+                    actor,
+                    "evidence_registered",
+                    task["current_stage"],
+                    task["current_stage"],
+                    note,
+                    f"/mission-evidence/{evidence_id}",
+                    _json({"file": safe_name, "sha256": digest, "size_bytes": len(content)}),
+                    utcnow(),
+                ),
+            )
+            conn.commit()
+        except Exception:
+            try:
+                target_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
     return get_evidence_file(evidence_id)
 
