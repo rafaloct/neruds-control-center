@@ -336,6 +336,66 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('referência de taxonomia: cadastrar novo termo seleciona',
+      (tester) async {
+    tester.view.physicalSize = const Size(1600, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    var termCreated = false;
+    final calls = <String>[];
+    bridge.setClientForTesting(MockClient((request) async {
+      calls.add('${request.method} ${request.url.path}');
+      if (request.url.path == '/manage/options/taxonomy_term/tags') {
+        return json_({
+          'options': termCreated
+              ? [
+                  {'id': 9, 'uuid': 'u-9', 'label': 'Turismo rural'}
+                ]
+              : [],
+        });
+      }
+      if (request.url.path == '/manage/taxonomy/tags' &&
+          request.method == 'POST') {
+        termCreated = true;
+        return json_({
+          'ok': true,
+          'tid': 9,
+          'uuid': 'u-9',
+          'title': 'Turismo rural',
+        }, 201);
+      }
+      return http.Response('not found', 404);
+    }));
+    final bundle = ManageBundle.fromJson(
+      'noticia',
+      noticiaSchema(),
+      canCreate: true,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: const [
+          FlutterQuillLocalizations.delegate,
+        ],
+        home: ManageFormPage(bundle: bundle),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Cadastrar novo termo'), findsOneWidget);
+    await tester.tap(find.text('Cadastrar novo termo'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).last, 'Turismo rural');
+    await tester.tap(find.text('Cadastrar'));
+    await tester.pumpAndSettle();
+    // Termo criado via POST no vocabulário certo e já selecionado (chip).
+    expect(
+      calls.any((c) => c == 'POST /manage/taxonomy/tags'),
+      isTrue,
+      reason: 'criação deve chamar POST /manage/taxonomy/tags — $calls',
+    );
+    expect(find.text('Turismo rural'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('campo obrigatório vazio não trava — erro só ao salvar',
       (tester) async {
     bridge.setClientForTesting(MockClient((request) async {

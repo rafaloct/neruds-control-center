@@ -680,7 +680,22 @@ class _ManageFormPageState extends State<ManageFormPage> {
   /// só visualização/edição (permissões do portal).
   Widget _createOptionButton(ManageField f) {
     final target = f.target;
-    if (target == null || !target.startsWith('node:')) {
+    if (target == null) {
+      return const SizedBox.shrink();
+    }
+    if (target.startsWith('taxonomy_term:')) {
+      // Vocabulários abertos (auto_create no Drupal): o operador cria o
+      // termo no portal e ele já entra selecionado no campo.
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          icon: const Icon(Icons.add, size: 16),
+          label: const Text('Cadastrar novo termo'),
+          onPressed: () => _createTaxonomyTerm(f, target.substring(14)),
+        ),
+      );
+    }
+    if (!target.startsWith('node:')) {
       return const SizedBox.shrink();
     }
     final bundleName = target.substring(5);
@@ -719,6 +734,68 @@ class _ManageFormPageState extends State<ManageFormPage> {
         _refSelections[f.name] = [options.first];
       }
     });
+  }
+
+  /// Cria um termo de taxonomia sem sair do fluxo (tags e vocabulários
+  /// abertos). Se já existir termo com o mesmo nome, só seleciona —
+  /// evita duplicar entrada no vocabulário.
+  Future<void> _createTaxonomyTerm(ManageField f, String vocab) async {
+    final ctrl = TextEditingController();
+    final typed = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Novo(a) ${f.label}'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Nome do termo',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, ctrl.text),
+            child: const Text('Cadastrar'),
+          ),
+        ],
+      ),
+    );
+    final name = typed?.trim() ?? '';
+    if (name.isEmpty || !mounted) return;
+    try {
+      ManageOption? opt;
+      for (final o in _refOptions[f.name] ?? const <ManageOption>[]) {
+        if (o.label.toLowerCase() == name.toLowerCase()) opt = o;
+      }
+      if (opt == null) {
+        await ManageService.saveTerm(vocab, values: {'name': name});
+        _refOptions.remove(f.name);
+        for (final o in await _loadOptions(f, force: true)) {
+          if (o.label.toLowerCase() == name.toLowerCase()) opt = o;
+        }
+      }
+      if (opt == null || !mounted) return;
+      final chosen = opt;
+      setState(() {
+        final sel = _refSelections[f.name] ??= [];
+        if (f.multiple) {
+          if (!sel.any((s) => s.id == chosen.id)) sel.add(chosen);
+        } else {
+          _refSelections[f.name] = [chosen];
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('O portal recusou o novo termo.')),
+      );
+    }
   }
 
   Future<void> _pickFromLibrary(ManageField field) async {
