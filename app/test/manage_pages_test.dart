@@ -335,4 +335,46 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('wizard avança mesmo com campo obrigatório vazio na etapa',
+      (tester) async {
+    bridge.setClientForTesting(MockClient((request) async {
+      if (request.url.path == '/manage/noticia/42') {
+        return json_({
+          'nid': 42,
+          'uuid': 'u-42',
+          'title': 'Notícia real',
+          'status': true,
+          // field_data_noticia segue required no schema, mas sem valor —
+          // fichas são preenchidas progressivamente.
+          'values': {'title': 'Notícia real'},
+          'relationships': {},
+        });
+      }
+      return http.Response('not found', 404);
+    }));
+    final bundle = ManageBundle.fromJson(
+      'noticia',
+      bundleSchema(),
+      canCreate: true,
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: ManageFormPage(bundle: bundle, nid: 42)),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Passo 1 de 2'), findsOneWidget);
+    // "Avançar" não valida a etapa atual — segue direto.
+    await tester.tap(find.text('Avançar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Passo 2 de 2'), findsOneWidget);
+    expect(find.text('Revise os campos marcados'), findsNothing);
+    // Voltar pela etapa e pular pra frente pelo indicador também funciona.
+    await tester.tap(find.text('Voltar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Passo 1 de 2'), findsOneWidget);
+    await tester.tap(find.text('2'));
+    await tester.pumpAndSettle();
+    expect(find.text('Passo 2 de 2'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
 }

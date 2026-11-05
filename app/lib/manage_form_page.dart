@@ -424,15 +424,8 @@ class _ManageFormPageState extends State<ManageFormPage> {
       widget.bundle.fields.where((f) => f.group == group).toList();
 
   void _continue() {
-    final key = _stepKeys[_step];
-    if (!(key.currentState?.validate() ?? true)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Revise os campos marcados antes de avançar.'),
-        ),
-      );
-      return;
-    }
+    // Fichas são preenchidas progressivamente — avançar nunca exige
+    // a etapa atual completa. Validação só no salvamento final.
     setState(() => _step++);
   }
 
@@ -485,9 +478,7 @@ class _ManageFormPageState extends State<ManageFormPage> {
                     Padding(
                       padding: const EdgeInsets.only(right: 6),
                       child: InkWell(
-                        onTap: i < _step
-                            ? () => setState(() => _step = i)
-                            : null,
+                        onTap: () => setState(() => _step = i),
                         borderRadius: BorderRadius.circular(10),
                         child: Container(
                           width: 20,
