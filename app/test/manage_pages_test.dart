@@ -119,7 +119,8 @@ void main() {
     expect(find.text('Rascunho'), findsOneWidget);
   });
 
-  testWidgets('edição injeta valores do detail no wizard', (tester) async {
+  testWidgets('edição injeta valores do detail no formulário',
+      (tester) async {
     bridge.setClientForTesting(MockClient((request) async {
       if (request.url.path == '/manage/noticia/42') {
         return json_({
@@ -145,15 +146,19 @@ void main() {
       MaterialApp(home: ManageFormPage(bundle: bundle, nid: 42)),
     );
     await tester.pumpAndSettle();
-    // O wizard deve mostrar o passo inicial com o título preenchido.
+    // O formulário deve mostrar o título preenchido.
     expect(
       find.widgetWithText(TextFormField, 'Oficina de agroecologia'),
       findsOneWidget,
     );
   });
 
-  testWidgets('wizard com schema completo renderiza todos os passos',
+  testWidgets('formulário renderiza todas as seções de uma vez',
       (tester) async {
+    // Superfície grande para a ListView (lazy) montar todas as seções.
+    tester.view.physicalSize = const Size(1600, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
     bridge.setClientForTesting(MockClient((request) async {
       if (request.url.path.contains('/manage/options')) {
         return json_({'options': []});
@@ -196,21 +201,17 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Informações básicas'), findsWidgets);
-    // Novo header compacto: indicador "Passo N de 5" + progresso linear
-    expect(find.text('Passo 1 de 5'), findsOneWidget);
-    expect(find.byType(LinearProgressIndicator), findsOneWidget);
-    // Não há mais Stepper vertical consumindo faixa gigante
+    // Sem etapas: campos de grupos diferentes aparecem juntos, como na
+    // ficha de detalhe. Sem indicador de passo nem botão de navegação.
+    expect(find.text('Informações básicas'), findsOneWidget);
+    expect(find.text('Conteúdo'), findsOneWidget);
+    expect(find.text('Vínculos'), findsOneWidget);
+    expect(find.text('Mídia'), findsOneWidget);
+    expect(find.textContaining('Passo'), findsNothing);
+    expect(find.text('Avançar'), findsNothing);
+    expect(find.text('Voltar'), findsNothing);
+    expect(find.byType(LinearProgressIndicator), findsNothing);
     expect(find.byType(Stepper), findsNothing);
-    // editor rico visível no passo de conteúdo
-    await tester.tap(find.text('Avançar').first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Avançar').first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Avançar').first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Avançar').first);
-    await tester.pumpAndSettle();
     expect(find.text('Salvar'), findsOneWidget);
   });
 
@@ -335,7 +336,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('wizard avança mesmo com campo obrigatório vazio na etapa',
+  testWidgets('campo obrigatório vazio não trava — erro só ao salvar',
       (tester) async {
     bridge.setClientForTesting(MockClient((request) async {
       if (request.url.path == '/manage/noticia/42') {
@@ -361,19 +362,14 @@ void main() {
       MaterialApp(home: ManageFormPage(bundle: bundle, nid: 42)),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Passo 1 de 2'), findsOneWidget);
-    // "Avançar" não valida a etapa atual — segue direto.
-    await tester.tap(find.text('Avançar'));
+    // Todos os campos na tela de uma vez — nenhuma navegação de etapa.
+    expect(find.text('Título *'), findsOneWidget);
+    expect(find.text('Data *'), findsOneWidget);
+    expect(find.text('Avançar'), findsNothing);
+    // Salvar com o required vazio marca o campo — validação só no save.
+    await tester.tap(find.text('Salvar'));
     await tester.pumpAndSettle();
-    expect(find.text('Passo 2 de 2'), findsOneWidget);
-    expect(find.text('Revise os campos marcados'), findsNothing);
-    // Voltar pela etapa e pular pra frente pelo indicador também funciona.
-    await tester.tap(find.text('Voltar'));
-    await tester.pumpAndSettle();
-    expect(find.text('Passo 1 de 2'), findsOneWidget);
-    await tester.tap(find.text('2'));
-    await tester.pumpAndSettle();
-    expect(find.text('Passo 2 de 2'), findsOneWidget);
+    expect(find.text('Informe Data.'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
