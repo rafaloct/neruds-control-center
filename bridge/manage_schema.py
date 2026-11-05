@@ -49,7 +49,7 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
             _f("title", "Título", required=True),
             _f("field_resumo_noticia", "Resumo", "longtext"),
             _f("body", "Texto", "longtext"),
-            _f("field_data_noticia", "Data da notícia", "date", required=True),
+            _f("field_data_noticia", "Data da notícia", "date", required=False),
             _f("field_autor_noticia", "Autor da notícia"),
             _f("field_link_noticia", "Link da notícia", "link"),
             _f("field_fonte_externa", "Fonte externa", "link"),
@@ -83,8 +83,8 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
         "fields": [
             _f("title", "Título", required=True),
             _f("field_descricao_evento", "Descrição", "longtext"),
-            _f("field_data_evento", "Data do evento", "date", required=True),
-            _f("field_local_evento", "Local", required=True),
+            _f("field_data_evento", "Data do evento", "date", required=False),
+            _f("field_local_evento", "Local", required=False),
             _f("field_organizadores", "Organizadores"),
             _f("field_link_inscricao", "Link de inscrição", "link"),
             _f("field_link_submissao", "Link para submissão", "link"),
@@ -98,7 +98,7 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
         "icon": "folder",
         "fields": [
             _f("title", "Título", required=True),
-            _f("field_coordenador", "Coordenador", required=True),
+            _f("field_coordenador", "Coordenador", required=False),
             _f("field_resumo", "Resumo", "longtext"),
             _f("field_descricao_projeto", "Descrição", "longtext"),
             _f("field_justificativa", "Justificativa", "longtext"),
@@ -144,8 +144,8 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
         "fields": [
             _f("title", "Título do perfil", required=True,
                hint="Como o perfil aparece nas listagens"),
-            _f("field_nome_completo", "Nome completo", required=True),
-            _f("field_email", "E-mail", "email", required=True),
+            _f("field_nome_completo", "Nome completo", required=False),
+            _f("field_email", "E-mail", "email", required=False),
             _f("field_biografia", "Biografia/Resumo", "longtext"),
             _f("field_foto_perfil", "Foto do perfil", "image"),
             _f("field_lattes", "Currículo Lattes", "link"),
@@ -181,7 +181,7 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
         "fields": [
             _f("title", "Título da página", required=True,
                hint="Nome interno de referência"),
-            _f("field_titulo_publicacao", "Título da publicação", required=True),
+            _f("field_titulo_publicacao", "Título da publicação", required=False),
             _f(
                 "field_pesquisadores_autores",
                 "Autores do núcleo",
@@ -192,8 +192,8 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
             ),
             _f("field_autores", "Autores externos / demais autores",
                hint="Quem não é pesquisador do NERUDS — escreva o nome"),
-            _f("field_ano_publicacao", "Ano de publicação", "number", required=True),
-            _f("field_link_publicacao", "Link da publicação", "link", required=True),
+            _f("field_ano_publicacao", "Ano de publicação", "number", required=False),
+            _f("field_link_publicacao", "Link da publicação", "link", required=False),
             _f("field_doi", "DOI"),
             _f("field_pdf", "Arquivos PDF", "file", multiple=True),
             _f(
