@@ -5,9 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'app_config.dart';
 import 'bridge_http.dart' as http;
-import 'manage_form_page.dart';
-import 'manage_models.dart';
-import 'manage_service.dart';
+import 'manage_navigation.dart';
 import 'node_picker_sheet.dart';
 import 'portal_read.dart' show missionBoardChanged;
 import 'session_widgets.dart';
@@ -1686,52 +1684,17 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
   }
 
   /// Abre a ficha vinculada no formulário nativo — sem sair do app.
+  /// Delega a resolução do setor ao openManageEditor: o tipo real do nó
+  /// é descoberto no portal (nodeType), sem perguntar ao operador nem
+  /// confiar em gap_bundle — que pode estar desatualizado após relink.
+  /// O seletor de setor só aparece se o nó não for de tipo gerenciável.
   Future<void> _editInApp() async {
     final nid = _taskNid;
     if (nid == null) {
       _message('Vincule a ficha do portal primeiro.');
       return;
     }
-    List<ManageBundle> schemas;
-    try {
-      schemas = await ManageService.schemas();
-    } catch (e) {
-      _message('O portal recusou a consulta aos setores.');
-      return;
-    }
-    if (!mounted) return;
-    final gapBundle = task?['gap_bundle']?.toString() ?? '';
-    var bundle =
-        schemas.where((s) => s.name == gapBundle).firstOrNull;
-    bundle ??= await showModalBottomSheet<ManageBundle>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-              child: Text(
-                'Qual é o setor desta ficha?',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
-            ),
-            for (final s in schemas)
-              ListTile(
-                title: Text(s.label),
-                onTap: () => Navigator.pop(context, s),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (!mounted || bundle == null) return;
-    final changed = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => ManageFormPage(bundle: bundle!, nid: nid),
-      ),
-    );
+    final changed = await openManageEditor(context, nid: nid);
     if (changed == true) {
       // Recarrega a tarefa para refletir a edição na reconciliação.
       await _recheckGap();
