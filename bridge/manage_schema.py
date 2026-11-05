@@ -133,7 +133,7 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
                 "reference",
                 target="taxonomy_term:tipo_projeto",
             ),
-            _f("field_imagens_projeto", "Galeria", "image", multiple=True),
+            _f("field_galeria_imagens", "Galeria", "image", multiple=True),
             _f("field_pdf", "Arquivos PDF", "file", multiple=True),
         ],
     },
@@ -442,7 +442,7 @@ _FIELD_GROUPS: dict[str, dict[str, str]] = {
         "field_equipe_pesquisa": "team",
         "field_linhas_pesquisa": "team",
         "field_status_projeto": "team", "field_tipo_projeto": "team",
-        "field_imagens_projeto": "media", "field_pdf": "media",
+        "field_galeria_imagens": "media", "field_pdf": "media",
     },
     "perfil_pesquisador": {
         "title": "basics", "field_nome_completo": "basics",
