@@ -11,6 +11,19 @@ import 'app_config.dart';
 // Only these bridge contract messages are safe to display verbatim. Never pass
 // arbitrary response bodies, HTML, or exception details through to the UI.
 const _safeResponseMessages = <int, Set<String>>{
+  404: {
+    'Tarefa não encontrada.',
+    'Evidência não encontrada.',
+  },
+  413: {
+    'Arquivo excede 10 MB.',
+  },
+  415: {
+    'Formato de arquivo não aceito como evidência.',
+  },
+  422: {
+    'Arquivo vazio.',
+  },
   502: {
     'Drupal retornou sem confirmar o identificador numérico da notícia. '
         'Confira o registro no portal antes de repetir.',
@@ -26,6 +39,9 @@ const _safeResponseMessages = <int, Set<String>>{
     'A oportunidade precisa ser aprovada como pauta antes de virar rascunho.',
     'Uma oportunidade duplicada não pode virar rascunho. '
         'Use o item de referência para preservar a auditoria.',
+  },
+  507: {
+    'Não foi possível gravar o arquivo no armazenamento do serviço.',
   },
 };
 

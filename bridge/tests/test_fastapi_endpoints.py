@@ -881,3 +881,81 @@ async def test_mission_evidence_files(async_client, extensionista_session, seede
 
     res_missing_ev = await async_client.get("/mission-evidence/99999", headers=headers)
     assert res_missing_ev.status_code == 404
+
+
+async def test_mission_evidence_upload_refusals(
+    async_client, extensionista_session, seeded_mission
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+    url = f"/mission-tasks/{task['id']}/evidence-files"
+
+    res_empty = await async_client.post(
+        url, files={"file": ("vazio.txt", b"")}, headers=headers
+    )
+    assert res_empty.status_code == 422
+    assert res_empty.json()["detail"] == "Arquivo vazio."
+
+    res_big = await async_client.post(
+        url,
+        files={"file": ("grande.bin", b"x" * (10 * 1024 * 1024 + 1))},
+        headers=headers,
+    )
+    assert res_big.status_code == 413
+    assert res_big.json()["detail"] == "Arquivo excede 10 MB."
+
+    res_exe = await async_client.post(
+        url, files={"file": ("payload.exe", b"MZ")}, headers=headers
+    )
+    assert res_exe.status_code == 415
+    assert res_exe.json()["detail"] == (
+        "Formato de arquivo não aceito como evidência."
+    )
+
+
+async def test_mission_evidence_storage_failure(
+    async_client, extensionista_session, seeded_mission, monkeypatch
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+
+    def _fail(*args, **kwargs):
+        raise OSError("armazenamento indisponível (simulado)")
+
+    monkeypatch.setattr(mission_store, "add_evidence_file", _fail)
+    res = await async_client.post(
+        f"/mission-tasks/{task['id']}/evidence-files",
+        files={"file": ("doc.pdf", b"%PDF-1.4")},
+        headers=headers,
+    )
+    assert res.status_code == 507
+    assert "armazenamento" in res.json()["detail"]
+
+
+async def test_mission_evidence_no_orphan_blob_on_db_failure(
+    async_client, extensionista_session, seeded_mission, monkeypatch
+):
+    token, _ = extensionista_session
+    headers = {"Authorization": f"Bearer {token}"}
+    task = mission_store.list_tasks(1, limit=1)["items"][0]
+
+    def _boom(payload):
+        raise RuntimeError("falha de escrita no banco (simulada)")
+
+    monkeypatch.setattr(mission_store, "_json", _boom)
+    with pytest.raises(RuntimeError):
+        await async_client.post(
+            f"/mission-tasks/{task['id']}/evidence-files",
+            files={"file": ("doc.pdf", b"%PDF-1.4")},
+            headers=headers,
+        )
+
+    evidence_dir = mission_store.DATA_DIR / "evidence"
+    leftover = (
+        [p for p in evidence_dir.rglob("*") if p.is_file()]
+        if evidence_dir.exists()
+        else []
+    )
+    assert leftover == []

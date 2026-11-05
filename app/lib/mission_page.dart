@@ -1440,16 +1440,26 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     if (saving) return;
     try {
       MissionEvidenceSelection? selected;
-      if (widget.evidencePicker != null) {
-        selected = await widget.evidencePicker!();
-      } else {
-        final file = await FilePicker.pickFile(dialogTitle: 'Anexar evidência');
-        if (file != null) {
-          selected = MissionEvidenceSelection(
-            name: file.name,
-            bytes: await file.readAsBytes(),
+      try {
+        if (widget.evidencePicker != null) {
+          selected = await widget.evidencePicker!();
+        } else {
+          final file = await FilePicker.pickFile(dialogTitle: 'Anexar evidência');
+          if (file != null) {
+            selected = MissionEvidenceSelection(
+              name: file.name,
+              bytes: await file.readAsBytes(),
+            );
+          }
+        }
+      } catch (_) {
+        if (_currentSessionRequest(revision)) {
+          _message(
+            'Não foi possível ler o arquivo escolhido. '
+            'Confira se ele continua acessível e tente novamente.',
           );
         }
+        return;
       }
       if (selected == null || !_currentSessionRequest(revision)) return;
       if (selected.bytes.isEmpty) {
@@ -1477,7 +1487,12 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       );
       final response = await http.Response.fromStream(await http.send(request));
       if (!_currentSessionRequest(revision)) return;
-      if (response.statusCode != 201) throw Exception(_error(response));
+      if (response.statusCode != 201) {
+        if (response.statusCode == 401 || response.statusCode == 403) {
+          throw HttpStatusException(response.statusCode);
+        }
+        throw workflowResponseError(response);
+      }
       _didChange = true;
       await _load(preserveEdits: true);
       if (!_currentSessionRequest(revision)) return;
