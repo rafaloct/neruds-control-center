@@ -26,8 +26,6 @@ class ManageFormPage extends StatefulWidget {
 
 class _ManageFormPageState extends State<ManageFormPage> {
   final _formKey = GlobalKey<FormState>();
-  final _stepKeys = <GlobalKey<FormState>>[];
-  int _step = 0;
   final Map<String, TextEditingController> _controllers = {};
   final Map<String, QuillController> _richControllers = {};
   final Map<String, bool> _bools = {};
@@ -309,16 +307,7 @@ class _ManageFormPageState extends State<ManageFormPage> {
     return values;
   }
 
-  bool _validateAll() {
-    if (widget.bundle.steps.isEmpty) {
-      return _formKey.currentState?.validate() ?? false;
-    }
-    var ok = true;
-    for (final key in _stepKeys) {
-      if (!(key.currentState?.validate() ?? true)) ok = false;
-    }
-    return ok;
-  }
+  bool _validateAll() => _formKey.currentState?.validate() ?? false;
 
   Future<void> _save() async {
     if (_saving || !_validateAll()) return;
@@ -374,23 +363,53 @@ class _ManageFormPageState extends State<ManageFormPage> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : widget.bundle.steps.isEmpty
-              ? _listForm()
-              : _wizardForm(),
+          : _listForm(),
     );
   }
 
+  /// Formulário plano — as etapas do schema viram seções empilhadas,
+  /// todas visíveis de uma vez (mesmo padrão da ficha de detalhe).
+  /// Fichas são preenchidas progressivamente: nenhuma etapa trava a
+  /// edição e a validação só acontece no salvamento final.
   Widget _listForm() {
+    final groups = <({String label, List<ManageField> fields})>[
+      if (widget.bundle.steps.isEmpty)
+        (label: '', fields: widget.bundle.fields)
+      else
+        for (final s in widget.bundle.steps)
+          if (s.id != 'review')
+            (label: s.label, fields: _fieldsOf(s.id)),
+    ];
     return Form(
       key: _formKey,
       child: ListView(
         padding: const EdgeInsets.all(20),
         children: [
           if (_error != null) ...[_errorCard(), const SizedBox(height: 12)],
-          for (final f in widget.bundle.fields) ...[
-            _buildField(f),
-            const SizedBox(height: 14),
-          ],
+          for (final g in groups)
+            if (g.fields.isNotEmpty)
+              Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (g.label.isNotEmpty) ...[
+                        Text(
+                          g.label,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const Divider(height: 18),
+                      ],
+                      for (final f in g.fields) ...[
+                        _buildField(f),
+                        const SizedBox(height: 14),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
           _publishSwitch(),
           const SizedBox(height: 20),
           FilledButton.icon(
@@ -422,205 +441,6 @@ class _ManageFormPageState extends State<ManageFormPage> {
 
   List<ManageField> _fieldsOf(String group) =>
       widget.bundle.fields.where((f) => f.group == group).toList();
-
-  void _continue() {
-    // Fichas são preenchidas progressivamente — avançar nunca exige
-    // a etapa atual completa. Validação só no salvamento final.
-    setState(() => _step++);
-  }
-
-  Widget _wizardForm() {
-    final steps = widget.bundle.steps;
-    while (_stepKeys.length < steps.length) {
-      _stepKeys.add(GlobalKey<FormState>());
-    }
-    final last = _step == steps.length - 1;
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    return Column(
-      children: [
-        // Header compacto: título da etapa + progresso em uma faixa só.
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      steps[_step].label,
-                      style: theme.textTheme.titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  Text(
-                    'Passo ${_step + 1} de ${steps.length}',
-                    style: theme.textTheme.labelMedium?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(
-                  value: (_step + 1) / steps.length,
-                  minHeight: 5,
-                  backgroundColor: scheme.surfaceContainerHighest,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Row(
-                children: [
-                  for (var i = 0; i < steps.length; i++)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: InkWell(
-                        onTap: () => setState(() => _step = i),
-                        borderRadius: BorderRadius.circular(10),
-                        child: Container(
-                          width: 20,
-                          height: 20,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: i < _step
-                                ? scheme.primary
-                                : i == _step
-                                    ? scheme.primaryContainer
-                                    : scheme.surfaceContainerHighest,
-                          ),
-                          alignment: Alignment.center,
-                          child: i < _step
-                              ? Icon(Icons.check,
-                                  size: 12,
-                                  color: scheme.onPrimary)
-                              : Text(
-                                  '${i + 1}',
-                                  style:
-                                      theme.textTheme.labelSmall?.copyWith(
-                                    fontSize: 10,
-                                    color: i == _step
-                                        ? scheme.onPrimaryContainer
-                                        : scheme.onSurfaceVariant,
-                                  ),
-                                ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        const Divider(height: 1),
-        // Só a etapa atual é renderizada — nada de Stepper vertical
-        // consumindo faixa gigante de conectores.
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 720),
-                child: last
-                ? Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (_error != null) ...[
-                        _errorCard(),
-                        const SizedBox(height: 12),
-                      ],
-                      Card(
-                        child: Column(
-                          children: [
-                            for (final f in widget.bundle.fields)
-                              ListTile(
-                                dense: true,
-                                title: Text(f.label),
-                                subtitle: Text(
-                                  _preview(f),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      _publishSwitch(),
-                    ],
-                  )
-                : Form(
-                    key: _stepKeys[_step],
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        for (final f in _fieldsOf(steps[_step].id)) ...[
-                          _buildField(f),
-                          const SizedBox(height: 14),
-                        ],
-                      ],
-                    ),
-                  ),
-              ),
-            ),
-          ),
-        ),
-        SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-            child: Row(
-              children: [
-                if (_step > 0)
-                  TextButton.icon(
-                    onPressed: () => setState(() => _step--),
-                    icon: const Icon(Icons.arrow_back),
-                    label: const Text('Voltar'),
-                  ),
-                const Spacer(),
-                FilledButton.icon(
-                  onPressed: last ? (_saving ? null : _save) : _continue,
-                  icon: Icon(
-                    last ? Icons.save_outlined : Icons.arrow_forward,
-                  ),
-                  label: Text(
-                    last ? (_saving ? 'Salvando…' : 'Salvar') : 'Avançar',
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  String _preview(ManageField f) {
-    switch (f.kind) {
-      case 'bool':
-        return (_bools[f.name] ?? false) ? 'Sim' : 'Não';
-      case 'date':
-        return _dateText(_dates[f.name]);
-      case 'reference':
-        final sel = _refSelections[f.name] ?? const [];
-        return sel.isEmpty
-            ? '—'
-            : sel.map((o) => o.label).join(', ');
-      case 'image':
-      case 'file':
-        final uuids = _fileUuids[f.name] ?? const [];
-        return uuids.isEmpty
-            ? '—'
-            : '${uuids.length} arquivo(s) anexado(s)';
-      case 'longtext':
-        final text =
-            _richControllers[f.name]?.document.toPlainText().trim() ?? '';
-        return text.isEmpty ? '—' : text;
-      default:
-        final text = _controllers[f.name]?.text.trim() ?? '';
-        return text.isEmpty ? '—' : text;
-    }
-  }
 
   Widget _buildField(ManageField f) {
     return switch (f.kind) {
