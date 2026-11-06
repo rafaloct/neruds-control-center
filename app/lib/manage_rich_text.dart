@@ -106,7 +106,23 @@ class _ManageRichTextFieldState extends State<ManageRichTextField> {
           ),
           child: QuillSimpleToolbar(
             controller: widget.controller,
-            config: const QuillSimpleToolbarConfig(
+            config: QuillSimpleToolbarConfig(
+              // Ícones com cor explícita — o default do tema deixava os
+              // botões quase invisíveis sobre surfaceContainerHighest.
+              buttonOptions: QuillSimpleToolbarButtonOptions(
+                base: QuillToolbarBaseButtonOptions(
+                  iconTheme: QuillIconTheme(
+                    iconButtonUnselectedData: IconButtonData(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      disabledColor:
+                          theme.colorScheme.onSurface.withValues(alpha: .38),
+                    ),
+                    iconButtonSelectedData: IconButtonData(
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+                ),
+              ),
               multiRowsDisplay: false,
               toolbarSectionSpacing: 2,
               toolbarRunSpacing: 0,
