@@ -90,12 +90,15 @@ void main() {
       ),
     ));
     await tester.pumpAndSettle();
-    expect(assists, 2);
+    // Só longtext é elegível: 'field_coordenador' (text/string curta)
+    // não recebe sugestão — o save inteiro era recusado com um
+    // parágrafo que excede o máximo de 255 do campo.
+    expect(assists, 1);
     expect(find.textContaining('Rascunho'), findsWidgets);
+    expect(find.text('Coordenador'), findsNothing);
     await tester.tap(find.textContaining('Aplicar'));
     await tester.pumpAndSettle();
-    expect(savedFields.toSet(),
-        {'field_resumo', 'field_coordenador'});
+    expect(savedFields.toSet(), {'field_resumo'});
     expect(tester.takeException(), isNull);
   });
 }

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import 'manage_models.dart';
@@ -6,8 +8,9 @@ import 'portal_read.dart';
 
 /// Sugestão em massa com IA — pega as top-3 lacunas críticas da ficha,
 /// gera rascunho de cada via /ai/assist e deixa o operador revisar e
-/// aplicar tudo em um único clique. Apenas campos de texto (text e
-/// longtext) entram; referências, datas e anexos seguem no wizard.
+/// aplicar tudo em um único clique. Apenas longtext entra: campos text
+/// curtos (ex.: Coordenador, string 255) receberiam um parágrafo que o
+/// portal recusa no save — e uma "sugestão" de nome é enchimento.
 class BulkSuggestSheet extends StatefulWidget {
   const BulkSuggestSheet({
     super.key,
@@ -21,7 +24,9 @@ class BulkSuggestSheet extends StatefulWidget {
   final int Function(String fieldName) fieldWeight;
 
   /// Kinds em que a sugestão de IA faz sentido (prosa).
-  static const _proseKinds = {'text', 'longtext'};
+  /// `text` fica de fora: string curta (máx. 255) não comporta parágrafo
+  /// gerado — o save inteiro era recusado pelo portal.
+  static const _proseKinds = {'longtext'};
 
   @override
   State<BulkSuggestSheet> createState() => _BulkSuggestSheetState();
@@ -104,8 +109,9 @@ class _BulkSuggestSheetState extends State<BulkSuggestSheet> {
         setState(() {
           _loading = false;
           _error =
-              'Nenhuma lacuna de texto nesta ficha pode ser sugerida '
-              'por IA (referências, datas e anexos seguem no wizard).';
+              'Nenhuma lacuna de texto longo nesta ficha pode ser '
+              'sugerida por IA (campos curtos, referências, datas e '
+              'anexos seguem no formulário).';
         });
         return;
       }
@@ -182,12 +188,50 @@ class _BulkSuggestSheetState extends State<BulkSuggestSheet> {
       );
       if (!mounted) return;
       Navigator.of(context).pop(true);
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() {
         _applying = false;
-        _error = 'O portal recusou o salvamento das sugestões.';
+        final reason = _portalReason(e);
+        _error = 'O portal recusou o salvamento das sugestões.'
+            '${reason.isEmpty ? '' : ' $reason'}';
       });
+    }
+  }
+
+  /// Extrai a razão legível embutida no erro do bridge/portal — o save
+  /// carrega `save <status>: {json}` com detail.response do Drupal.
+  String _portalReason(Object error) {
+    final text = error.toString();
+    final brace = text.indexOf('{');
+    if (brace < 0) return '';
+    try {
+      final outer = jsonDecode(text.substring(brace));
+      if (outer is! Map) return '';
+      final detail = outer['detail'];
+      String? msg;
+      if (detail is Map) {
+        final inner = detail['response'];
+        if (inner is String) {
+          final b = inner.indexOf('{');
+          if (b >= 0) {
+            final parsed = jsonDecode(inner.substring(b));
+            final first = (parsed['errors'] as List?)?.firstOrNull;
+            msg = first is Map
+                ? (first['detail'] ?? first['title'])?.toString()
+                : null;
+          }
+          msg ??= inner;
+        }
+        msg ??= detail['message']?.toString();
+      } else {
+        msg = detail?.toString();
+      }
+      if (msg == null || msg.isEmpty) return '';
+      final clean = msg.replaceAll(RegExp(r'\s+'), ' ').trim();
+      return clean.length > 220 ? '${clean.substring(0, 220)}…' : clean;
+    } catch (_) {
+      return '';
     }
   }
 
