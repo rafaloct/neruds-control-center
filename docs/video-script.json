@@ -1,0 +1,76 @@
+{
+ "cenas": [
+  {
+   "id": 1,
+   "titulo": "Bem-vindo ao Control Center",
+   "acao": "Tela inicial do navegador, digitando app.neruds.org na barra de endereço",
+   "narracao": "Olá! Este é o NERUDS Control Center, o aplicativo de gestão do portal neruds.org. Aqui você edita conteúdos, acompanha tarefas e monitora a qualidade do site. Vamos aprender a usar cada área de forma simples e prática."
+  },
+  {
+   "id": 2,
+   "titulo": "Fazendo login",
+   "acao": "Clicar no ícone de perfil, preencher email e senha, clicar em Entrar. Barra lateral se expande mostrando as áreas",
+   "narracao": "Para acessar, toque no ícone de perfil no canto superior direito. Digite o e-mail e a senha que você usa no portal neruds.org e toque em Entrar. Pronto! A barra lateral libera todas as áreas de trabalho."
+  },
+  {
+   "id": 3,
+   "titulo": "Conhecendo as áreas",
+   "acao": "Percorrer visualmente a barra lateral, destacando cada item: Início, Conteúdo, Inventário, Monitoramento, Oportunidades, Gestão",
+   "narracao": "A barra lateral organiza seu trabalho em seis áreas. Início mostra o que precisa de atenção hoje, Conteúdo prepara notícias novas, Inventário reúne suas tarefas, Monitoramento analisa a qualidade do portal, Oportunidades exibe editais, e Gestão concentra todos os setores do site."
+  },
+  {
+   "id": 4,
+   "titulo": "Suas tarefas do dia",
+   "acao": "Abrir área Inventário, ativar chip 'Só as minhas', clicar em uma tarefa para ver o detalhe",
+   "narracao": "No Inventário você encontra suas frentes de trabalho. Ative o chip 'Só as minhas' para filtrar apenas o que está sob sua responsabilidade. Ao tocar numa tarefa, você registra evidências, vincula fichas e conclui etapas."
+  },
+  {
+   "id": 5,
+   "titulo": "Qualidade do portal",
+   "acao": "Abrir Monitoramento, mostrar fichas com percentual colorido, badges de status, e destacar os botões Ver, Editar, Sugerir e Criar tarefa",
+   "narracao": "O Monitoramento mostra a completude de cada ficha em cores: verde acima de oitenta por cento, âmbar acima de cinquenta, vermelho abaixo. Você vê quais campos estão faltando e pode editar direto, pedir sugestões da IA ou transformar lacunas em tarefas."
+  },
+  {
+   "id": 6,
+   "titulo": "Buscando e abrindo fichas",
+   "acao": "Gestão → selecionar setor Pesquisadores, usar busca, clicar num item para abrir a ficha interna",
+   "narracao": "Para editar conteúdo, vá em Gestão e escolha o setor desejado, como Pesquisadores ou Notícias. Use a busca ou os filtros para localizar o item. Toque nele para abrir a ficha interna com os dados organizados por etapa."
+  },
+  {
+   "id": 7,
+   "titulo": "Edição rápida de campos",
+   "acao": "Na ficha interna, tocar em um campo de texto, editar no painel que abre, salvar. Mostrar botão 'Sugerir' com estrela",
+   "narracao": "Você pode editar qualquer campo diretamente na ficha. Toque no campo, faça a alteração no painel que aparece e salve. Campos de texto têm o botão 'Sugerir' — a IA esboça conteúdo e você revisa antes de aplicar."
+  },
+  {
+   "id": 8,
+   "titulo": "Formulário completo",
+   "acao": "Clicar em Editar, navegar pelas etapas do wizard (dados gerais, equipe, conteúdo), destacar o campo de pessoa com lupa e botão 'Cadastrar novo', mostrar editor rico",
+   "narracao": "O botão Editar abre o formulário completo em etapas. Campos de pessoa possuem busca e você pode cadastrar um novo pesquisador sem sair do fluxo. O editor de texto oferece formatação real: negrito, listas, links e mais."
+  },
+  {
+   "id": 9,
+   "titulo": "Criando novos itens",
+   "acao": "Mostrar botão '+ Nova Notícia' (ou similar), explicar que alguns tipos só administradores podem criar",
+   "narracao": "Para criar um item novo, use o botão de mais que aparece nos setores onde sua conta tem permissão. Tipos como projetos, publicações e eventos são reservados a administradores — mas você sempre pode editar o que já existe."
+  },
+  {
+   "id": 10,
+   "titulo": "Menus, páginas e taxonomias",
+   "acao": "Gestão → Menus do portal (editar item), Páginas institucionais (editar título/descrição), Categorias e Tags (criar termo)",
+   "narracao": "Em Gestão você também gerencia os menus do portal, edita páginas institucionais e organiza categorias e tags. A Prévia da página inicial mostra como as seções são montadas com os conteúdos publicados."
+  },
+  {
+   "id": 11,
+   "titulo": "Biblioteca de mídia",
+   "acao": "Abrir campo de imagem num formulário, mostrar seletor da biblioteca",
+   "narracao": "Ao preencher campos de imagem ou arquivo, o seletor abre a Biblioteca de mídia. Escolha um arquivo já enviado ou faça upload de um novo. Tudo fica organizado e reutilizável em outras fichas."
+  },
+  {
+   "id": 12,
+   "titulo": "Dicas finais",
+   "acao": "Tela de encerramento com bullets das dicas atemporais aparecendo suavemente",
+   "narracao": "Lembre-se: tudo que você salva no app vai direto ao portal, sugestões de IA são sempre rascunhos para revisar, e o app só mostra o que sua conta pode fazer. Se uma mudança não aparecer no site, confirme que a ficha está publicada e aguarde a reconstrução da página. Bom trabalho!"
+  }
+ ]
+}

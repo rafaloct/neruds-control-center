@@ -49,6 +49,26 @@ https://largeo.tail2faed0.ts.net:8443
 
 Não voltar a bindar o Uvicorn em `0.0.0.0` ou `100.111.132.8` sem uma necessidade específica.
 
+### Produção pública (Dokploy + Cloudflare)
+
+O bridge também roda em produção no `srv1533541` (Dokploy, projeto dedicado
+`neruds-control-center`), atrás do Traefik do próprio Dokploy e da Cloudflare:
+
+```text
+https://app.neruds.org  -> web (nginx, Flutter Web)
+https://api.neruds.org  -> bridge (FastAPI, :8787)
+```
+
+- Sessões persistem em `data/sessions.sqlite3` com cookies Drupal e CSRF
+  criptografados (Fernet, `NERUDS_SESSION_KEY`) — login sobrevive a restart
+  e o mesmo usuário opera web, desktop e mobile ao mesmo tempo.
+- `GET /config/app` entrega config remota (features, onboarding, anúncio);
+  `PUT /config/app` (admin) ou a edição de `data/app_config.json` ajustam o
+  app sem rebuild/redeploy.
+- Build e deploy: `deploy/dokploy/README.md` (compose, env, DNS, operação).
+
+O bridge do LARGeo na tailnet segue como caminho de desenvolvimento/Q&A.
+
 ## Estrutura
 
 - `app/` — aplicativo Flutter.
@@ -124,10 +144,11 @@ O bridge:
 
 - encaminha a senha ao formulário nativo do Drupal;
 - não persiste a senha;
-- guarda apenas cookies Drupal e CSRF em memória;
+- guarda apenas cookies Drupal e CSRF, criptografados em repouso;
 - entrega ao app um bearer token temporário;
 - expira a sessão após 8 horas de inatividade;
-- perde todas as sessões em um restart.
+- em produção persiste sessões em SQLite; no LARGeo sem `NERUDS_SESSION_KEY`
+  as sessões seguem efêmeras e se perdem no restart.
 
 Extensionistas não recebem SSH/root.
 

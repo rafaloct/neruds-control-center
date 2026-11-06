@@ -9,7 +9,6 @@ import 'package:neruds_control_center/app_session.dart';
 import 'package:neruds_control_center/bridge_http.dart' as http;
 import 'package:neruds_control_center/opportunities_page.dart';
 import 'package:neruds_control_center/unsaved_work.dart';
-import 'package:neruds_control_center/workflow_widgets.dart';
 
 upstream.Response _json(Object value, [int status = 200]) => upstream.Response(
   jsonEncode(value),
@@ -144,16 +143,14 @@ void main() {
         -300,
         scrollable: find.byType(Scrollable).first,
       );
-      final links = tester.widgetList<PortalLinkButton>(
-        find.byType(PortalLinkButton),
-      );
+      // A edição da ficha agora é nativa (ManageFormPage), não um link
+      // externo — o botão existe mas não é um PortalLinkButton.
       expect(
-        links.any(
-          (link) =>
-              link.editing &&
-              link.url == 'https://portal.example.test/node/321/edit',
+        find.widgetWithText(
+          FilledButton,
+          'Abrir ficha para revisão',
         ),
-        isTrue,
+        findsOneWidget,
       );
       await tester.scrollUntilVisible(
         find.byKey(const Key('op-note')),

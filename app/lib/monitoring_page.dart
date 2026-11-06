@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'app_config.dart';
+import 'bulk_suggest_sheet.dart';
 import 'app_session.dart';
+import 'manage_navigation.dart';
 import 'portal_read.dart';
 import 'session_widgets.dart';
 import 'workflow_widgets.dart';
@@ -38,6 +40,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
   static const _createRoles = <String, Set<String>>{
     'noticia': {'extensionista', 'pesquisador', 'content_editor', 'administrator'},
     'relatorio': {'extensionista', 'pesquisador', 'content_editor', 'administrator'},
+    'perfil_pesquisador': {'extensionista', 'administrator'},
     'page': {'content_editor', 'administrator'},
     'projeto_pesquisa_extensao': {'administrator'},
     'acao_extensionista': {'administrator'},
@@ -48,6 +51,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
   static const _fichaLabels = <String, String>{
     'noticia': 'Notícia',
     'relatorio': 'Relatório',
+    'perfil_pesquisador': 'Pesquisador(a)',
     'page': 'Página',
     'projeto_pesquisa_extensao': 'Projeto de pesquisa e extensão',
     'acao_extensionista': 'Ação extensionista',
@@ -63,12 +67,15 @@ class _MonitoringPageState extends State<MonitoringPage> {
   @override
   void initState() {
     super.initState();
+    _search.addListener(
+        () => setState(() => _query = _search.text.trim().toLowerCase()));
     AppSession.instance.addListener(_sessionChanged);
     _reload();
   }
 
   @override
   void dispose() {
+    _search.dispose();
     AppSession.instance.removeListener(_sessionChanged);
     super.dispose();
   }
@@ -204,7 +211,20 @@ class _MonitoringPageState extends State<MonitoringPage> {
               runSpacing: 8,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Text('Monitoramento', style: theme.textTheme.headlineSmall),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Monitoramento',
+                        style: theme.textTheme.headlineSmall),
+                    Text(
+                      'Qualidade do portal — lacunas de conteúdo '
+                      'para revisar e preencher',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
                 if (data?.fetchedAt != null)
                   Chip(
                     avatar: const Icon(Icons.schedule, size: 16),
@@ -332,7 +352,10 @@ class _MonitoringPageState extends State<MonitoringPage> {
       for (final p in board.projects) ...p.ods,
     };
 
+    bool matches(String title) =>
+        _query.isEmpty || title.toLowerCase().contains(_query);
     final projects = board.projects.where((p) {
+      if (!matches(p.title)) return false;
       if (_statusFilter != null && !p.status.contains(_statusFilter)) {
         return false;
       }
@@ -345,6 +368,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
       return true;
     }).toList();
     final actions = board.actions.where((a) {
+      if (!matches(a.title)) return false;
       if (_kindFilter != null && !a.kind.contains(_kindFilter)) return false;
       if (_municipalityFilter != null &&
           !a.municipality.contains(_municipalityFilter)) {
@@ -361,6 +385,20 @@ class _MonitoringPageState extends State<MonitoringPage> {
           PortalLinkButton(label: 'Todos os projetos', url: board.listingUrl),
           PortalLinkButton(label: 'Mapa de projetos', url: board.mapUrl),
         ]),
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: SearchBar(
+            controller: _search,
+            hintText: 'Buscar por título',
+            leading: const Icon(Icons.search),
+            elevation: const WidgetStatePropertyAll(0),
+            side: WidgetStatePropertyAll(
+              BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+            ),
+          ),
+        ),
         if (statusTerms.isNotEmpty ||
             kindTerms.isNotEmpty ||
             municipalityTerms.isNotEmpty ||
@@ -416,6 +454,26 @@ class _MonitoringPageState extends State<MonitoringPage> {
                     value: _odsFilter,
                     onChanged: (v) => setState(() => _odsFilter = v),
                   ),
+                if (_statusFilter != null ||
+                    _kindFilter != null ||
+                    _municipalityFilter != null ||
+                    _eixoFilter != null ||
+                    _linhaFilter != null ||
+                    _odsFilter != null ||
+                    _query.isNotEmpty)
+                  ActionChip(
+                    avatar: const Icon(Icons.filter_alt_off, size: 16),
+                    label: const Text('Limpar filtros'),
+                    onPressed: () => setState(() {
+                      _statusFilter = null;
+                      _kindFilter = null;
+                      _municipalityFilter = null;
+                      _eixoFilter = null;
+                      _linhaFilter = null;
+                      _odsFilter = null;
+                      _search.clear();
+                    }),
+                  ),
               ],
             ),
           ),
@@ -462,7 +520,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         if ((p.end ?? '').isNotEmpty) 'fim ${p.end}',
                       ].join(' · '),
                     ),
-                    _gapsLine(gaps[p.nid]),
+                    _gapsLine(gaps[p.nid], data.projetoGaps.data),
                     if (p.status.isNotEmpty || p.kind.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
@@ -488,13 +546,15 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         ),
                       ),
                     _linkRow([
-                      PortalLinkButton(label: 'Ver', url: p.viewUrl),
-                      PortalLinkButton(
-                        label: 'Editar',
-                        url: p.editUrl,
-                        editing: true,
+                      _viewInAppButton(nid: p.nid, bundleName: 'projeto_pesquisa_extensao'),
+                      _editInAppButton(
+                        nid: p.nid,
+                        bundleName: 'projeto_pesquisa_extensao',
                       ),
-                      if (gaps[p.nid] != null) _gapTaskButton(gaps[p.nid]!),
+                      if (gaps[p.nid] != null) ...[
+                        _suggestButton(gaps[p.nid]!),
+                        _gapTaskButton(gaps[p.nid]!),
+                      ],
                     ]),
                   ],
                 ),
@@ -525,15 +585,17 @@ class _MonitoringPageState extends State<MonitoringPage> {
                         ...a.kind,
                       ].join(' · '),
                     ),
-                    _gapsLine(gaps[a.nid]),
+                    _gapsLine(gaps[a.nid], data.acaoGaps.data),
                     _linkRow([
-                      PortalLinkButton(label: 'Ver', url: a.viewUrl),
-                      PortalLinkButton(
-                        label: 'Editar',
-                        url: a.editUrl,
-                        editing: true,
+                      _viewInAppButton(nid: a.nid, bundleName: 'acao_extensionista'),
+                      _editInAppButton(
+                        nid: a.nid,
+                        bundleName: 'acao_extensionista',
                       ),
-                      if (gaps[a.nid] != null) _gapTaskButton(gaps[a.nid]!),
+                      if (gaps[a.nid] != null) ...[
+                        _suggestButton(gaps[a.nid]!),
+                        _gapTaskButton(gaps[a.nid]!),
+                      ],
                     ]),
                   ],
                 ),
@@ -610,7 +672,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
         if (upcoming.isNotEmpty) ...[
           Text('Próximos', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 6),
-          for (final e in upcoming) _eventTile(e, gaps),
+          for (final e in upcoming) _eventTile(e, gaps, data.eventoGaps.data),
         ],
         if (undated.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -619,7 +681,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 6),
-          for (final e in undated) _eventTile(e, gaps),
+          for (final e in undated) _eventTile(e, gaps, data.eventoGaps.data),
         ],
         if (past.isNotEmpty) ...[
           const SizedBox(height: 12),
@@ -628,21 +690,56 @@ class _MonitoringPageState extends State<MonitoringPage> {
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 6),
-          for (final e in past) _eventTile(e, gaps),
+          for (final e in past) _eventTile(e, gaps, data.eventoGaps.data),
         ],
       ],
     );
   }
 
-  Widget _gapsLine(GapNode? gap) {
+  Widget _gapsLine(GapNode? gap, [GapReport? report]) {
     final missing = gap?.missing;
     if (missing == null || missing.isEmpty) return const SizedBox.shrink();
+    final score = report == null ? null : _nodeScore(gap!, report);
     return Padding(
       padding: const EdgeInsets.only(top: 4),
-      child: Text(
-        'Faltam: ${missing.join(', ')}',
-        style: Theme.of(context).textTheme.bodySmall,
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          if (score != null) _scoreChip(score),
+          Text(
+            'Faltam: ${report == null ? missing.join(', ') : _missingSummary(gap!)}',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
       ),
+    );
+  }
+
+  /// Sugestão em massa com IA — top-3 lacunas críticas, revisão em
+  /// um clique, aplicação parcial. Reutiliza /ai/assist draft.
+  Widget _suggestButton(GapNode node) {
+    if (node.nid == null) return const SizedBox.shrink();
+    return TextButton.icon(
+      icon: const Icon(Icons.auto_awesome, size: 16),
+      label: const Text('Sugerir'),
+      onPressed: () async {
+        final applied = await showModalBottomSheet<bool>(
+          context: context,
+          isScrollControlled: true,
+          useSafeArea: true,
+          showDragHandle: true,
+          builder: (context) => BulkSuggestSheet(
+            node: node,
+            fieldWeight: _fieldWeight,
+          ),
+        );
+        if (applied == true && mounted) {
+          _reload();
+          _showAppliedToast(node);
+        }
+      },
     );
   }
 
@@ -906,7 +1003,11 @@ class _MonitoringPageState extends State<MonitoringPage> {
     );
   }
 
-  Widget _eventTile(PortalEvent event, Map<int, GapNode> gaps) => Card(
+  Widget _eventTile(
+    PortalEvent event,
+    Map<int, GapNode> gaps,
+    GapReport? gapReport,
+  ) => Card(
     child: ListTile(
       title: Text(event.title),
       subtitle: Column(
@@ -920,25 +1021,164 @@ class _MonitoringPageState extends State<MonitoringPage> {
               if (event.callOpen == true) 'chamada aberta',
             ].join(' · '),
           ),
-          _gapsLine(gaps[event.nid]),
+          _gapsLine(gaps[event.nid], gapReport),
           _linkRow([
             if ((event.signupUrl ?? '').isNotEmpty)
               PortalLinkButton(label: 'Inscrição', url: event.signupUrl),
             if ((event.submissionUrl ?? '').isNotEmpty &&
                 event.callOpen != false)
               PortalLinkButton(label: 'Submissão', url: event.submissionUrl),
-            PortalLinkButton(label: 'Ver', url: event.viewUrl),
-            PortalLinkButton(
-              label: 'Editar',
-              url: event.editUrl,
-              editing: true,
+            _viewInAppButton(nid: event.nid, bundleName: 'evento_cientifico'),
+            _editInAppButton(
+              nid: event.nid,
+              bundleName: 'evento_cientifico',
             ),
-            if (gaps[event.nid] != null) _gapTaskButton(gaps[event.nid]!),
+            if (gaps[event.nid] != null) ...[
+              _suggestButton(gaps[event.nid]!),
+              _gapTaskButton(gaps[event.nid]!),
+            ],
           ]),
         ],
       ),
     ),
   );
+
+
+  /// Peso de criticidade editorial por nome de campo monitorado.
+  /// Campos que o publico/site precisa para renderizar a ficha valem
+  /// mais; anexos e vinculos secundarios valem menos. Recomendacao do
+  /// review de UX (sonnet-4.5): prioriza acao em vez de paralisia.
+  static const _fieldWeightRules = <(String, int)>[
+    ('coordenador', 3), ('data', 3), ('resumo', 3), ('descricao', 3),
+    ('justificativa', 3), ('objetivos', 3), ('metodologia', 3),
+    ('conteudo', 3), ('autor', 3),
+    ('equipe', 2), ('linhas', 2), ('eixos', 2), ('ods', 2),
+    ('status', 2), ('tipo', 2), ('local', 2), ('municipio', 2),
+    ('participantes', 2), ('apoiadores', 2), ('periodo', 2),
+    ('ano', 2), ('mes', 2), ('pesquisadores', 2), ('chamada', 2),
+    ('organizadores', 2), ('doi', 2), ('lattes', 2),
+  ];
+
+  int _fieldWeight(String fieldName) {
+    for (final (needle, w) in _fieldWeightRules) {
+      if (fieldName.contains(needle)) return w;
+    }
+    return 1;
+  }
+
+  /// Completude ponderada de um no: 100% = todas as lacunas zeradas.
+  /// O relatório carrega o universo de campos monitorados do bundle.
+  int _nodeScore(GapNode node, GapReport report) {
+    final fields = report.monitoredFields[node.type];
+    if (fields == null || fields.isEmpty) return 100;
+    final total =
+        fields.fold<int>(0, (s, f) => s + _fieldWeight(f));
+    if (total == 0) return 100;
+    final missing =
+        node.missingFields.fold<int>(0, (s, f) => s + _fieldWeight(f));
+    return (100 - (100 * missing) ~/ total).clamp(0, 100);
+  }
+
+  /// Rotulo curto das lacunas mais criticas (peso decrescente), com o
+  /// resto colapsado — reduz 14 campos para uma decisao rapida.
+  String _missingSummary(GapNode node) {
+    final paired = <(String, int)>[
+      for (var i = 0; i < node.missing.length; i++)
+        (
+          node.missing[i],
+          i < node.missingFields.length
+              ? _fieldWeight(node.missingFields[i])
+              : 1,
+        ),
+    ]..sort((a, b) => b.$2.compareTo(a.$2));
+    final top = paired.take(3).map((p) => p.$1).join(', ');
+    final rest = paired.length - 3;
+    return rest > 0 ? '$top (+$rest)' : top;
+  }
+
+  Widget _scoreChip(int score) {
+    final cs = Theme.of(context).colorScheme;
+    final (bg, fg) = score >= 80
+        ? (cs.primaryContainer, cs.onPrimaryContainer)
+        : score >= 50
+            ? (cs.tertiaryContainer, cs.onTertiaryContainer)
+            : (cs.errorContainer, cs.onErrorContainer);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        '$score%',
+        style: TextStyle(
+            fontSize: 11, fontWeight: FontWeight.w600, color: fg),
+      ),
+    );
+  }
+
+  /// Badge Publicado/Rascunho — informa se a ficha já está visível.
+  Widget _publishedChip(bool published) {
+    final cs = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: published ? 'Publicado no portal' : 'Rascunho',
+      child: Icon(
+        published ? Icons.public : Icons.drafts_outlined,
+        size: 16,
+        color: published ? cs.primary : cs.outline,
+      ),
+    );
+  }
+
+  /// Toast pós-salvamento com link direto para conferir no portal.
+  void _showAppliedToast(GapNode node) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Ficha atualizada: ${node.title}'),
+        action: node.viewUrl == null
+            ? null
+            : SnackBarAction(
+                label: 'Ver no site',
+                onPressed: () => launchExternalUri(
+                  context,
+                  Uri.parse(node.viewUrl!),
+                ),
+              ),
+      ),
+    );
+  }
+
+  /// Filtro de criticidade por faixa de score — os KPIs no topo
+  /// filtram a lista para guiar a acao do operador.
+  String? _scoreFilter; // 'ready' | 'attention' | 'critical'
+
+  /// Busca livre por título — filtra projetos, ações e eventos na
+  /// lista local (sem nova chamada ao portal).
+  final _search = TextEditingController();
+  String _query = '';
+
+  /// Botão "Editar" nativo — abre o formulário do app em vez do portal.
+  Widget _editInAppButton({required int? nid, required String? bundleName}) {
+    return OutlinedButton.icon(
+      icon: const Icon(Icons.edit_outlined, size: 18),
+      label: const Text('Editar'),
+      onPressed: nid == null
+          ? null
+          : () => openManageEditor(context, nid: nid, bundleName: bundleName),
+    );
+  }
+
+  /// Botão "Ver" nativo — abre a ficha interna do item.
+  Widget _viewInAppButton({required int? nid, required String? bundleName}) {
+    return OutlinedButton.icon(
+      icon: const Icon(Icons.visibility_outlined, size: 18),
+      label: const Text('Ver'),
+      onPressed: nid == null
+          ? null
+          : () => openManageDetail(context, nid: nid, bundleName: bundleName),
+    );
+  }
 
   Widget _gapsTab(
     MonitoringData data, {
@@ -993,27 +1233,7 @@ class _MonitoringPageState extends State<MonitoringPage> {
         else if (nodes.isEmpty)
           const Text('Nenhum campo monitorado ausente nesta consulta.')
         else
-          for (final node in nodes)
-            Card(
-              child: ListTile(
-                title: Text(node.title),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Faltam: ${node.missing.join(', ')}'),
-                    _linkRow([
-                      PortalLinkButton(label: 'Ver', url: node.viewUrl),
-                      PortalLinkButton(
-                        label: 'Editar',
-                        url: node.editUrl,
-                        editing: true,
-                      ),
-                      _gapTaskButton(node),
-                    ]),
-                  ],
-                ),
-              ),
-            ),
+          _gapNodeList(nodes, report!),
         const SizedBox(height: 16),
         Text(
           'Últimas publicadas',
@@ -1042,6 +1262,105 @@ class _MonitoringPageState extends State<MonitoringPage> {
               ),
             ),
       ],
+    );
+  }
+
+  /// Lista de nos com score de completude ponderado e KPIs acionaveis.
+  /// Ordena pelos mais criticos primeiro — os KPIs filtram por faixa.
+  Widget _gapNodeList(List<GapNode> nodes, GapReport report) {
+    final scored = [
+      for (final n in nodes) (node: n, score: _nodeScore(n, report)),
+    ]..sort((a, b) => a.score.compareTo(b.score));
+
+    final ready = scored.where((s) => s.score >= 80).length;
+    final attention =
+        scored.where((s) => s.score >= 50 && s.score < 80).length;
+    final critical = scored.where((s) => s.score < 50).length;
+
+    final shown = switch (_scoreFilter) {
+      'ready' => scored.where((s) => s.score >= 80).toList(),
+      'attention' =>
+        scored.where((s) => s.score >= 50 && s.score < 80).toList(),
+      'critical' => scored.where((s) => s.score < 50).toList(),
+      _ => scored,
+    };
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              _kpiChip('Prontos p/ publicar', ready, 'ready',
+                  Theme.of(context).colorScheme.primary),
+              _kpiChip('Precisam de atencao', attention, 'attention',
+                  Theme.of(context).colorScheme.tertiary),
+              _kpiChip('Criticos', critical, 'critical',
+                  Theme.of(context).colorScheme.error),
+              if (_scoreFilter != null)
+                ActionChip(
+                  avatar: const Icon(Icons.close, size: 14),
+                  label: const Text('Todas'),
+                  onPressed: () =>
+                      setState(() => _scoreFilter = null),
+                ),
+            ],
+          ),
+        ),
+        for (final s in shown)
+          Card(
+            child: ListTile(
+              title: Row(
+                children: [
+                  _scoreChip(s.score),
+                  const SizedBox(width: 4),
+                  _publishedChip(s.node.published),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(s.node.title)),
+                ],
+              ),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Faltam: ${_missingSummary(s.node)}'),
+                  _linkRow([
+                    _viewInAppButton(
+                        nid: s.node.nid, bundleName: s.node.type),
+                    _editInAppButton(
+                      nid: s.node.nid,
+                      bundleName: s.node.type,
+                    ),
+                    _suggestButton(s.node),
+                    _gapTaskButton(s.node),
+                  ]),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// KPI acionavel — toque filtra a lista para aquela faixa de score.
+  Widget _kpiChip(String label, int count, String key, Color color) {
+    final active = _scoreFilter == key;
+    return FilterChip(
+      selected: active,
+      showCheckmark: false,
+      avatar: CircleAvatar(
+        radius: 10,
+        backgroundColor: color,
+        child: Text(
+          '$count',
+          style: const TextStyle(fontSize: 10, color: Colors.white),
+        ),
+      ),
+      label: Text(label),
+      onSelected: (v) =>
+          setState(() => _scoreFilter = v ? key : null),
     );
   }
 }

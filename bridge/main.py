@@ -26,13 +26,26 @@ import httpx
 
 import content_map
 import identity_store
+import manage_schema
 import mission_automation
 import mission_store
 import portal_links
 import review_store
 import rss_store
+import session_store
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -87,10 +100,12 @@ SMTP_FROM = os.getenv("NERUDS_SMTP_FROM", SMTP_USER)
 SMTP_REVIEW_TO = os.getenv("NERUDS_SMTP_REVIEW_TO", "")
 SMTP_STARTTLS = os.getenv("NERUDS_SMTP_STARTTLS", "true").lower() == "true"
 
-# Sessions live only in memory and disappear when the bridge restarts.
-# Passwords are never stored. Drupal remains the source of truth for identity/permissions.
+# Sessions persist in SQLite (data/sessions.sqlite3) with Drupal cookies and
+# CSRF encrypted at rest, so logins survive restarts and work across web,
+# desktop and mobile clients. Passwords are never stored. Drupal remains the
+# source of truth for identity/permissions.
 SESSION_IDLE_TTL = timedelta(hours=int(os.getenv("NERUDS_SESSION_IDLE_HOURS", "8")))
-SESSIONS: dict[str, dict[str, Any]] = {}
+SESSIONS = session_store.SESSIONS
 # Serialize requests for the same opportunity in this bridge process.
 _OPPORTUNITY_DRAFT_LOCKS: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
 
@@ -198,7 +213,9 @@ async def _backup_loop() -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # noqa: ARG001
     _configure_access_log()
-    _access_log("service_started", version="0.5.0")
+    session_store.init_db()
+    purged = session_store.purge_idle(SESSION_IDLE_TTL)
+    _access_log("service_started", version="0.6.0", sessions_purged=purged)
     task = asyncio.create_task(_backup_loop())
     try:
         yield
@@ -213,7 +230,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="NERUDS Control Bridge",
-    version="0.5.0",
+    version="0.6.0",
     lifespan=_lifespan,
     description=(
         "Bridge do NERUDS entre Flutter, Drupal e serviços internos. "
@@ -307,6 +324,71 @@ class NewsDraftRequest(BaseModel):
     summary: str = Field(default="", max_length=4000)
     body: str = Field(min_length=1)
     publication_date: str | None = None
+    opportunity_item_id: int | None = None
+    mission_task_id: int | None = None
+
+
+# Tipos de conteúdo criáveis pelo app. `required` descreve os campos
+# obrigatórios do Drupal para que o cliente monte o formulário guiado;
+# `drupal` é a chave POST esperada pelo formulário nativo /node/add/{bundle}.
+CONTENT_BUNDLES: dict[str, dict[str, Any]] = {
+    "noticia": {
+        "label": "Notícia",
+        "required": [
+            {
+                "key": "data",
+                "label": "Data da notícia",
+                "kind": "date",
+                "drupal": "field_data_noticia[0][value][date]",
+            }
+        ],
+    },
+    "relatorio": {"label": "Relatório", "required": []},
+    "acao_extensionista": {"label": "Ação Extensionista", "required": []},
+    "publicacao": {"label": "Publicação", "required": []},
+    "evento_cientifico": {
+        "label": "Evento Científico",
+        "required": [
+            {
+                "key": "data",
+                "label": "Data do evento",
+                "kind": "date",
+                "drupal": "field_data_evento[0][value][date]",
+            },
+            {
+                "key": "local",
+                "label": "Local do evento",
+                "kind": "text",
+                "drupal": "field_local_evento[0][value]",
+            },
+        ],
+    },
+    "grupo_estudos": {"label": "Grupo de Estudos", "required": []},
+    "projeto_pesquisa_extensao": {
+        "label": "Projeto de Pesquisa e Extensão",
+        "required": [
+            {
+                "key": "coordenador",
+                "label": "Coordenador",
+                "kind": "text",
+                "drupal": "field_coordenador[0][value]",
+            }
+        ],
+    },
+}
+
+# Cache curto de permissão de criação por token (o formulário Drupal decide).
+_CREATE_ACCESS_CACHE: dict[str, tuple[float, dict[str, bool]]] = {}
+_CREATE_ACCESS_TTL = 600.0
+
+
+class ContentDraftRequest(BaseModel):
+    title: str = Field(min_length=3, max_length=255)
+    summary: str = Field(default="", max_length=4000)
+    body: str = Field(default="")
+    data: str | None = None
+    local: str | None = None
+    coordenador: str | None = None
     opportunity_item_id: int | None = None
     mission_task_id: int | None = None
 
@@ -461,6 +543,7 @@ def require_session(authorization: str | None = Header(default=None)) -> dict[st
         SESSIONS.pop(token, None)
         raise HTTPException(status_code=401, detail="Sessão expirada por inatividade.")
 
+    SESSIONS.touch(token, now.isoformat())
     session["last_seen"] = now.isoformat()
     return session
 
@@ -626,22 +709,24 @@ async def _authorized_news_item(nid: int, session: dict[str, Any]) -> dict[str, 
     raise HTTPException(status_code=404, detail="Rascunho não encontrado no portal.")
 
 
-async def _create_news_draft_internal(
+async def _create_bundle_draft_internal(
+    bundle: str,
     *,
     title: str,
     summary: str,
     body: str,
-    publication_date: str | None,
+    extras: dict[str, str] | None = None,
     session: dict[str, Any],
     opportunity_item_id: int | None = None,
     mission_task_id: int | None = None,
 ) -> dict[str, Any]:
+    label = CONTENT_BUNDLES.get(bundle, {}).get("label", bundle)
     async with drupal_client(session) as client:
-        form = await client.get("/node/add/noticia")
+        form = await client.get(f"/node/add/{bundle}")
         if form.status_code != 200:
             raise HTTPException(
                 status_code=form.status_code,
-                detail="Drupal recusou o acesso ao formulário de Notícia.",
+                detail=f"Drupal recusou o acesso ao formulário de {label}.",
             )
 
         parser = HiddenInputParser()
@@ -659,9 +744,7 @@ async def _create_news_draft_internal(
                 if use_html
                 else body,
                 "status[value]": "0",
-                "field_data_noticia[0][value][date]": publication_date
-                or datetime.now().date().isoformat(),
-                "form_id": fields.get("form_id", "node_noticia_form"),
+                "form_id": fields.get("form_id", f"node_{bundle}_form"),
                 "op": fields.get("op", "Salvar"),
             }
         )
@@ -669,11 +752,10 @@ async def _create_news_draft_internal(
             fields.pop("body[0][format]", None)
         else:
             fields["body[0][format]"] = text_format
-        if publication_date:
-            fields["field_data_publicacao[0][value][date]"] = publication_date
+        fields.update({k: v for k, v in (extras or {}).items() if v != ""})
 
         response = await client.post(
-            "/node/add/noticia",
+            f"/node/add/{bundle}",
             data=fields,
             follow_redirects=False,
         )
@@ -693,7 +775,7 @@ async def _create_news_draft_internal(
 
         if not node_id:
             lookup = await client.get(
-                "/jsonapi/node/noticia",
+                f"/jsonapi/node/{bundle}",
                 params={
                     "filter[title]": title,
                     "sort": "-created",
@@ -736,12 +818,43 @@ async def _create_news_draft_internal(
             "id": draft_id,
             "drupal_internal_nid": node_id,
             "jsonapi_id": jsonapi_id,
-            "type": "node--noticia",
+            "type": f"node--{bundle}",
             "location": location,
             **_node_urls(node_id),
             "owner_uid": str(session["uid"]) if session.get("uid") is not None else None,
             "is_owner": True,
         }
+
+
+async def _create_news_draft_internal(
+    *,
+    title: str,
+    summary: str,
+    body: str,
+    publication_date: str | None,
+    session: dict[str, Any],
+    opportunity_item_id: int | None = None,
+    mission_task_id: int | None = None,
+) -> dict[str, Any]:
+    return await _create_bundle_draft_internal(
+        "noticia",
+        title=title,
+        summary=summary,
+        body=body,
+        extras={
+            "field_data_noticia[0][value][date]": (
+                publication_date or datetime.now().date().isoformat()
+            ),
+            **(
+                {"field_data_publicacao[0][value][date]": publication_date}
+                if publication_date
+                else {}
+            ),
+        },
+        session=session,
+        opportunity_item_id=opportunity_item_id,
+        mission_task_id=mission_task_id,
+    )
 
 
 @app.get("/health")
@@ -750,7 +863,7 @@ def health() -> dict[str, Any]:
         "ok": True,
         "service": "neruds-control-bridge",
         "mode": "editorial-mvp",
-        "version": "0.5.0",
+        "version": "0.6.0",
         "time": datetime.now(timezone.utc).isoformat(),
         "active_sessions": len(SESSIONS),
     }
@@ -794,6 +907,211 @@ def capabilities() -> dict[str, Any]:
             "Operações de infraestrutura continuam separadas do fluxo editorial.",
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Config remota do aplicativo — atualizável sem rebuild/redeploy do cliente
+# ---------------------------------------------------------------------------
+
+# data/app_config.json é mesclado sobre os defaults; também pode ser editado
+# diretamente no servidor. Não colocar segredos aqui: o GET é público.
+APP_CONFIG_PATH = mission_store.DATA_DIR / "app_config.json"
+
+_DEFAULT_APP_CONFIG: dict[str, Any] = {
+    "schema_version": 1,
+    "app_name": "NERUDS Control Center",
+    "portal_url": PORTAL_URL,
+    "min_app_version": "1.0.0",
+    "features": {
+        "missions": True,
+        "opportunities": True,
+        "monitoring": True,
+        "editorial": True,
+        "identity_admin": True,
+        "manage": True,
+    },
+    "onboarding": {
+        "enabled": True,
+        "steps": [
+            "Conheça sua missão na aba Missão.",
+            "Registre evidências e peça revisão cruzada.",
+            "Acompanhe pendências no painel de atenção.",
+        ],
+    },
+    "links": {
+        "portal": PORTAL_URL,
+        "support_mail": "admin@neruds.org",
+    },
+}
+
+
+def _load_app_config() -> dict[str, Any]:
+    merged = json.loads(json.dumps(_DEFAULT_APP_CONFIG))
+    try:
+        if APP_CONFIG_PATH.exists():
+            stored = json.loads(APP_CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(stored, dict):
+                _deep_merge(merged, stored)
+    except (OSError, ValueError) as exc:
+        _access_log("app_config_load_error", error=type(exc).__name__)
+    return merged
+
+
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    for key, value in overlay.items():
+        if (
+            key in base
+            and isinstance(base[key], dict)
+            and isinstance(value, dict)
+        ):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+@app.get("/config/app")
+def get_app_config() -> dict[str, Any]:
+    """Config remota consumida pelos clientes na inicialização."""
+    return _load_app_config()
+
+
+@app.put("/config/app")
+async def put_app_config(
+    request: Request,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _require_user_admin(session)
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="JSON inválido.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=422, detail="O corpo deve ser um objeto JSON."
+        )
+    payload.pop("schema_version", None)
+    APP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = APP_CONFIG_PATH.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(APP_CONFIG_PATH)
+    _access_log("app_config_updated", actor=session["username"])
+    return _load_app_config()
+
+
+# ---------------------------------------------------------------------------
+# Assistente IA (OpenRouter) — chave fica só no ambiente do servidor.
+# ---------------------------------------------------------------------------
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+_AI_ACTIONS: dict[str, str] = {
+    "improve": (
+        "Reescreva o texto abaixo como redator do portal NERUDS, em "
+        "português claro e direto, sem inventar fatos. Mantenha datas, "
+        "nomes e números exatamente como estão. Responda só com o texto."
+    ),
+    "summarize": (
+        "Resuma o texto abaixo em até 3 frases em português, para uso "
+        "como resumo em cards e listagens do portal NERUDS."
+    ),
+    "title": (
+        "Sugira um título curto e factual (máx. 12 palavras) em português "
+        "para o conteúdo abaixo, no estilo do portal NERUDS."
+    ),
+    "fields": (
+        "Dado o texto de campo abaixo, extraia em JSON as chaves: "
+        "title, summary, data (AAAA-MM-DD ou vazio), local, autores. "
+        "Responda somente o JSON."
+    ),
+    "draft": (
+        "Escreva um rascunho curto e factual em português para o campo "
+        "indicado, no estilo editorial do portal NERUDS (núcleo de "
+        "estudos rurais e socioecológicos). Use apenas as informações "
+        "do contexto; sem inventar nomes, datas ou números. Responda "
+        "só com o texto do campo, sem comentários."
+    ),
+}
+
+_AI_RATE: dict[str, list[float]] = {}
+_AI_RATE_MAX = int(os.getenv("NERUDS_AI_RATE_MAX", "20"))
+_AI_RATE_WINDOW = 300.0
+
+
+class AiAssistRequest(BaseModel):
+    action: str
+    text: str = Field(min_length=1, max_length=12000)
+    context: str = Field(default="", max_length=2000)
+
+
+@app.post("/ai/assist")
+async def ai_assist(
+    payload: AiAssistRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Proxy restrito para o OpenRouter — ações fixas, sem chat livre."""
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Assistente IA não configurado no servidor.",
+        )
+    system = _AI_ACTIONS.get(payload.action)
+    if system is None:
+        raise HTTPException(status_code=422, detail="Ação não suportada.")
+
+    user = session.get("username") or "anon"
+    now = time.monotonic()
+    calls = [t for t in _AI_RATE.get(user, []) if now - t < _AI_RATE_WINDOW]
+    if len(calls) >= _AI_RATE_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail="Limite de usos do assistente atingido. Tente em alguns minutos.",
+        )
+    calls.append(now)
+    _AI_RATE[user] = calls
+
+    prompt = payload.text if not payload.context else (
+        f"Contexto: {payload.context}\n\n{payload.text}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            response = await client.post(
+                OPENROUTER_URL,
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "HTTP-Referer": "https://app.neruds.org",
+                    "X-Title": "NERUDS Control Center",
+                },
+                json={
+                    "model": OPENROUTER_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.4,
+                    "max_tokens": 900,
+                },
+            )
+    except httpx.HTTPError:
+        raise HTTPException(
+            status_code=502, detail="Assistente IA indisponível no momento."
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenRouter respondeu {response.status_code}.",
+        )
+    data = response.json()
+    content = (
+        ((data.get("choices") or [{}])[0].get("message") or {})
+        .get("content") or ""
+    ).strip()
+    return {"ok": True, "action": payload.action, "result": content}
 
 
 # ---------------------------------------------------------------------------
@@ -890,7 +1208,7 @@ async def ops_status(session: dict[str, Any] = Depends(require_session)) -> dict
     backups = mission_store.list_backups()
     return {
         "time": datetime.now(timezone.utc).isoformat(),
-        "version": "0.5.0",
+        "version": "0.6.0",
         "uptime_seconds": round(
             (datetime.now(timezone.utc) - _BRIDGE_STARTED_AT).total_seconds()
         ),
@@ -931,8 +1249,39 @@ def ops_backups(session: dict[str, Any] = Depends(require_session)) -> dict[str,
     return {"backups": mission_store.list_backups()}
 
 
+# Rate limit em memória para /auth/login: o bridge é público e cada tentativa
+# bate no Drupal — sem teto, vira vetor de brute-force no portal.
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+LOGIN_RATE_MAX = int(os.getenv("NERUDS_LOGIN_RATE_MAX", "10"))
+LOGIN_RATE_WINDOW = float(os.getenv("NERUDS_LOGIN_RATE_WINDOW_SECONDS", "300"))
+
+
+def _client_ip(request: Request) -> str:
+    cf_ip = request.headers.get("cf-connecting-ip", "").strip()
+    if cf_ip:
+        return cf_ip
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _enforce_login_rate(request: Request) -> None:
+    ip = _client_ip(request)
+    now = time.monotonic()
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(ip, []) if now - t < LOGIN_RATE_WINDOW]
+    if len(attempts) >= LOGIN_RATE_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail="Muitas tentativas de login. Aguarde alguns minutos.",
+        )
+    attempts.append(now)
+    _LOGIN_ATTEMPTS[ip] = attempts
+
+
 @app.post("/auth/login")
-async def login(payload: LoginRequest) -> dict[str, Any]:
+async def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
+    _enforce_login_rate(request)
     async with httpx.AsyncClient(
         base_url=PORTAL_URL,
         timeout=15,
@@ -1230,6 +1579,7 @@ def _node_ref(item: dict[str, Any]) -> dict[str, Any]:
         "title": attrs.get("title") or "Sem título",
         "view_url": urls["public_url"],
         "edit_url": urls["edit_url"],
+        "published": bool(attrs.get("status")),
     }
 
 
@@ -1407,6 +1757,40 @@ _SHORTLINK = re.compile(
 _SHORTLINK_ALT = re.compile(
     r'<link[^>]+href="([^"]+)"[^>]+rel="shortlink"', re.IGNORECASE
 )
+
+
+@app.get("/portal/nodes/{nid}/tipo")
+async def portal_node_type(
+    nid: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Resolve o tipo real do nó — o app usa para abrir edição/ficha
+    diretamente sem perguntar o setor ao operador."""
+    async with drupal_client(session) as client:
+        for bundle in content_map.MONITORED_TYPES:
+            response = await client.get(
+                f"/jsonapi/node/{bundle}",
+                params={
+                    "filter[drupal_internal__nid]": nid,
+                    "page[limit]": "1",
+                },
+            )
+            if response.status_code == 200 and response.json().get("data"):
+                return {"nid": nid, "type": bundle}
+        # bundles gerenciáveis que a monitoração não cobre
+        for bundle in manage_schema.MANAGE_SCHEMAS:
+            if bundle in content_map.MONITORED_TYPES:
+                continue
+            response = await client.get(
+                f"/jsonapi/node/{bundle}",
+                params={
+                    "filter[drupal_internal__nid]": nid,
+                    "page[limit]": "1",
+                },
+            )
+            if response.status_code == 200 and response.json().get("data"):
+                return {"nid": nid, "type": bundle}
+    raise HTTPException(status_code=404, detail="Registro não encontrado.")
 
 
 @app.get("/portal/node-lookup")
@@ -1893,6 +2277,1175 @@ async def create_news_draft(
         "edit_url": created.get("edit_url"),
         "owner_uid": created.get("owner_uid"),
         "is_owner": created.get("is_owner", False),
+    }
+
+
+async def _create_access_map(session: dict[str, Any]) -> dict[str, bool]:
+    """Quais bundles a sessão pode criar — decidido pelo próprio Drupal.
+
+    Cache de 10 min por token: montar a lista custa um GET por tipo."""
+    token = session.get("token") or ""
+    now = time.monotonic()
+    cached = _CREATE_ACCESS_CACHE.get(token)
+    if cached and now - cached[0] < _CREATE_ACCESS_TTL:
+        return cached[1]
+    access: dict[str, bool] = {}
+    # Probe cobre criáveis clássicos + todos os bundles gerenciáveis —
+    # antes só CONTENT_BUNDLES era testado e schemas gerenciáveis
+    # (ex.: perfil_pesquisador) apareciam como não-criáveis.
+    probed = list(dict.fromkeys(
+        [*CONTENT_BUNDLES, *manage_schema.MANAGE_SCHEMAS]
+    ))
+    async with drupal_client(session) as client:
+        headers = {"Content-Type": "application/vnd.api+json"}
+        if session.get("csrf"):
+            headers["X-CSRF-Token"] = session["csrf"]
+        for bundle in probed:
+            # /node/add/{bundle} é rota admin — 403 até para quem tem
+            # 'create {bundle} content'. POST vazio na JSON:API distingue
+            # permissão: 403 = sem create; 400/422 = pode criar mas a
+            # validação reprovou o payload vazio.
+            try:
+                probe = await client.post(
+                    f"/jsonapi/node/{bundle}",
+                    json={"data": {"type": f"node--{bundle}", "attributes": {}}},
+                    headers=headers,
+                )
+                access[bundle] = probe.status_code != 403
+            except Exception:
+                access[bundle] = False
+    _CREATE_ACCESS_CACHE[token] = (now, access)
+    return access
+
+
+@app.get("/content/types")
+async def content_types(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Tipos de conteúdo que a sessão pode criar, com metadados do formulário."""
+    access = await _create_access_map(session)
+    types = [
+        {
+            "bundle": bundle,
+            "label": meta["label"],
+            "required": meta["required"],
+        }
+        for bundle, meta in CONTENT_BUNDLES.items()
+        if access.get(bundle)
+    ]
+    return {"types": types}
+
+
+@app.post("/content/{bundle}/draft")
+async def create_bundle_draft(
+    bundle: str,
+    payload: ContentDraftRequest,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    meta = CONTENT_BUNDLES.get(bundle)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Tipo de conteúdo não suportado.")
+
+    missing = [
+        spec["label"]
+        for spec in meta["required"]
+        if not (getattr(payload, spec["key"], None) or "").strip()
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Campos obrigatórios de {meta['label']}: {', '.join(missing)}.",
+        )
+    access = await _create_access_map(session)
+    if not access.get(bundle):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Esta conta não pode criar {meta['label']} no portal.",
+        )
+
+    extras = {
+        spec["drupal"]: (getattr(payload, spec["key"], None) or "").strip()
+        for spec in meta["required"]
+    }
+    if bundle == "noticia":
+        extras.setdefault(
+            "field_data_noticia[0][value][date]",
+            payload.data or datetime.now().date().isoformat(),
+        )
+    body = payload.body.strip() or (payload.summary.strip() or payload.title)
+    created = await _create_bundle_draft_internal(
+        bundle,
+        title=payload.title,
+        summary=payload.summary,
+        body=body,
+        extras=extras,
+        session=session,
+        opportunity_item_id=payload.opportunity_item_id,
+        mission_task_id=payload.mission_task_id,
+    )
+    notification = await notify_review(payload.title, session["username"])
+    return {
+        "ok": True,
+        "id": created.get("id"),
+        "bundle": bundle,
+        "type": created.get("type"),
+        "title": payload.title,
+        "published": False,
+        "notification": notification,
+        "public_url": created.get("public_url"),
+        "edit_url": created.get("edit_url"),
+        "owner_uid": created.get("owner_uid"),
+        "is_owner": created.get("is_owner", False),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Gateway de gestão genérico (/manage) — schema-driven, ver manage_schema.py.
+# ---------------------------------------------------------------------------
+
+_JSONAPI_TYPES = {"Content-Type": "application/vnd.api+json",
+                  "Accept": "application/vnd.api+json"}
+
+
+def _manage_schema_or_404(bundle: str) -> dict[str, Any]:
+    schema = manage_schema.schema_for(bundle)
+    if schema is None:
+        raise HTTPException(status_code=404, detail="Setor não suportado.")
+    return schema
+
+
+def _jsonapi_write_headers(session: dict[str, Any]) -> dict[str, str]:
+    headers = dict(_JSONAPI_TYPES)
+    if session.get("csrf"):
+        headers["X-CSRF-Token"] = session["csrf"]
+    return headers
+
+
+def _entity_ref_type(target: str) -> tuple[str, str]:
+    """'node:perfil_pesquisador' -> ('node', 'perfil_pesquisador')."""
+    entity, _, bundle = (target or "").partition(":")
+    return entity or "node", bundle
+
+
+async def _resolve_ref_uuid(
+    client: httpx.AsyncClient, target: str, raw_id: Any
+) -> dict[str, str] | None:
+    """Resolve um id numérico (nid/tid) ou uuid para o item JSON:API."""
+    entity, bundle = _entity_ref_type(target)
+    if isinstance(raw_id, dict) and raw_id.get("id"):
+        return {
+            "type": f"{entity}--{bundle}",
+            "id": str(raw_id["id"]),
+        }
+    raw = str(raw_id or "").strip()
+    if not raw:
+        return None
+    if not raw.isdecimal():
+        return {"type": f"{entity}--{bundle}", "id": raw}
+    if entity == "node":
+        response = await client.get(
+            f"/jsonapi/node/{bundle}",
+            params={
+                "filter[drupal_internal__nid]": raw,
+                "page[limit]": "1",
+            },
+        )
+    else:
+        response = await client.get(
+            f"/jsonapi/taxonomy_term/{bundle}",
+            params={
+                "filter[drupal_internal__tid]": raw,
+                "page[limit]": "1",
+            },
+        )
+    if response.status_code != 200:
+        return None
+    data = response.json().get("data") or []
+    if not data:
+        return None
+    return {"type": f"{entity}--{bundle}", "id": data[0]["id"]}
+
+
+async def _node_uuid(client: httpx.AsyncClient, bundle: str, nid: int) -> str:
+    response = await client.get(
+        f"/jsonapi/node/{bundle}",
+        params={
+            "filter[drupal_internal__nid]": nid,
+            "page[limit]": "1",
+        },
+    )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Drupal não respondeu à consulta do registro.",
+        )
+    data = response.json().get("data") or []
+    if not data:
+        raise HTTPException(status_code=404, detail="Registro não encontrado.")
+    return data[0]["id"]
+
+
+async def _build_node_payload(
+    bundle: str,
+    values: dict[str, Any],
+    client: httpx.AsyncClient,
+    *,
+    uuid: str | None = None,
+) -> dict[str, Any]:
+    schema = _manage_schema_or_404(bundle)
+    attrs: dict[str, Any] = {}
+    rels: dict[str, Any] = {}
+    for spec in schema["fields"]:
+        name = spec["name"]
+        if name not in values:
+            continue
+        value = values[name]
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        kind = spec["kind"]
+        if kind == "reference":
+            items = value if isinstance(value, list) else [value]
+            refs = []
+            for item in items:
+                ref = await _resolve_ref_uuid(client, spec.get("target", ""), item)
+                if ref:
+                    refs.append(ref)
+            rels[name] = {"data": refs if spec.get("multiple") else (refs[0] if refs else None)}
+        elif kind in ("image", "file"):
+            items = value if isinstance(value, list) else [value]
+            refs = [
+                {"type": "file--file", "id": str(item["id"] if isinstance(item, dict) else item)}
+                for item in items
+            ]
+            rels[name] = {"data": refs if spec.get("multiple") else (refs[0] if refs else None)}
+        elif kind == "link":
+            attrs[name] = {"uri": value if isinstance(value, str) else value.get("uri", "")}
+        elif kind == "longtext":
+            if isinstance(value, dict):
+                attrs[name] = value
+            else:
+                attrs[name] = {"value": value, "format": "plain_text"}
+        elif kind == "daterange":
+            period = value if isinstance(value, dict) else {}
+            attrs[name] = {
+                "value": period.get("start") or None,
+                "end_value": period.get("end") or None,
+            }
+        elif kind == "number":
+            attrs[name] = int(value)
+        elif kind == "bool":
+            attrs[name] = bool(value)
+        else:
+            attrs[name] = value
+    data: dict[str, Any] = {"type": f"node--{bundle}", "attributes": attrs}
+    if rels:
+        data["relationships"] = rels
+    if uuid:
+        data["id"] = uuid
+    return {"data": data}
+
+
+def _manage_item(item: dict[str, Any]) -> dict[str, Any]:
+    attrs = item.get("attributes", {})
+    return {
+        "nid": attrs.get("drupal_internal__nid"),
+        "uuid": item.get("id"),
+        "title": attrs.get("title") or "(sem título)",
+        "status": bool(attrs.get("status")),
+        "changed": attrs.get("changed"),
+    }
+
+
+@app.get("/manage/schemas")
+async def manage_schemas(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Schemas dos setores + o que a sessão pode criar (Drupal decide)."""
+    access = await _create_access_map(session)
+    return {
+        "schemas": {
+            bundle: {
+                "label": schema["label"],
+                "label_singular": schema["label_singular"],
+                "icon": schema["icon"],
+                "fields": schema["fields"],
+                "steps": schema.get("steps", []),
+            }
+            for bundle, schema in manage_schema.MANAGE_SCHEMAS.items()
+            if bundle in manage_schema.MANAGE_SCHEMAS
+        },
+        "can_create": {
+            bundle: bool(access.get(bundle))
+            for bundle in manage_schema.MANAGE_SCHEMAS
+        },
+    }
+
+
+@app.get("/manage/options/{entity}/{target}")
+async def manage_options(
+    entity: str,
+    target: str,
+    limit: int = 50,
+    search: str | None = None,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Opções para campos de referência (dropdowns dinâmicos no app)."""
+    if entity == "node" and target not in manage_schema.MANAGE_SCHEMAS:
+        raise HTTPException(status_code=404, detail="Tipo de referência não suportado.")
+    limit = max(1, min(limit, 100))
+    async with drupal_client(session) as client:
+        if entity == "node":
+            params: dict[str, Any] = {
+                "page[limit]": str(limit),
+                "filter[status]": "1",
+                "sort": "title",
+                f"fields[node--{target}]": "title,drupal_internal__nid",
+            }
+            if search:
+                params["filter[title][operator]"] = "CONTAINS"
+                params["filter[title][value]"] = search
+            response = await client.get(f"/jsonapi/node/{target}", params=params)
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code,
+                                    detail="Consulta de opções recusada.")
+            return {
+                "options": [
+                    {
+                        "id": it.get("attributes", {}).get("drupal_internal__nid"),
+                        "uuid": it.get("id"),
+                        "label": it.get("attributes", {}).get("title") or "",
+                    }
+                    for it in response.json().get("data", [])
+                ]
+            }
+        if entity == "taxonomy_term":
+            params = {
+                "page[limit]": str(limit),
+                "sort": "name",
+                f"fields[taxonomy_term--{target}]": "name,drupal_internal__tid",
+            }
+            if search:
+                params["filter[name][operator]"] = "CONTAINS"
+                params["filter[name][value]"] = search
+            response = await client.get(
+                f"/jsonapi/taxonomy_term/{target}", params=params
+            )
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code,
+                                    detail="Consulta de opções recusada.")
+            return {
+                "options": [
+                    {
+                        "id": it.get("attributes", {}).get("drupal_internal__tid"),
+                        "uuid": it.get("id"),
+                        "label": it.get("attributes", {}).get("name") or "",
+                    }
+                    for it in response.json().get("data", [])
+                ]
+            }
+    raise HTTPException(status_code=404, detail="Tipo de referência não suportado.")
+
+
+# --- Taxonomia: CRUD de termos por vocabulário -------------------------------
+
+
+def _vocab_or_404(vocab: str) -> dict[str, str]:
+    meta = manage_schema.TAXONOMY_VOCABS.get(vocab)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Vocabulário não suportado.")
+    return meta
+
+
+def _term_item(item: dict[str, Any]) -> dict[str, Any]:
+    attrs = item.get("attributes", {})
+    tid = attrs.get("drupal_internal__tid")
+    return {
+        "tid": tid,
+        # ManageItem genérico do app lê "nid" — termos reaproveitam o shape.
+        "nid": tid,
+        "uuid": item.get("id"),
+        "title": attrs.get("name") or "(sem nome)",
+        "status": True,
+        "changed": attrs.get("changed"),
+    }
+
+
+async def _term_uuid(client: httpx.AsyncClient, vocab: str, tid: int) -> str:
+    response = await client.get(
+        f"/jsonapi/taxonomy_term/{vocab}",
+        params={
+            "filter[drupal_internal__tid]": tid,
+            "page[limit]": "1",
+        },
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Drupal não respondeu à consulta do termo.")
+    data = response.json().get("data") or []
+    if not data:
+        raise HTTPException(status_code=404, detail="Termo não encontrado.")
+    return data[0]["id"]
+
+
+async def _build_term_payload(
+    vocab: str,
+    values: dict[str, Any],
+    client: httpx.AsyncClient,
+    *,
+    uuid: str | None = None,
+) -> dict[str, Any]:
+    attrs: dict[str, Any] = {}
+    rels: dict[str, Any] = {}
+    if values.get("name"):
+        attrs["name"] = str(values["name"]).strip()
+    if values.get("description") not in (None, ""):
+        desc = values["description"]
+        attrs["description"] = (
+            desc if isinstance(desc, dict)
+            else {"value": desc, "format": "plain_text"}
+        )
+    if values.get("weight") not in (None, ""):
+        attrs["weight"] = int(values["weight"])
+    if values.get("parent") not in (None, ""):
+        ref = await _resolve_ref_uuid(
+            client, f"taxonomy_term:{vocab}", values["parent"]
+        )
+        rels["parent"] = {"data": ref}
+    data: dict[str, Any] = {
+        "type": f"taxonomy_term--{vocab}", "attributes": attrs
+    }
+    if rels:
+        data["relationships"] = rels
+    if uuid:
+        data["id"] = uuid
+    return {"data": data}
+
+
+@app.get("/manage/taxonomy")
+async def manage_vocabularies(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    return {
+        "vocabularies": [
+            {"vid": vid, "label": meta["label"]}
+            for vid, meta in manage_schema.TAXONOMY_VOCABS.items()
+        ]
+    }
+
+
+@app.get("/manage/taxonomy/{vocab}")
+async def manage_terms(
+    vocab: str,
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _vocab_or_404(vocab)
+    limit = max(1, min(limit, 100))
+    params: dict[str, Any] = {
+        "page[limit]": str(limit),
+        "page[offset]": str(max(0, offset)),
+        "sort": "weight,name",
+    }
+    if search:
+        params["filter[name][operator]"] = "CONTAINS"
+        params["filter[name][value]"] = search
+    async with drupal_client(session) as client:
+        response = await client.get(
+            f"/jsonapi/taxonomy_term/{vocab}", params=params
+        )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta ao vocabulário recusada.")
+    data = response.json()
+    return {
+        "items": [_term_item(it) for it in data.get("data", [])],
+        "has_next": bool((data.get("links") or {}).get("next")),
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+@app.post("/manage/taxonomy/{vocab}")
+async def manage_term_create(
+    vocab: str,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _vocab_or_404(vocab)
+    values = payload.get("values") or {}
+    if not str(values.get("name") or "").strip():
+        raise HTTPException(status_code=422, detail="Informe o nome do termo.")
+    async with drupal_client(session) as client:
+        body = await _build_term_payload(vocab, values, client)
+        response = await client.post(
+            f"/jsonapi/taxonomy_term/{vocab}",
+            json=body,
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 422,
+            detail={"message": "Portal recusou a criação do termo.",
+                    "response": response.text[:600]},
+        )
+    return {"ok": True, **_term_item(response.json().get("data") or {})}
+
+
+@app.patch("/manage/taxonomy/{vocab}/{tid}")
+async def manage_term_update(
+    vocab: str,
+    tid: int,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _vocab_or_404(vocab)
+    async with drupal_client(session) as client:
+        uuid = await _term_uuid(client, vocab, tid)
+        body = await _build_term_payload(
+            vocab, payload.get("values") or {}, client, uuid=uuid
+        )
+        response = await client.patch(
+            f"/jsonapi/taxonomy_term/{vocab}/{uuid}",
+            json=body,
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 422,
+            detail={"message": "Portal recusou a atualização do termo.",
+                    "response": response.text[:600]},
+        )
+    return {"ok": True, **_term_item(response.json().get("data") or {})}
+
+
+@app.delete("/manage/taxonomy/{vocab}/{tid}")
+async def manage_term_delete(
+    vocab: str,
+    tid: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _vocab_or_404(vocab)
+    async with drupal_client(session) as client:
+        uuid = await _term_uuid(client, vocab, tid)
+        response = await client.delete(
+            f"/jsonapi/taxonomy_term/{vocab}/{uuid}",
+            headers={"X-CSRF-Token": session.get("csrf") or ""},
+        )
+    if response.status_code != 204:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Portal recusou excluir o termo.")
+    return {"ok": True, "tid": tid, "deleted": True}
+
+
+# --- Moderação: fila unificada de aprovação ----------------------------------
+
+
+@app.get("/manage/moderation/pending")
+async def manage_moderation_pending(
+    bundle: str | None = None,
+    limit_per_bundle: int = 10,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Rascunhos pendentes por setor — o JSON:API já filtra o que a conta
+    pode enxergar (extensionista vê só os próprios; coordenação vê tudo)."""
+    if not session.get("can_review") and not session.get("can_publish") \
+            and "coordenador" not in (session.get("roles") or []):
+        raise HTTPException(
+            status_code=403,
+            detail="Esta conta não tem permissão de revisão.",
+        )
+    bundles = [bundle] if bundle else list(manage_schema.MANAGE_SCHEMAS)
+    limit = max(1, min(limit_per_bundle, 50))
+    items: list[dict[str, Any]] = []
+    async with drupal_client(session) as client:
+        for b in bundles:
+            if b not in manage_schema.MANAGE_SCHEMAS:
+                raise HTTPException(status_code=404,
+                                    detail="Setor não suportado.")
+            response = await client.get(
+                f"/jsonapi/node/{b}",
+                params={
+                    "filter[status]": "0",
+                    "page[limit]": str(limit),
+                    "sort": "changed",
+                },
+            )
+            if response.status_code != 200:
+                continue
+            for it in response.json().get("data", []):
+                items.append({
+                    "bundle": b,
+                    "bundle_label":
+                        manage_schema.MANAGE_SCHEMAS[b]["label_singular"],
+                    **_manage_item(it),
+                })
+    return {"items": items}
+
+
+@app.post("/manage/moderation/{bundle}/{nid}/approve")
+async def manage_moderation_approve(
+    bundle: str,
+    nid: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Publica o rascunho — o Drupal decide se a conta pode (403 repassado)."""
+    _manage_schema_or_404(bundle)
+    async with drupal_client(session) as client:
+        uuid = await _node_uuid(client, bundle, nid)
+        response = await client.patch(
+            f"/jsonapi/node/{bundle}/{uuid}",
+            json={
+                "data": {
+                    "type": f"node--{bundle}",
+                    "id": uuid,
+                    "attributes": {"status": True},
+                }
+            },
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={
+                "message": "Portal recusou a publicação.",
+                "response": response.text[:600],
+            },
+        )
+    return {
+        "ok": True,
+        **_manage_item(response.json().get("data") or {}),
+        "approved": True,
+    }
+
+
+# --- Usuários e papéis (access control) --------------------------------------
+
+
+def _user_item(item: dict[str, Any], included: list | None = None) -> dict[str, Any]:
+    attrs = item.get("attributes", {})
+    roles_data = (
+        (item.get("relationships", {}).get("roles") or {}).get("data") or []
+    )
+    return {
+        "uid": attrs.get("drupal_internal__uid"),
+        "uuid": item.get("id"),
+        "name": attrs.get("name"),
+        "mail": attrs.get("mail"),
+        "status": bool(attrs.get("status")),
+        "roles": [r.get("id") for r in roles_data if r.get("id")],
+        "changed": attrs.get("changed"),
+    }
+
+
+@app.get("/manage/users/roles")
+async def manage_user_roles(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        response = await client.get("/jsonapi/user_role/user_role")
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta de papéis recusada.")
+    return {
+        "roles": [
+            {
+                "id": it.get("id"),
+                "label": (it.get("attributes") or {}).get("label")
+                or it.get("id"),
+            }
+            for it in response.json().get("data", [])
+        ]
+    }
+
+
+@app.get("/manage/users")
+async def manage_users_list(
+    search: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    limit = max(1, min(limit, 100))
+    params: dict[str, Any] = {
+        "page[limit]": str(limit),
+        "page[offset]": str(max(0, offset)),
+        "sort": "created",
+    }
+    if search:
+        params["filter[name][operator]"] = "CONTAINS"
+        params["filter[name][value]"] = search
+    if status == "active":
+        params["filter[status]"] = "1"
+    elif status == "blocked":
+        params["filter[status]"] = "0"
+    async with drupal_client(session) as client:
+        response = await client.get("/jsonapi/user/user", params=params)
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta de usuários recusada.")
+    data = response.json()
+    return {
+        "items": [_user_item(it) for it in data.get("data", [])],
+        "has_next": bool((data.get("links") or {}).get("next")),
+    }
+
+
+async def _user_uuid(client: httpx.AsyncClient, uid: int) -> str:
+    response = await client.get(
+        "/jsonapi/user/user",
+        params={"filter[drupal_internal__uid]": uid, "page[limit]": "1"},
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Drupal não respondeu à consulta do usuário.")
+    data = response.json().get("data") or []
+    if not data:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    return data[0]["id"]
+
+
+@app.patch("/manage/users/{uid}")
+async def manage_user_update(
+    uid: int,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    attrs: dict[str, Any] = {}
+    for key in ("name", "mail"):
+        if payload.get(key) not in (None, ""):
+            attrs[key] = payload[key]
+    if payload.get("status") is not None:
+        attrs["status"] = bool(payload["status"])
+    rels: dict[str, Any] = {}
+    if payload.get("roles") is not None:
+        rels["roles"] = {
+            "data": [
+                {"type": "user_role--user_role", "id": str(r)}
+                for r in payload["roles"]
+            ]
+        }
+    async with drupal_client(session) as client:
+        uuid = await _user_uuid(client, uid)
+        data: dict[str, Any] = {"type": "user--user", "id": uuid,
+                                "attributes": attrs}
+        if rels:
+            data["relationships"] = rels
+        response = await client.patch(
+            f"/jsonapi/user/user/{uuid}",
+            json={"data": data},
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 422,
+            detail={"message": "Portal recusou a atualização do usuário.",
+                    "response": response.text[:600]},
+        )
+    return {"ok": True, **_user_item(response.json().get("data") or {})}
+
+
+# --- Biblioteca de mídia (media entities) ------------------------------------
+
+MEDIA_TYPES = {"image": "field_media_image",
+               "document": "field_media_document"}
+
+
+@app.get("/manage/media/{media_type}")
+async def manage_media_list(
+    media_type: str,
+    search: str | None = None,
+    limit: int = 30,
+    offset: int = 0,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    field = MEDIA_TYPES.get(media_type)
+    if field is None:
+        raise HTTPException(status_code=404, detail="Tipo de mídia não suportado.")
+    limit = max(1, min(limit, 100))
+    params: dict[str, Any] = {
+        "page[limit]": str(limit),
+        "page[offset]": str(max(0, offset)),
+        "sort": "-created",
+        "include": field,
+    }
+    if search:
+        params["filter[name][operator]"] = "CONTAINS"
+        params["filter[name][value]"] = search
+    async with drupal_client(session) as client:
+        response = await client.get(f"/jsonapi/media/{media_type}", params=params)
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta à biblioteca recusada.")
+    data = response.json()
+    files = {
+        it.get("id"): it
+        for it in data.get("included", [])
+        if it.get("type") == "file--file"
+    }
+    items = []
+    for it in data.get("data", []):
+        attrs = it.get("attributes", {})
+        file_uuid = (
+            (it.get("relationships", {}).get(field) or {}).get("data") or {}
+        ).get("id")
+        file_entity = files.get(file_uuid) or {}
+        file_uri = (file_entity.get("attributes") or {}).get("uri") or {}
+        items.append({
+            "uuid": it.get("id"),
+            "mid": attrs.get("drupal_internal__mid"),
+            "name": attrs.get("name"),
+            "file_uuid": file_uuid,
+            "file_url": file_uri.get("url"),
+        })
+    return {"items": items}
+
+
+@app.post("/manage/media/{media_type}")
+async def manage_media_create(
+    media_type: str,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Cria a entidade media a partir do uuid de arquivo já enviado."""
+    field = MEDIA_TYPES.get(media_type)
+    if field is None:
+        raise HTTPException(status_code=404, detail="Tipo de mídia não suportado.")
+    values = payload.get("values") or {}
+    name = str(values.get("name") or "").strip()
+    file_uuid = str(values.get("file_uuid") or "").strip()
+    if not name or not file_uuid:
+        raise HTTPException(status_code=422,
+                            detail="Informe name e file_uuid.")
+    body = {
+        "data": {
+            "type": f"media--{media_type}",
+            "attributes": {"name": name, "status": True},
+            "relationships": {
+                field: {"data": {"type": "file--file", "id": file_uuid}}
+            },
+        }
+    }
+    async with drupal_client(session) as client:
+        response = await client.post(
+            f"/jsonapi/media/{media_type}",
+            json=body,
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={"message": "Portal recusou a criação da mídia.",
+                    "response": response.text[:600]},
+        )
+    data = response.json().get("data") or {}
+    return {"ok": True, "uuid": data.get("id"), "name": name}
+
+
+@app.post("/manage/media/{media_type}/files")
+async def manage_media_upload(
+    media_type: str,
+    request: Request,
+    filename: str,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Upload direto para o campo da media — devolve o uuid do arquivo."""
+    field = MEDIA_TYPES.get(media_type)
+    if field is None:
+        raise HTTPException(status_code=404, detail="Tipo de mídia não suportado.")
+    content = await request.body()
+    if not content:
+        raise HTTPException(status_code=422, detail="Arquivo vazio.")
+    async with drupal_client(session) as client:
+        response = await client.post(
+            f"/jsonapi/media/{media_type}/{field}",
+            content=content,
+            headers={
+                "X-CSRF-Token": session.get("csrf") or "",
+                "Content-Type": "application/octet-stream",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Accept": "application/vnd.api+json",
+            },
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={"message": "Upload recusado pelo portal.",
+                    "response": response.text[:600]},
+        )
+    data = response.json().get("data") or {}
+    return {"ok": True, "id": data.get("id"), "name": filename}
+
+
+@app.get("/manage/{bundle}")
+async def manage_list(
+    bundle: str,
+    status: str | None = None,
+    search: str | None = None,
+    rel: str | None = None,
+    rel_id: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _manage_schema_or_404(bundle)
+    limit = max(1, min(limit, 50))
+    params: dict[str, Any] = {
+        "page[limit]": str(limit),
+        "page[offset]": str(max(0, offset)),
+        "sort": "-changed",
+    }
+    if status == "published":
+        params["filter[status]"] = "1"
+    elif status == "draft":
+        params["filter[status]"] = "0"
+    if search:
+        params["filter[title][operator]"] = "CONTAINS"
+        params["filter[title][value]"] = search
+    if rel and rel_id:
+        params[f"filter[{rel}.id]"] = rel_id
+    async with drupal_client(session) as client:
+        response = await client.get(f"/jsonapi/node/{bundle}", params=params)
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Consulta ao setor recusada pelo portal.",
+        )
+    data = response.json()
+    items = [_manage_item(it) for it in data.get("data", [])]
+    has_next = bool((data.get("links") or {}).get("next"))
+    return {"items": items, "has_next": has_next, "offset": offset, "limit": limit}
+
+
+@app.get("/manage/{bundle}/{nid}")
+async def manage_detail(
+    bundle: str,
+    nid: int,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    schema = _manage_schema_or_404(bundle)
+    field_names = ",".join(
+        [f["name"] for f in schema["fields"]] + ["status", "changed"]
+    )
+    async with drupal_client(session) as client:
+        uuid = await _node_uuid(client, bundle, nid)
+        response = await client.get(
+            f"/jsonapi/node/{bundle}/{uuid}",
+            params={f"fields[node--{bundle}]": field_names},
+        )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Registro não acessível.")
+    item = response.json().get("data") or {}
+    result = _manage_item(item)
+    result["values"] = item.get("attributes", {})
+    result["relationships"] = item.get("relationships", {})
+    return result
+
+
+@app.post("/manage/{bundle}")
+async def manage_create(
+    bundle: str,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _manage_schema_or_404(bundle)
+    access = await _create_access_map(session)
+    if not access.get(bundle):
+        raise HTTPException(
+            status_code=403,
+            detail="Esta conta não pode criar itens neste setor.",
+        )
+    values = payload.get("values") or {}
+    if not payload.get("published"):
+        # Via formulário nativo: nasce rascunho (status=0) e entra na fila
+        # de revisão — o guard do Drupal limita status no JSON:API.
+        created = await _create_bundle_draft_internal(
+            bundle,
+            title=str(values.get("title") or ""),
+            summary=str(values.get("field_resumo_noticia") or ""),
+            body=str(values.get("body") or ""),
+            extras={
+                (
+                    f"{f['name']}[0][value][date]"
+                    if f["kind"] == "date"
+                    else f"{f['name']}[0][uri]"
+                    if f["kind"] == "link"
+                    else f"{f['name']}[0][value]"
+                ): str(values[f["name"]])
+                for f in (_manage_schema_or_404(bundle)["fields"])
+                if f["kind"] in ("text", "date", "number", "email", "link")
+                and f["name"] != "title"
+                and f["name"].startswith("field_")
+                and values.get(f["name"]) not in (None, "")
+            },
+            session=session,
+        )
+        return {
+            "ok": True,
+            "nid": int(created.get("drupal_internal_nid") or 0),
+            "uuid": created.get("jsonapi_id") or "",
+            "title": created.get("title") or values.get("title") or "",
+            "status": False,
+        }
+    async with drupal_client(session) as client:
+        body = await _build_node_payload(bundle, values, client)
+        body["data"]["attributes"]["status"] = True
+        response = await client.post(
+            f"/jsonapi/node/{bundle}",
+            json=body,
+            headers=_jsonapi_write_headers(session),
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 422,
+            detail={
+                "message": "Portal recusou a criação do registro.",
+                "response": response.text[:800],
+            },
+        )
+    data = response.json().get("data") or {}
+    return {"ok": True, **_manage_item(data)}
+
+
+def _strip_longtext_formats(body: dict[str, Any]) -> bool:
+    """Remove a chave `format` de campos texto longo — sem ela o Drupal
+    mantém o formato que já estava no registro. Retorna True se mudou."""
+    attrs = (body.get("data") or {}).get("attributes") or {}
+    changed = False
+    for name, value in list(attrs.items()):
+        if isinstance(value, dict) and "format" in value:
+            attrs[name] = {k: v for k, v in value.items() if k != "format"}
+            changed = True
+    return changed
+
+
+@app.patch("/manage/{bundle}/{nid}")
+async def manage_update(
+    bundle: str,
+    nid: int,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    _manage_schema_or_404(bundle)
+    async with drupal_client(session) as client:
+        uuid = await _node_uuid(client, bundle, nid)
+        body = await _build_node_payload(
+            bundle, payload.get("values") or {}, client, uuid=uuid
+        )
+        if "published" in payload:
+            body["data"]["attributes"]["status"] = bool(payload["published"])
+        response = await client.patch(
+            f"/jsonapi/node/{bundle}/{uuid}",
+            json=body,
+            headers=_jsonapi_write_headers(session),
+        )
+        if (
+            response.status_code == 422
+            and 'format' in response.text
+            and _strip_longtext_formats(body)
+        ):
+            # A conta não pode usar o formato pedido (ex.: basic_html) —
+            # retenta deixando o Drupal preservar o formato existente.
+            response = await client.patch(
+                f"/jsonapi/node/{bundle}/{uuid}",
+                json=body,
+                headers=_jsonapi_write_headers(session),
+            )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code if response.status_code >= 400 else 422,
+            detail={
+                "message": "Portal recusou a atualização do registro.",
+                "response": response.text[:800],
+            },
+        )
+    data = response.json().get("data") or {}
+    return {"ok": True, **_manage_item(data)}
+
+
+@app.delete("/manage/{bundle}/{nid}")
+async def manage_delete(
+    bundle: str,
+    nid: int,
+    hard: bool = False,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Despublica por padrão; ?hard=1 remove de fato (Drupal decide a permissão)."""
+    _manage_schema_or_404(bundle)
+    async with drupal_client(session) as client:
+        uuid = await _node_uuid(client, bundle, nid)
+        if not hard:
+            response = await client.patch(
+                f"/jsonapi/node/{bundle}/{uuid}",
+                json={
+                    "data": {
+                        "type": f"node--{bundle}",
+                        "id": uuid,
+                        "attributes": {"status": False},
+                    }
+                },
+                headers=_jsonapi_write_headers(session),
+            )
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Portal recusou despublicar o registro.",
+                )
+            return {"ok": True, "nid": nid, "published": False}
+        response = await client.delete(
+            f"/jsonapi/node/{bundle}/{uuid}",
+            headers={"X-CSRF-Token": session.get("csrf") or ""},
+        )
+    if response.status_code != 204:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Portal recusou excluir o registro.",
+        )
+    return {"ok": True, "nid": nid, "deleted": True}
+
+
+@app.post("/manage/{bundle}/files/{field}")
+async def manage_upload_file(
+    bundle: str,
+    field: str,
+    request: Request,
+    filename: str,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    """Upload binário para campo file/image — devolve o uuid do arquivo."""
+    _manage_schema_or_404(bundle)
+    spec = manage_schema.spec_for(bundle, field)
+    if spec is None or spec.get("kind") not in ("file", "image"):
+        raise HTTPException(status_code=404, detail="Campo de arquivo não suportado.")
+    content = await request.body()
+    if not content:
+        raise HTTPException(status_code=422, detail="Arquivo vazio.")
+    async with drupal_client(session) as client:
+        response = await client.post(
+            f"/jsonapi/node/{bundle}/{field}",
+            content=content,
+            headers={
+                "X-CSRF-Token": session.get("csrf") or "",
+                "Content-Type": "application/octet-stream",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Accept": "application/vnd.api+json",
+            },
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code,
+            detail={"message": "Upload recusado pelo portal.",
+                    "response": response.text[:600]},
+        )
+    data = response.json().get("data") or {}
+    return {
+        "ok": True,
+        "id": data.get("id"),
+        "name": filename,
+        "url": ((data.get("attributes") or {}).get("uri") or {}).get("url"),
     }
 
 
@@ -3164,3 +4717,165 @@ def mission_work_item_update(
             status_code=404,
             detail="Atividade complementar não encontrada.",
         )
+
+
+# ---------------------------------------------------------------------------
+# Menus do portal — navegação gerenciável no app.
+# Requer a permissão Drupal "administer menu" (concedida ao papel
+# extensionista em 2026-11 — se um novo operador não enxergar os menus,
+# a permissão está faltando na sua conta/papel).
+# ---------------------------------------------------------------------------
+
+
+def _menu_link_item(item: dict[str, Any]) -> dict[str, Any]:
+    a = item.get("attributes") or {}
+    link = a.get("link") or {}
+    return {
+        "uuid": item.get("id"),
+        "menu": a.get("menu_name"),
+        "title": a.get("title") or "",
+        "uri": link.get("uri") or "",
+        "enabled": bool(a.get("enabled", True)),
+        "expanded": bool(a.get("expanded", False)),
+        "weight": a.get("weight") or 0,
+    }
+
+
+@app.get("/menus")
+async def menus_list(
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        response = await client.get("/jsonapi/menu/menu")
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta de menus recusada.")
+    return {
+        "menus": [
+            {
+                "id": (it.get("attributes") or {}).get(
+                    "drupal_internal__id"),
+                "label": (it.get("attributes") or {}).get("label")
+                or (it.get("attributes") or {}).get(
+                    "drupal_internal__id"),
+            }
+            for it in response.json().get("data", [])
+        ]
+    }
+
+
+@app.get("/menus/{menu}")
+async def menu_items(
+    menu: str,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        response = await client.get(
+            "/jsonapi/menu_link_content/menu_link_content",
+            params={
+                "filter[menu_name]": menu,
+                "sort": "weight",
+                "page[limit]": "100",
+            },
+        )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code,
+                            detail="Consulta de itens recusada.")
+    return {"items": [_menu_link_item(it) for it in response.json().get("data", [])]}
+
+
+def _menu_link_body(payload: dict[str, Any], item: dict[str, Any] | None) -> dict[str, Any]:
+    a = (item or {}).get("attributes") or {}
+    attrs: dict[str, Any] = {
+        "title": payload.get("title", a.get("title")),
+        "enabled": bool(payload.get("enabled", a.get("enabled", True))),
+        "expanded": bool(payload.get("expanded", a.get("expanded", False))),
+        "weight": payload.get("weight", a.get("weight", 0)),
+        "link": {"uri": payload.get("uri", (a.get("link") or {}).get("uri"))},
+    }
+    if a.get("menu_name"):
+        attrs["menu_name"] = a["menu_name"]
+    return attrs
+
+
+@app.patch("/menus/items/{uuid}")
+async def menu_item_update(
+    uuid: str,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        current = await client.get(
+            f"/jsonapi/menu_link_content/menu_link_content/{uuid}")
+        if current.status_code != 200:
+            raise HTTPException(status_code=current.status_code,
+                                detail="Item de menu não acessível.")
+        item = current.json().get("data") or {}
+        body = {
+            "data": {
+                "type": "menu_link_content--menu_link_content",
+                "id": uuid,
+                "attributes": _menu_link_body(payload, item),
+            }
+        }
+        response = await client.patch(
+            f"/jsonapi/menu_link_content/menu_link_content/{uuid}",
+            json=body,
+            headers={
+                "Content-Type": "application/vnd.api+json",
+                "X-CSRF-Token": session.get("csrf") or "",
+            },
+        )
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"Portal recusou a atualização do item de menu.",
+        )
+    return {"ok": True, "item": _menu_link_item(response.json().get("data") or {})}
+
+
+@app.post("/menus/{menu}/items")
+async def menu_item_create(
+    menu: str,
+    payload: dict[str, Any] = Body(default={}),
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    attrs = _menu_link_body(payload, {"attributes": {"menu_name": menu}})
+    body = {
+        "data": {
+            "type": "menu_link_content--menu_link_content",
+            "attributes": attrs,
+        }
+    }
+    async with drupal_client(session) as client:
+        response = await client.post(
+            "/jsonapi/menu_link_content/menu_link_content",
+            json=body,
+            headers={
+                "Content-Type": "application/vnd.api+json",
+                "X-CSRF-Token": session.get("csrf") or "",
+            },
+        )
+    if response.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Portal recusou a criação do item de menu.",
+        )
+    return {"ok": True, "item": _menu_link_item(response.json().get("data") or {})}
+
+
+@app.delete("/menus/items/{uuid}")
+async def menu_item_delete(
+    uuid: str,
+    session: dict[str, Any] = Depends(require_session),
+) -> dict[str, Any]:
+    async with drupal_client(session) as client:
+        response = await client.delete(
+            f"/jsonapi/menu_link_content/menu_link_content/{uuid}",
+            headers={"X-CSRF-Token": session.get("csrf") or ""})
+    if response.status_code not in (200, 204):
+        raise HTTPException(
+            status_code=response.status_code,
+            detail="Portal recusou a remoção do item de menu.",
+        )
+    return {"ok": True}

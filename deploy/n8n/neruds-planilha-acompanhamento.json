@@ -1,0 +1,141 @@
+{
+  "name": "NERUDS — Planilha de acompanhamento (diário + on-demand)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * *"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-8000-neruds00001",
+      "name": "Diário 07h BRT",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-800, 300]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "neruds-planilha-export",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-4000-8000-neruds00002",
+      "name": "On-demand (webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-800, 500],
+      "webhookId": "neruds-planilha-export"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.neruds.org/auth/login",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"username\": \"servico.neruds\",\n  \"password\": \"PREENCHER_SENHA_SERVICO\"\n}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "a1b2c3d4-0003-4000-8000-neruds00003",
+      "name": "Login no bridge",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-560, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.neruds.org/missions/1/export.xlsx",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.token }}"
+            },
+            {
+              "name": "User-Agent",
+              "value": "NERUDS-Control-Center/1.0"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "a1b2c3d4-0004-4000-8000-neruds00004",
+      "name": "Exportar XLSX",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-340, 300]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/home/node/.n8n-files/neruds/planilha-acompanhamento-{{ $now.toFormat('yyyy-LL-dd') }}.xlsx",
+        "dataPropertyName": "data",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0005-4000-8000-neruds00005",
+      "name": "Gravar planilha",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [-120, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "tdsdados@gmail.com",
+        "toEmail": "admin@neruds.org",
+        "subject": "NERUDS — Planilha de acompanhamento {{ $now.toFormat('dd/LL/yyyy') }}",
+        "text": "Exportação diária da missão GESTAO_PORTAL_NERUDS gerada pelo Control Center.",
+        "options": {
+          "attachments": "data"
+        }
+      },
+      "id": "a1b2c3d4-0006-4000-8000-neruds00006",
+      "name": "Enviar por e-mail",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [100, 400],
+      "credentials": {
+        "smtp": {
+          "id": "nrudsSmtpGmail001",
+          "name": "NERUDS SMTP Gmail"
+        }
+      },
+      "notes": "Requer a credencial SMTP 'NERUDS SMTP Gmail' (id nrudsSmtpGmail001) importada no n8n — ver deploy/n8n/README.md."
+    }
+  ],
+  "connections": {
+    "Diário 07h BRT": {
+      "main": [[{"node": "Login no bridge", "type": "main", "index": 0}]]
+    },
+    "On-demand (webhook)": {
+      "main": [[{"node": "Login no bridge", "type": "main", "index": 0}]]
+    },
+    "Login no bridge": {
+      "main": [[{"node": "Exportar XLSX", "type": "main", "index": 0}]]
+    },
+    "Exportar XLSX": {
+      "main": [[
+        {"node": "Gravar planilha", "type": "main", "index": 0},
+        {"node": "Enviar por e-mail", "type": "main", "index": 0}
+      ]]
+    }
+  },
+  "settings": {
+    "timezone": "America/Sao_Paulo"
+  },
+  "active": true
+}

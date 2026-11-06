@@ -5,6 +5,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'app_config.dart';
 import 'bridge_http.dart' as http;
+import 'manage_navigation.dart';
+import 'node_picker_sheet.dart';
 import 'portal_read.dart' show missionBoardChanged;
 import 'session_widgets.dart';
 import 'unsaved_work.dart';
@@ -630,7 +632,21 @@ class _MissionPageState extends State<MissionPage> {
           Wrap(
             spacing: 12,
             runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
+              FilterChip(
+                key: const ValueKey('mission-mine'),
+                showCheckmark: false,
+                avatar: const Icon(Icons.person_outline, size: 16),
+                label: const Text('Só as minhas'),
+                selected: owner != null &&
+                    owner == AppSession.instance.username,
+                onSelected: (v) {
+                  owner =
+                      v ? AppSession.instance.username : null;
+                  _load();
+                },
+              ),
               _filter(
                 label: 'Responsável',
                 value: owner,
@@ -1603,65 +1619,21 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
   }
 
   Future<void> _linkPortalNode() async {
-    final controller = TextEditingController();
-    final input = await showDialog<String>(
+    // Seletor nativo: busca a ficha no próprio app em vez de colar URL.
+    final picked = await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Vincular ficha do portal'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Endereço ou número da ficha',
-            hintText: 'https://portal/node/123 ou 123',
-          ),
-          onSubmitted: (value) => Navigator.pop(context, value.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Vincular'),
-          ),
-        ],
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => NodePickerSheet(
+        initialBundle: task?['gap_bundle']?.toString(),
       ),
     );
-    controller.dispose();
-    if (!mounted || input == null || input.isEmpty) return;
+    if (!mounted || picked == null) return;
+    final nid = '${picked['nid']}';
     final portal = AppConfig.portalUrl;
-    final portalUri = AppConfig.webUri(portal);
-    if (portalUri == null) {
+    if (AppConfig.webUri(portal) == null) {
       _message('O endereço do portal não está configurado nesta estação.');
       return;
-    }
-    String? nid;
-    if (RegExp(r'^\d+$').hasMatch(input)) {
-      nid = input;
-    } else {
-      final parsed = AppConfig.webUri(input);
-      // A configured portal may live under a path prefix (/neruds/node/1);
-      // URLs on the same origin but outside that prefix do not belong to it.
-      final basePath = portalUri.path.replaceAll(RegExp(r'/+$'), '');
-      final path = parsed != null && basePath.isNotEmpty
-          ? (parsed.path.startsWith('$basePath/')
-              ? parsed.path.substring(basePath.length)
-              : null)
-          : parsed?.path;
-      final match = path == null
-          ? null
-          : RegExp(r'^/node/(\d+)(?:/edit)?/?$').firstMatch(path);
-      if (parsed == null || parsed.origin.toLowerCase() != portalUri.origin.toLowerCase() || path == null) {
-        _message('O endereço informado não pertence ao portal configurado.');
-        return;
-      }
-      nid = match?.group(1);
-      // Aliases Pathauto (ex.: /projeto-agrovila) não trazem o nid — o
-      // bridge resolve pelo shortlink da página.
-      nid ??= await _resolvePortalAlias(input);
-      if (nid == null) return;
     }
     final revision = _beginSessionRequest();
     // While a gap re-check is in flight another relink could overlap it —
@@ -1711,26 +1683,21 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
     }
   }
 
-  /// Resolve a same-portal alias to its node id via the bridge; returns
-  /// null after messaging the user when the address cannot be resolved.
-  Future<String?> _resolvePortalAlias(String url) async {
-    try {
-      final response = await http.get(
-        _uri('/portal/node-lookup', {'url': url}),
-        headers: AppSession.instance.authHeaders,
-      );
-      if (!mounted) return null;
-      if (response.statusCode != 200) {
-        _message(_error(response));
-        return null;
-      }
-      final data = Map<String, dynamic>.from(
-        jsonDecode(utf8.decode(response.bodyBytes)),
-      );
-      return data['nid']?.toString();
-    } catch (error) {
-      if (mounted) _message(workflowError(error));
-      return null;
+  /// Abre a ficha vinculada no formulário nativo — sem sair do app.
+  /// Delega a resolução do setor ao openManageEditor: o tipo real do nó
+  /// é descoberto no portal (nodeType), sem perguntar ao operador nem
+  /// confiar em gap_bundle — que pode estar desatualizado após relink.
+  /// O seletor de setor só aparece se o nó não for de tipo gerenciável.
+  Future<void> _editInApp() async {
+    final nid = _taskNid;
+    if (nid == null) {
+      _message('Vincule a ficha do portal primeiro.');
+      return;
+    }
+    final changed = await openManageEditor(context, nid: nid);
+    if (changed == true) {
+      // Recarrega a tarefa para refletir a edição na reconciliação.
+      await _recheckGap();
     }
   }
 
@@ -1960,17 +1927,18 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
             label: 'Conferir página pública',
             url: data['public_url']?.toString(),
           ),
-          PortalLinkButton(
-            label: 'Abrir edição no portal',
-            url: data['edit_url']?.toString(),
-            editing: true,
+          FilledButton.tonalIcon(
+            key: const ValueKey('mission-edit-in-app'),
+            icon: const Icon(Icons.edit_outlined, size: 18),
+            onPressed: saving || _taskNid == null ? null : _editInApp,
+            label: const Text('Editar ficha no app'),
           ),
         ],
       ),
       const SizedBox(height: 8),
       const Text(
-        'A edição utiliza sua conta e as permissões do Drupal. '
-        'O registro desta missão permanece disponível para reunir a evidência.',
+        'A edição abre o formulário do app com os campos do setor, '
+        'respeitando as permissões da sua conta no portal.',
       ),
       const SizedBox(height: 8),
       OutlinedButton.icon(
@@ -1984,8 +1952,8 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       ),
       const SizedBox(height: 6),
       const Text(
-        'Quando a ficha for criada pelo formulário do portal, informe o '
-        'endereço ou o número para ligar esta tarefa a ela.',
+        'Escolha a ficha existente em qualquer setor para ligar '
+        'esta tarefa a ela.',
       ),
       if ((data['gap_bundle']?.toString() ?? '').isNotEmpty) ...[
         const SizedBox(height: 12),
@@ -1993,8 +1961,14 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       ],
       const SizedBox(height: 12),
       _Info('Onde pesquisar', data['where_to_search']),
-      _Info('Fontes de partida', data['sources']),
-      _Info('Consulta sugerida', data['suggested_query']),
+      _SourcesCard(
+        data['sources'],
+        key: const ValueKey('mission-sources'),
+      ),
+      _QueryCard(
+        data['suggested_query'],
+        key: const ValueKey('mission-suggested-query'),
+      ),
       const SizedBox(height: 16),
       OutlinedButton.icon(
         key: const ValueKey('mission-find-duplicates'),
@@ -2497,6 +2471,105 @@ class _Info extends StatelessWidget {
     if (text.isEmpty) return const SizedBox.shrink();
     return Card(
       child: ListTile(title: Text(label), subtitle: SelectableText(text)),
+    );
+  }
+}
+
+/// "Fontes de partida" — URLs do inventário separadas por `|`; cada uma
+/// vira link clicável que abre no navegador. Sem link, o operador tinha
+/// de copiar e colar à mão.
+class _SourcesCard extends StatelessWidget {
+  const _SourcesCard(this.value, {super.key});
+
+  final dynamic value;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = value?.toString().trim() ?? '';
+    if (text.isEmpty) return const SizedBox.shrink();
+    final sources = text
+        .split('|')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const ListTile(dense: true, title: Text('Fontes de partida')),
+            for (final source in sources) _SourceLink(source),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SourceLink extends StatelessWidget {
+  const _SourceLink(this.source);
+
+  final String source;
+
+  @override
+  Widget build(BuildContext context) {
+    final uri = Uri.tryParse(source);
+    final isLink =
+        uri != null && (uri.isScheme('http') || uri.isScheme('https'));
+    if (!isLink) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        child: SelectableText(source),
+      );
+    }
+    final primary = Theme.of(context).colorScheme.primary;
+    return InkWell(
+      onTap: () => launchExternalUri(context, uri),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            Icon(Icons.open_in_new, size: 16, color: primary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                source,
+                style: TextStyle(
+                  color: primary,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "Consulta sugerida" — termo de pesquisa do inventário; botão abre a
+/// busca no navegador (o portal não expõe /search).
+class _QueryCard extends StatelessWidget {
+  const _QueryCard(this.value, {super.key});
+
+  final dynamic value;
+
+  @override
+  Widget build(BuildContext context) {
+    final query = value?.toString().trim() ?? '';
+    if (query.isEmpty) return const SizedBox.shrink();
+    final searchUri = Uri.https('www.google.com', '/search', {'q': query});
+    return Card(
+      child: ListTile(
+        title: const Text('Consulta sugerida'),
+        subtitle: SelectableText(query),
+        trailing: TextButton.icon(
+          icon: const Icon(Icons.search, size: 18),
+          label: const Text('Pesquisar'),
+          onPressed: () => launchExternalUri(context, searchUri),
+        ),
+      ),
     );
   }
 }

@@ -37,7 +37,14 @@ dependencies:
   file_picker: ^13.1.0
   http: ^1.6.0
   url_launcher: ^6.3.3
-
+  shared_preferences: ^2.5.6
+  flutter_quill: ^11.6.0
+  vsc_quill_delta_to_html: ^1.0.5
+  flutter_quill_delta_from_html: ^1.5.3
+  dart_quill_delta: ^10.8.3
+  flutter_slidable: ^4.0.3
+  shimmer: ^4.0.0
+  flutter_animate: ^4.5.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -1,16 +1,20 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 
 import 'app_session.dart';
 import 'attention_panel.dart';
 import 'drupal_api.dart';
 import 'editorial_page.dart';
 import 'identity_page.dart';
+import 'manage_sectors_page.dart';
 import 'mission_page.dart';
 import 'monitoring_page.dart';
 import 'onboarding_card.dart';
 import 'opportunities_page.dart';
 import 'ops_page.dart';
 import 'portal_read.dart';
+import 'remote_config.dart';
+import 'session_persistence.dart';
 import 'session_widgets.dart';
 import 'workflow_widgets.dart';
 
@@ -46,6 +50,9 @@ class NerudsControlApp extends StatelessWidget {
     return MaterialApp(
       title: 'NERUDS · Portal e inventário',
       debugShowCheckedModeBanner: false,
+      localizationsDelegates: const [
+        FlutterQuillLocalizations.delegate,
+      ],
       theme: ThemeData(
         colorScheme: scheme,
         useMaterial3: true,
@@ -125,6 +132,16 @@ class _ControlHomeState extends State<ControlHome> {
     snapshot = api.loadSnapshot();
     if (AppSession.instance.authenticated) _reloadAttention();
     AppSession.instance.addListener(_sessionChanged);
+    RemoteConfig.instance.addListener(_remoteConfigChanged);
+    RemoteConfig.instance.load();
+    // Restores a stored token against the bridge; setSession then notifies
+    // listeners so the UI unlocks without a fresh login.
+    restoreStoredSession();
+  }
+
+  void _remoteConfigChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   void _sessionChanged() {
@@ -162,6 +179,7 @@ class _ControlHomeState extends State<ControlHome> {
   @override
   void dispose() {
     AppSession.instance.removeListener(_sessionChanged);
+    RemoteConfig.instance.removeListener(_remoteConfigChanged);
     super.dispose();
   }
 
@@ -189,6 +207,7 @@ class _ControlHomeState extends State<ControlHome> {
   Widget build(BuildContext context) {
     final session = AppSession.instance;
     final epoch = session.identityEpoch;
+    final config = RemoteConfig.instance;
     final destinations = [
       const NavigationDestination(
         icon: Icon(Icons.home_outlined),
@@ -202,14 +221,21 @@ class _ControlHomeState extends State<ControlHome> {
         icon: Icon(Icons.inventory_2_outlined),
         label: 'Inventário',
       ),
-      const NavigationDestination(
-        icon: Icon(Icons.monitor_heart_outlined),
-        label: 'Monitoramento',
-      ),
-      const NavigationDestination(
-        icon: Icon(Icons.rss_feed_outlined),
-        label: 'Oportunidades',
-      ),
+      if (config.feature('monitoring'))
+        const NavigationDestination(
+          icon: Icon(Icons.monitor_heart_outlined),
+          label: 'Monitoramento',
+        ),
+      if (config.feature('opportunities'))
+        const NavigationDestination(
+          icon: Icon(Icons.rss_feed_outlined),
+          label: 'Oportunidades',
+        ),
+      if (config.feature('manage'))
+        const NavigationDestination(
+          icon: Icon(Icons.dashboard_customize_outlined),
+          label: 'Gestão',
+        ),
       if (session.canAdminUsers)
         const NavigationDestination(
           icon: Icon(Icons.manage_accounts_outlined),
@@ -217,6 +243,8 @@ class _ControlHomeState extends State<ControlHome> {
         ),
     ];
     // Lazy first visit, retained afterwards. Identity changes create fresh pages.
+    // Entries must stay aligned with [destinations]: remote feature flags can
+    // hide tabs without a rebuild.
     final pages = [
       DashboardPage(
         snapshot: snapshot,
@@ -233,16 +261,25 @@ class _ControlHomeState extends State<ControlHome> {
         MissionPage(key: ValueKey('mission-$epoch'))
       else
         const SizedBox.shrink(),
-      if (_visited.contains(3))
-        MonitoringPage(key: ValueKey('monitoring-$epoch'), onNavigate: _select)
-      else
-        const SizedBox.shrink(),
-      if (_visited.contains(4))
-        OpportunitiesPage(key: ValueKey('opportunities-$epoch'))
-      else
-        const SizedBox.shrink(),
+      if (config.feature('monitoring'))
+        _visited.contains(3)
+            ? MonitoringPage(
+                key: ValueKey('monitoring-$epoch'),
+                onNavigate: _select,
+              )
+            : const SizedBox.shrink(),
+      if (config.feature('opportunities'))
+        _visited.contains(4)
+            ? OpportunitiesPage(key: ValueKey('opportunities-$epoch'))
+            : const SizedBox.shrink(),
+      if (config.feature('manage'))
+        _visited.contains(5)
+            ? ManageSectorsPage(key: ValueKey('manage-$epoch'))
+            : const SizedBox.shrink(),
       if (session.canAdminUsers) AdminPage(key: ValueKey('admin-$epoch')),
     ];
+    // Feature flags can shorten the list after navigation happened.
+    final currentIndex = index.clamp(0, destinations.length - 1);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -310,7 +347,7 @@ class _ControlHomeState extends State<ControlHome> {
                   NavigationRail(
                     extended: true,
                     minExtendedWidth: 210,
-                    selectedIndex: index,
+                    selectedIndex: currentIndex,
                     onDestinationSelected: _select,
                     leading: const Padding(
                       padding: EdgeInsets.fromLTRB(12, 22, 12, 28),
@@ -335,7 +372,10 @@ class _ControlHomeState extends State<ControlHome> {
                         excluding: _leaving,
                         child: AbsorbPointer(
                           absorbing: _leaving,
-                          child: IndexedStack(index: index, children: pages),
+                          child: IndexedStack(
+                            index: currentIndex,
+                            children: pages,
+                          ),
                         ),
                       ),
                       if (_leaving)
@@ -368,7 +408,7 @@ class _ControlHomeState extends State<ControlHome> {
           bottomNavigationBar: wide
               ? null
               : NavigationBar(
-                  selectedIndex: index,
+                  selectedIndex: currentIndex,
                   onDestinationSelected: _select,
                   destinations: destinations
                       .map(
@@ -410,6 +450,7 @@ class DashboardPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final announcement = RemoteConfig.instance.announcement;
     return LayoutBuilder(
       builder: (context, constraints) {
         final inset = constraints.maxWidth < 600 ? 16.0 : 32.0;
@@ -431,12 +472,30 @@ class DashboardPage extends StatelessWidget {
                   'Cuide do acervo, prepare conteúdos e deixe o próximo passo '
                   'claro para quem continua o trabalho.',
                 ),
+                if (announcement != null) ...[
+                  const SizedBox(height: 16),
+                  Card(
+                    color: Theme.of(context).colorScheme.secondaryContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.campaign_outlined),
+                          const SizedBox(width: 12),
+                          Expanded(child: Text(announcement)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 24),
-                OnboardingCard(
-                  data: attention,
-                  loading: attentionLoading,
-                  onNavigate: onSelect,
-                ),
+                if (RemoteConfig.instance.onboardingEnabled)
+                  OnboardingCard(
+                    data: attention,
+                    loading: attentionLoading,
+                    onNavigate: onSelect,
+                  ),
                 const SizedBox(height: 24),
                 AttentionPanel(
                   data: attention,

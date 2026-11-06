@@ -21,12 +21,14 @@ class GapNodeRef {
     required this.title,
     this.viewUrl,
     this.editUrl,
+    this.published = true,
   });
 
   final int? nid;
   final String title;
   final String? viewUrl;
   final String? editUrl;
+  final bool published;
 }
 
 class GapField {
@@ -62,10 +64,18 @@ class GapType {
 /// Aggregated gap rows plus whether the bridge truncated the sample
 /// (a field's `missing` count exceeded the returned node list).
 class GapReport {
-  const GapReport({required this.nodes, this.truncated = false});
+  const GapReport({
+    required this.nodes,
+    this.truncated = false,
+    this.monitoredFields = const {},
+  });
 
   final List<GapNode> nodes;
   final bool truncated;
+
+  /// Universo de campos monitorados por bundle — base do score
+  /// ponderado de completude (peso_total = soma dos pesos destes).
+  final Map<String, List<String>> monitoredFields;
 }
 
 /// One node aggregated across the monitored fields it is missing.
@@ -76,6 +86,7 @@ class GapNode {
     this.nid,
     this.viewUrl,
     this.editUrl,
+    this.published = true,
     required this.missing,
     required this.missingFields,
   });
@@ -88,6 +99,10 @@ class GapNode {
   final String title;
   final String? viewUrl;
   final String? editUrl;
+
+  /// Estado de publicação no portal — o score de completude orienta a
+  /// ação, o badge informa se a ficha já está visível ao público.
+  final bool published;
   final List<String> missing;
 
   /// Machine names of the missing fields, parallel to [missing].
@@ -453,6 +468,7 @@ class PortalReadApi {
                               title: (n['title'] ?? 'Sem título').toString(),
                               viewUrl: n['view_url']?.toString(),
                               editUrl: n['edit_url']?.toString(),
+                              published: n['published'] != false,
                             ),
                           )
                           .toList(),
@@ -467,8 +483,12 @@ class PortalReadApi {
   /// and machine names of every monitored field it is missing.
   static GapReport _gapNodes(Map<String, dynamic> body) {
     final byNid = <String, GapNode>{};
+    final universe = <String, List<String>>{};
     var truncated = false;
     for (final type in _parseGapTypes(body)) {
+      universe[type.type] = [
+        for (final f in type.fields) f.field,
+      ];
       for (final field in type.fields) {
         if (field.missing > field.nodes.length) truncated = true;
         for (final node in field.nodes) {
@@ -481,6 +501,7 @@ class PortalReadApi {
               title: node.title,
               viewUrl: node.viewUrl,
               editUrl: node.editUrl,
+              published: node.published,
               missing: [field.label],
               missingFields: [field.field],
             );
@@ -493,7 +514,11 @@ class PortalReadApi {
     }
     final nodes = byNid.values.toList()
       ..sort((a, b) => b.missing.length.compareTo(a.missing.length));
-    return GapReport(nodes: nodes, truncated: truncated);
+    return GapReport(
+      nodes: nodes,
+      truncated: truncated,
+      monitoredFields: universe,
+    );
   }
 
   static FeedList _parseFeeds(Map<String, dynamic> body) {
