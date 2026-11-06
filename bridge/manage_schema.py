@@ -211,7 +211,6 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
         "icon": "groups",
         "fields": [
             _f("title", "Título", required=True),
-            _f("body", "Apresentação", "longtext"),
             _f("field_cronograma", "Cronograma", "daterange"),
             _f(
                 "field_lider",
@@ -240,7 +239,6 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
         "icon": "volunteer_activism",
         "fields": [
             _f("title", "Título", required=True),
-            _f("body", "Descrição", "longtext"),
             _f("field_local_acao", "Local da ação"),
             _f("field_numero_participantes", "Nº de participantes", "number"),
             _f("field_impactos_resultados", "Impactos e resultados", "longtext"),
@@ -294,8 +292,6 @@ MANAGE_SCHEMAS: dict[str, dict[str, Any]] = {
                 target="node:perfil_pesquisador",
                 multiple=True,
             ),
-            _f("field_participantes", "Participantes externos",
-               hint="Quem não é pesquisador do NERUDS — escreva o nome"),
         ],
     },
     "page": {
@@ -469,12 +465,10 @@ _FIELD_GROUPS: dict[str, dict[str, str]] = {
         "title": "basics", "field_cronograma": "basics",
         "field_lider": "team", "field_membros": "team",
         "field_linha_pesquisa": "team",
-        "body": "details",
     },
     "acao_extensionista": {
         "title": "basics", "field_local_acao": "basics",
         "field_tipo_acao": "basics", "field_municipio": "basics",
-        "body": "details",
         "field_numero_participantes": "details",
         "field_impactos_resultados": "details",
         "field_pdf": "media",
@@ -491,7 +485,6 @@ _FIELD_GROUPS: dict[str, dict[str, str]] = {
     "reuniao": {
         "title": "basics", "field_data_reuniao": "basics",
         "field_pauta": "details", "field_participantes_reuniao": "details",
-        "field_participantes": "details",
     },
     "page": {
         "title": "content", "field_content": "content",
