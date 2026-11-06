@@ -1961,8 +1961,14 @@ class _MissionTaskDialogState extends State<MissionTaskDialog>
       ],
       const SizedBox(height: 12),
       _Info('Onde pesquisar', data['where_to_search']),
-      _Info('Fontes de partida', data['sources']),
-      _Info('Consulta sugerida', data['suggested_query']),
+      _SourcesCard(
+        data['sources'],
+        key: const ValueKey('mission-sources'),
+      ),
+      _QueryCard(
+        data['suggested_query'],
+        key: const ValueKey('mission-suggested-query'),
+      ),
       const SizedBox(height: 16),
       OutlinedButton.icon(
         key: const ValueKey('mission-find-duplicates'),
@@ -2465,6 +2471,105 @@ class _Info extends StatelessWidget {
     if (text.isEmpty) return const SizedBox.shrink();
     return Card(
       child: ListTile(title: Text(label), subtitle: SelectableText(text)),
+    );
+  }
+}
+
+/// "Fontes de partida" — URLs do inventário separadas por `|`; cada uma
+/// vira link clicável que abre no navegador. Sem link, o operador tinha
+/// de copiar e colar à mão.
+class _SourcesCard extends StatelessWidget {
+  const _SourcesCard(this.value, {super.key});
+
+  final dynamic value;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = value?.toString().trim() ?? '';
+    if (text.isEmpty) return const SizedBox.shrink();
+    final sources = text
+        .split('|')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const ListTile(dense: true, title: Text('Fontes de partida')),
+            for (final source in sources) _SourceLink(source),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SourceLink extends StatelessWidget {
+  const _SourceLink(this.source);
+
+  final String source;
+
+  @override
+  Widget build(BuildContext context) {
+    final uri = Uri.tryParse(source);
+    final isLink =
+        uri != null && (uri.isScheme('http') || uri.isScheme('https'));
+    if (!isLink) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        child: SelectableText(source),
+      );
+    }
+    final primary = Theme.of(context).colorScheme.primary;
+    return InkWell(
+      onTap: () => launchExternalUri(context, uri),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            Icon(Icons.open_in_new, size: 16, color: primary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                source,
+                style: TextStyle(
+                  color: primary,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// "Consulta sugerida" — termo de pesquisa do inventário; botão abre a
+/// busca no navegador (o portal não expõe /search).
+class _QueryCard extends StatelessWidget {
+  const _QueryCard(this.value, {super.key});
+
+  final dynamic value;
+
+  @override
+  Widget build(BuildContext context) {
+    final query = value?.toString().trim() ?? '';
+    if (query.isEmpty) return const SizedBox.shrink();
+    final searchUri = Uri.https('www.google.com', '/search', {'q': query});
+    return Card(
+      child: ListTile(
+        title: const Text('Consulta sugerida'),
+        subtitle: SelectableText(query),
+        trailing: TextButton.icon(
+          icon: const Icon(Icons.search, size: 18),
+          label: const Text('Pesquisar'),
+          onPressed: () => launchExternalUri(context, searchUri),
+        ),
+      ),
     );
   }
 }
