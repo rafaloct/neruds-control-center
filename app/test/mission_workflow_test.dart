@@ -43,7 +43,7 @@ Map<String, dynamic> taskFixture() => {
   'gaps': 'Confirmar os resultados recentes.',
   'action': 'Confrontar a página com o relatório validado.',
   'where_to_search': 'Relatório institucional.',
-  'sources': 'Acervo do núcleo.',
+  'sources': 'https://fonte.example.org/inicio | Acervo do núcleo.',
   'suggested_query': 'Projeto territorial resultados',
   'evidence': '',
   'confirmed_source': '',
@@ -476,6 +476,36 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  testWidgets('fontes viram links clicáveis e consulta oferece busca', (
+    tester,
+  ) async {
+    wideSurface(tester);
+    final task = taskFixture();
+    bridge.setClientForTesting(
+      MockClient((request) async {
+        if (request.url.path == '/mission-tasks/41' &&
+            request.method == 'GET') {
+          return jsonResponse(task);
+        }
+        throw StateError(
+          'Rota inesperada: ${request.method} ${request.url.path}',
+        );
+      }),
+    );
+    await openTask(tester);
+    await reveal(tester, const ValueKey('mission-sources'));
+    expect(find.text('Fontes de partida'), findsOneWidget);
+    // URL do inventário vira link; texto não-URL segue selecionável.
+    expect(find.text('https://fonte.example.org/inicio'), findsOneWidget);
+    expect(find.byIcon(Icons.open_in_new), findsWidgets);
+    expect(find.text('Acervo do núcleo.'), findsOneWidget);
+    await reveal(tester, const ValueKey('mission-suggested-query'));
+    expect(find.text('Consulta sugerida'), findsOneWidget);
+    expect(find.text('Pesquisar'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets('falha de consulta encerra carregamento e oferece retomada', (
     tester,
