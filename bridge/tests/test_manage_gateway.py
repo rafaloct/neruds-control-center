@@ -59,6 +59,14 @@ async def test_manage_schemas_returns_bundles_and_access(
     assert data["can_create"]["grupo_estudos"] is False
     fields = {f["name"] for f in data["schemas"]["grupo_estudos"]["fields"]}
     assert "field_lider" in fields
+    # Campos que não existem no Drupal foram removidos do schema —
+    # enviá-los no save faria o portal recusar o PATCH inteiro.
+    assert "body" not in fields
+    reuniao = {f["name"] for f in data["schemas"]["reuniao"]["fields"]}
+    assert "field_participantes" not in reuniao
+    assert "field_participantes_reuniao" in reuniao
+    acao = {f["name"] for f in data["schemas"]["acao_extensionista"]["fields"]}
+    assert "body" not in acao
 
 
 @pytest.mark.asyncio
